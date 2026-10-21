@@ -17,7 +17,7 @@ use serde::Serialize;
 use sherpa_onnx::LinearResampler;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use asr::{Engine, StreamEvent, StreamingEngine, StreamingSession, Transcript};
+use asr::{Engine, PunctuationEngine, StreamEvent, StreamingEngine, StreamingSession, Transcript};
 use audio::Recorder;
 use settings::Settings;
 
@@ -32,6 +32,7 @@ pub struct AppState {
     recorder: Mutex<Option<Recorder>>,
     engine: Arc<Mutex<Option<Engine>>>,
     streaming_engine: Arc<Mutex<Option<Arc<StreamingEngine>>>>,
+    punct_engine: Arc<Mutex<Option<Arc<PunctuationEngine>>>>,
     stream: Mutex<Option<StreamSession>>,
     cancel_download: Arc<AtomicBool>,
     downloading: Arc<AtomicBool>,
@@ -44,6 +45,7 @@ impl AppState {
             recorder: Mutex::new(None),
             engine: Arc::new(Mutex::new(None)),
             streaming_engine: Arc::new(Mutex::new(None)),
+            punct_engine: Arc::new(Mutex::new(None)),
             stream: Mutex::new(None),
             cancel_download: Arc::new(AtomicBool::new(false)),
             downloading: Arc::new(AtomicBool::new(false)),
@@ -74,6 +76,10 @@ pub struct Status {
     streaming_dir: Option<String>,
     streaming_bytes: u64,
     streaming_total_bytes: u64,
+    punct: bool,
+    punct_ready: bool,
+    punct_bytes: u64,
+    punct_total_bytes: u64,
     app_version: String,
 }
 
@@ -191,6 +197,14 @@ fn status_of(app: &AppHandle, settings: &Settings) -> Status {
         streaming_dir: streaming.map(|p| p.dir),
         streaming_bytes,
         streaming_total_bytes: models::streaming_total_bytes(),
+        punct: settings.punct,
+        punct_ready: models::resolve_punctuation(app).is_some(),
+        punct_bytes: models::punctuation_install_dir(app)
+            .ok()
+            .and_then(|dir| fs::metadata(dir.join(models::PUNCT.name)).ok())
+            .map(|meta| meta.len())
+            .unwrap_or(0),
+        punct_total_bytes: models::PUNCT.bytes,
         app_version: app.package_info().version.to_string(),
     }
 }
@@ -362,6 +376,24 @@ async fn ensure_streaming_engine(
     Ok(engine)
 }
 
+async fn ensure_punctuation(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<Arc<PunctuationEngine>, String> {
+    if let Some(engine) = state.punct_engine.lock().ok().and_then(|slot| slot.clone()) {
+        return Ok(engine);
+    }
+    let model = models::resolve_punctuation(app).ok_or_else(|| "标点模型未下载".to_string())?;
+    let engine = tauri::async_runtime::spawn_blocking(move || PunctuationEngine::new(&model))
+        .await
+        .map_err(|e| format!("加载标点模型失败: {e}"))??;
+    let engine = Arc::new(engine);
+    if let Ok(mut slot) = state.punct_engine.lock() {
+        *slot = Some(engine.clone());
+    }
+    Ok(engine)
+}
+
 fn take_new(buffer: &Arc<Mutex<Vec<f32>>>, cursor: &mut usize) -> Vec<f32> {
     let Ok(guard) = buffer.lock() else {
         return Vec::new();
@@ -378,6 +410,7 @@ fn take_new(buffer: &Arc<Mutex<Vec<f32>>>, cursor: &mut usize) -> Vec<f32> {
 fn run_streaming(
     app: &AppHandle,
     engine: Arc<StreamingEngine>,
+    punctuator: Option<Arc<PunctuationEngine>>,
     buffer: Arc<Mutex<Vec<f32>>>,
     rate: u32,
     stop: Arc<AtomicBool>,
@@ -387,11 +420,14 @@ fn run_streaming(
         parts: Vec::new(),
         committed: String::new(),
     };
-    run_streaming_core(engine, buffer, rate, stop, |events| emitter.apply(events))
+    run_streaming_core(engine, punctuator, buffer, rate, stop, |events| {
+        emitter.apply(events)
+    })
 }
 
 fn run_streaming_core<F>(
     engine: Arc<StreamingEngine>,
+    punctuator: Option<Arc<PunctuationEngine>>,
     buffer: Arc<Mutex<Vec<f32>>>,
     rate: u32,
     stop: Arc<AtomicBool>,
@@ -401,7 +437,7 @@ where
     F: FnMut(Vec<StreamEvent>),
 {
     let vad_config = engine.vad().cloned();
-    let mut session = StreamingSession::new(engine);
+    let mut session = StreamingSession::new(engine, punctuator);
     let resampler = if rate as i32 == asr::SAMPLE_RATE {
         None
     } else {
@@ -507,6 +543,44 @@ fn set_mode(app: AppHandle, state: State<AppState>, mode: String) -> Result<Stat
 }
 
 #[tauri::command]
+fn set_punct(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Status, String> {
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| "设置状态异常".to_string())?;
+        guard.punct = enabled;
+    }
+    if !enabled {
+        if let Ok(mut slot) = state.punct_engine.lock() {
+            *slot = None;
+        }
+    }
+    persist(&app, &state)?;
+    Ok(status_of(&app, &state.settings()))
+}
+
+#[tauri::command]
+async fn download_punctuation_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Status, String> {
+    if state.downloading.swap(true, Ordering::SeqCst) {
+        return Err("正在下载中".into());
+    }
+    state.cancel_download.store(false, Ordering::SeqCst);
+    let dir = models::punctuation_install_dir(&app)?;
+    let sink = EventSink(app.clone());
+    let result = models::download_punctuation(&dir, state.cancel_download.clone(), &sink).await;
+    state.downloading.store(false, Ordering::SeqCst);
+    result?;
+    if state.settings().punct {
+        let _ = ensure_punctuation(&app, &state).await;
+    }
+    Ok(status_of(&app, &state.settings()))
+}
+
+#[tauri::command]
 async fn download_streaming_model(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -541,6 +615,11 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
             return Err("流式模型未就绪，请先下载流式模型".into());
         }
         let engine = ensure_streaming_engine(&app, &state).await?;
+        let punctuator = if settings.punct {
+            ensure_punctuation(&app, &state).await.ok()
+        } else {
+            None
+        };
         let recorder = audio::start(app.clone())?;
         let buffer = recorder.buffer();
         let rate = recorder.sample_rate();
@@ -551,7 +630,8 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
         std::thread::Builder::new()
             .name("streaming-asr".into())
             .spawn(move || {
-                let transcript = run_streaming(&thread_app, engine, buffer, rate, thread_stop);
+                let transcript =
+                    run_streaming(&thread_app, engine, punctuator, buffer, rate, thread_stop);
                 let _ = tx.send(transcript);
             })
             .map_err(|e| format!("无法启动流式识别线程: {e}"))?;
@@ -827,12 +907,14 @@ pub fn run() {
             warm_up,
             warm_up_streaming,
             set_mode,
+            set_punct,
             start_recording,
             stop_recording,
             cancel_recording,
             transcribe_wav,
             download_model,
             download_streaming_model,
+            download_punctuation_model,
             cancel_download,
             save_text,
         ])
@@ -907,7 +989,7 @@ mod tests {
         });
 
         let mut partials = 0usize;
-        let transcript = run_streaming_core(engine, buffer, 48_000, stop, |events| {
+        let transcript = run_streaming_core(engine, None, buffer, 48_000, stop, |events| {
             for event in events {
                 if let StreamEvent::Partial(_) = event {
                     partials += 1;
@@ -918,6 +1000,56 @@ mod tests {
         assert!(!transcript.text.is_empty(), "流式结果为空");
         assert!(partials > 0, "没有中间结果");
         assert!(transcript.duration_seconds > 5.0);
+    }
+
+    #[test]
+    fn punctuates_sentences() {
+        let Some(model) = std::env::var("VOICE_NOTES_PUNCT_MODEL").ok() else {
+            eprintln!("跳过：未设置 VOICE_NOTES_PUNCT_MODEL");
+            return;
+        };
+        let engine = PunctuationEngine::new(&model).expect("加载标点模型");
+        let out = engine.apply("开放时间早上九点至下午五点");
+        println!("标点结果：{out}");
+        assert!(
+            out.contains('。') || out.contains('，'),
+            "没有补出标点: {out}"
+        );
+    }
+
+    #[test]
+    fn streams_with_punctuation() {
+        let (Some(model_dir), Some(punct_model)) = (
+            std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR").ok(),
+            std::env::var("VOICE_NOTES_PUNCT_MODEL").ok(),
+        ) else {
+            eprintln!("跳过：缺少流式模型或标点模型环境变量");
+            return;
+        };
+        let dir = PathBuf::from(model_dir);
+        let paths = models::StreamingPaths {
+            dir: dir.display().to_string(),
+            encoder: dir.join("encoder.int8.onnx").display().to_string(),
+            decoder: dir.join("decoder.onnx").display().to_string(),
+            joiner: dir.join("joiner.int8.onnx").display().to_string(),
+            tokens: dir.join("tokens.txt").display().to_string(),
+            vad: None,
+        };
+        let engine = Arc::new(StreamingEngine::new(&paths).expect("加载流式模型"));
+        let punctuator = Arc::new(PunctuationEngine::new(&punct_model).expect("加载标点模型"));
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+        let mut session = StreamingSession::new(engine, Some(punctuator));
+        for chunk in wave.samples().chunks(1_600) {
+            session.push(chunk);
+        }
+        session.finish();
+        let transcript = session.transcript();
+        println!("带标点结果：{}", transcript.text);
+        assert!(
+            transcript.text.contains('。') || transcript.text.contains('，'),
+            "流式结果没有标点: {}",
+            transcript.text
+        );
     }
 
     #[test]

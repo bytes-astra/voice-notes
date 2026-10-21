@@ -18,6 +18,8 @@ pub struct Settings {
     pub mode: String,
     /// 逆文本归一化（数字、标点）
     pub itn: bool,
+    /// 流式结果是否用标点模型补标点
+    pub punct: bool,
     pub output_dir: Option<String>,
     pub model_dir: Option<String>,
 }
@@ -28,6 +30,7 @@ impl Default for Settings {
             language: "auto".into(),
             mode: "offline".into(),
             itn: true,
+            punct: false,
             output_dir: None,
             model_dir: None,
         }

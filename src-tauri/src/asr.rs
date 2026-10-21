@@ -5,8 +5,9 @@ use std::time::Instant;
 
 use serde::Serialize;
 use sherpa_onnx::{
-    OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, SileroVadModelConfig,
-    VadModelConfig, VoiceActivityDetector,
+    OfflinePunctuation, OfflinePunctuationConfig, OfflinePunctuationModelConfig, OfflineRecognizer,
+    OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, SileroVadModelConfig, VadModelConfig,
+    VoiceActivityDetector,
 };
 
 use crate::models::ModelPaths;
@@ -283,6 +284,35 @@ impl StreamingEngine {
     }
 }
 
+/// 标点模型（CT-Transformer），给流式定稿句补标点。
+pub struct PunctuationEngine {
+    punct: OfflinePunctuation,
+}
+
+impl PunctuationEngine {
+    pub fn new(model: &str) -> Result<Self, String> {
+        let config = OfflinePunctuationConfig {
+            model: OfflinePunctuationModelConfig {
+                ct_transformer: Some(model.to_string()),
+                num_threads: 1,
+                debug: false,
+                provider: Some("cpu".into()),
+            },
+        };
+        let punct = OfflinePunctuation::create(&config)
+            .ok_or_else(|| "无法加载标点模型（文件可能损坏）".to_string())?;
+        Ok(Self { punct })
+    }
+
+    /// 加标点；失败时原样返回，不影响主流程。
+    pub fn apply(&self, text: &str) -> String {
+        self.punct
+            .add_punctuation(text)
+            .filter(|out| !out.trim().is_empty())
+            .unwrap_or_else(|| text.to_string())
+    }
+}
+
 /// 流式模型句柄。
 pub struct StreamingEngine {
     pub recognizer: OnlineRecognizer,
@@ -292,6 +322,7 @@ pub struct StreamingEngine {
 /// 一次流式识别会话：喂 PCM，收中间结果和断句。
 pub struct StreamingSession {
     recognizer: Arc<StreamingEngine>,
+    punctuator: Option<Arc<PunctuationEngine>>,
     stream: OnlineStream,
     partial: String,
     segments: Vec<Segment>,
@@ -309,10 +340,11 @@ pub enum StreamEvent {
 }
 
 impl StreamingSession {
-    pub fn new(engine: Arc<StreamingEngine>) -> Self {
+    pub fn new(engine: Arc<StreamingEngine>, punctuator: Option<Arc<PunctuationEngine>>) -> Self {
         let stream = engine.new_stream();
         Self {
             recognizer: engine,
+            punctuator,
             stream,
             partial: String::new(),
             segments: Vec::new(),
@@ -355,8 +387,12 @@ impl StreamingSession {
             self.segment_start = self.fed_samples;
             return;
         }
+        let text = match &self.punctuator {
+            Some(punctuator) => punctuator.apply(&self.partial),
+            None => self.partial.clone(),
+        };
         let segment = Segment {
-            text: self.partial.clone(),
+            text,
             start: self.segment_start as f32 / SAMPLE_RATE as f32,
             end: self.fed_samples as f32 / SAMPLE_RATE as f32,
         };

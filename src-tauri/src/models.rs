@@ -96,6 +96,46 @@ pub const STREAM_ASSETS: [&Asset; 5] = [
     &STREAM_VAD,
 ];
 
+// ── 标点模型：CT-Transformer zh-en（fp32，约 281 MiB） ──
+pub const PUNCT_DIR: &str = "punct";
+
+pub const PUNCT: Asset = Asset {
+    name: "model.onnx",
+    path: "/csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/resolve/432aeba669265e7aeb06b9359753419683b38597/model.onnx",
+    bytes: 294_372_519,
+    sha256: "e93593a6dbd69a07f8734ef269dbe861a379755f8d1c8354719432116f2c44bd",
+};
+
+pub fn resolve_punctuation(app: &AppHandle) -> Option<String> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .ok()?
+        .join("models")
+        .join(PUNCT_DIR)
+        .join(PUNCT.name);
+    exists(&path).then(|| path.to_string_lossy().into_owned())
+}
+
+pub fn punctuation_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法定位应用数据目录: {e}"))?
+        .join("models")
+        .join(PUNCT_DIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("无法创建标点模型目录: {e}"))?;
+    Ok(dir)
+}
+
+pub async fn download_punctuation(
+    dest_dir: &Path,
+    cancel: Arc<AtomicBool>,
+    sink: &dyn ProgressSink,
+) -> Result<(), String> {
+    download_asset(&PUNCT, dest_dir, cancel, sink).await
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamingPaths {

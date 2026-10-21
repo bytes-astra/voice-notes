@@ -43,7 +43,7 @@ fn streams_chinese_fixture() {
     let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
     let samples = wave.samples();
 
-    let mut session = StreamingSession::new(engine);
+    let mut session = StreamingSession::new(engine, None);
     let mut partials = 0;
     let mut segments = 0;
 

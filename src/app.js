@@ -34,6 +34,7 @@ const state = {
   engine: 'idle',
   downloading: false,
   downloadingStreaming: false,
+  downloadingPunct: false,
   toastTimer: 0,
 }
 
@@ -85,6 +86,9 @@ const els = {
   settingsPickOutput: $('settings-pick-output'),
   settingsOpenOutput: $('settings-open-output'),
   itnToggle: $('itn-toggle'),
+  punctToggle: $('punct-toggle'),
+  punctStatus: $('punct-status'),
+  punctDownload: $('punct-download'),
   toast: $('toast'),
   dropOverlay: $('drop-overlay'),
   fileInput: $('file-input'),
@@ -489,6 +493,11 @@ function renderStatus() {
   els.settingsOutput.textContent = status.outputDir
   els.settingsVersion.textContent = `VoiceNotes ${status.appVersion} · SenseVoiceSmall INT8`
   els.itnToggle.checked = !!status.itn
+  els.punctToggle.checked = !!status.punct
+  els.punctStatus.textContent = status.punctReady
+    ? '标点模型已就绪（CT-Transformer zh-en）'
+    : `标点模型未下载（约 ${fmtBytes(status.punctTotalBytes || 0)}），仅流式模式使用`
+  els.punctDownload.classList.toggle('hidden', status.punctReady)
 
   for (const button of els.langRow.children) {
     button.setAttribute('aria-pressed', String(button.dataset.lang === status.language))
@@ -702,6 +711,25 @@ function audioBase64(bytes) {
   return btoa(text)
 }
 
+async function downloadPunctuationModel() {
+  if (state.downloadingPunct) return
+  state.downloadingPunct = true
+  els.punctDownload.disabled = true
+  els.punctStatus.textContent = '准备下载…'
+  try {
+    state.status = await invoke('download_punctuation_model')
+    state.status = await invoke('set_punct', { enabled: true })
+    toast('标点模型已就绪，已开启自动标点')
+    renderStatus()
+  } catch (error) {
+    toast(fmtError(error), 'error')
+    els.punctStatus.textContent = `下载失败：${fmtError(error)}`
+  } finally {
+    state.downloadingPunct = false
+    els.punctDownload.disabled = false
+  }
+}
+
 async function transcribeFile(file) {
   if (!state.status?.modelReady) {
     toast('模型还没下载，先下载模型再转写文件', 'error')
@@ -836,6 +864,24 @@ function bindUI() {
   })
   els.settingsPickOutput.addEventListener('click', () => void pickOutputDir())
   els.settingsOpenOutput.addEventListener('click', () => void openOutputDir())
+  els.punctDownload.addEventListener('click', () => void downloadPunctuationModel())
+  els.punctToggle.addEventListener('change', async () => {
+    const wants = els.punctToggle.checked
+    if (wants && !state.status?.punctReady) {
+      els.punctToggle.checked = false
+      toast('先下载标点模型（约 281 MB）')
+      return
+    }
+    try {
+      state.status = await invoke('set_punct', { enabled: wants })
+      renderStatus()
+      toast(wants ? '流式结果会自动加标点' : '已关闭自动标点')
+    } catch (error) {
+      els.punctToggle.checked = !wants
+      toast(fmtError(error), 'error')
+    }
+  })
+
   els.itnToggle.addEventListener('change', async () => {
     try {
       state.status = await invoke('set_itn', { enabled: els.itnToggle.checked })
@@ -930,6 +976,11 @@ async function listenEvents() {
 
   await listen('model:progress', (event) => {
     const progress = event.payload || {}
+    if (state.downloadingPunct) {
+      const pct = progress.total > 0 ? Math.round(((progress.done || 0) / progress.total) * 100) : 0
+      els.punctStatus.textContent = `标点模型下载中 ${pct}% · ${fmtBytes(progress.done || 0)} / ${fmtBytes(progress.total || 0)}`
+      return
+    }
     if (state.downloadingStreaming) {
       els.streamProgress.classList.remove('hidden')
       setStreamProgress(progress.done || 0, progress.total || 0)

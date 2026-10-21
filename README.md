@@ -37,7 +37,8 @@ SenseVoiceSmall INT8 约 **228 MB**，不会打进安装包：
 1. 启动后顶部会出现「首次使用：下载语音模型」。
 2. 点 **下载模型**：优先 Hugging Face，失败自动切换 `hf-mirror.com`；支持断点续传（`.part`），下载完做 SHA-256 校验。
 3. **流式模型**单独下载（约 161 MB，仅在切到「流式」模式时需要）：点模式切换里的「流式」，按提示下载；流式模型只覆盖中文，选粤语/日语/韩语会自动切回非流式。
-4. 也可以点 **使用已有模型目录**，指向一个包含以下文件的目录（设置里随时可以点「使用应用内模型」切回来）：
+4. **标点模型**（可选，约 281 MB）：设置 → 流式标点 → 下载，下完自动开启，给流式结果按句补标点；不装也不影响识别。
+5. 也可以点 **使用已有模型目录**，指向一个包含以下文件的目录（设置里随时可以点「使用应用内模型」切回来）：
 
 ```
 model.int8.onnx   # 或 model.onnx
@@ -93,6 +94,7 @@ cd src-tauri
 cargo test --lib                  # 逻辑、WAV 解析、麦克风枚举、重采样
 cargo test --test asr_smoke       # 真模型转写 tests/fixtures/zh.wav（缺模型自动跳过）
 cargo test --test streaming_smoke # 流式识别，100ms 切片模拟麦克风
+VOICE_NOTES_PUNCT_MODEL=/path/to/punct/model.onnx cargo test --lib punctuat  # 标点
 
 # 需要真实网络的用例（默认跳过）
 VOICE_NOTES_DOWNLOAD_TEST=1 cargo test --lib downloads_vad -- --nocapture
@@ -105,8 +107,8 @@ VOICE_NOTES_RECORD_TEST=1 cargo test --lib records_microphone -- --nocapture
 ## 已知限制
 
 - 非流式模式是**准实时**：录音结束后统一识别（SenseVoice 是非流式模型）。要边说边出字请切「流式」。
-- 流式模式只支持**中文**、**不输出标点**，准确率低于 SenseVoice，适合快速记录；定稿建议切回非流式重录或用文件转写。
+- 流式模式只支持**中文**，准确率低于 SenseVoice，适合快速记录；定稿建议切回非流式重录或用文件转写。标点是可选模型（见上），且只加在定稿句上，实时中间结果不带标点。
 - 单次录音上限 10 分钟；非流式单句（VAD 切出来的一段）上限 30 秒。
 - 首次转写需要把 239 MB 模型读进内存，约 1–2 秒；之后常驻复用。
-- 说话人分离、时间戳导出、标点模型等未做。
+- 说话人分离、时间戳导出未做。
 - 打包 `.dmg` 需要能调用 `hdiutil`；在受限沙箱里 `npm run build` 可能只产出 `.app`（`--bundles app` 可跳过 dmg）。
