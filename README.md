@@ -66,6 +66,20 @@ npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
 
 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 下载对应平台的**预编译静态库**（onnxruntime 等），之后走缓存。
 
+## Windows 打包
+
+Tauri **不能在 macOS 上交叉打 Windows 安装包**（需要 Windows 的 MSVC 工具链、NSIS/WiX 和 WebView2）。两条可行路径：
+
+1. **Windows 机器**：装 Rust、Node 18+、Visual Studio Build Tools（C++ 工作负载），然后
+   ```bash
+   npm install
+   npm run build
+   ```
+   产物在 `src-tauri/target/release/bundle/msi/*.msi` 与 `nsis/*.exe`。
+2. **GitHub Actions**：仓库已带 `.github/workflows/build.yml`，推送 tag（`v*`）或在 Actions 里手动运行，会同时产出 macOS（dmg）和 Windows（msi/exe），在 Artifacts 里下载。
+
+Windows 包使用 `downloadBootstrapper` 安装 WebView2；应用内下载的模型与 macOS 一致，落在 `%APPDATA%\com.hugh.voicenotes\models`。
+
 ### 平台说明
 
 - **macOS**：麦克风权限写在 `src-tauri/Info.plist`（`NSMicrophoneUsageDescription`），首次录音时系统会弹授权框；未签名的本地构建在「系统设置 → 隐私与安全性 → 麦克风」里需要手动勾选。

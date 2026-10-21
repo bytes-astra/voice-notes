@@ -49,6 +49,12 @@ cargo test --test streaming_smoke -- --nocapture  # 流式真模型转写（VOIC
 
 `asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR` 指向包含 `model.int8.onnx` / `tokens.txt` 的目录，未设置时自动跳过。
 
+## Windows
+
+- Tauri 不能在 macOS 上交叉打 Windows 包，CI 用 `.github/workflows/build.yml`（windows-latest）出 msi/nsis。
+- 代码侧要点：cpal 采样格式已覆盖 F32/I16/U16/I32；Windows 用原生标题栏，`body.macos` 不生效，侧栏顶部占位是 12px；`bundle.windows.webviewInstallMode = downloadBootstrapper`。
+- 菜单只在 macOS 构建（`#[cfg(target_os = "macos")]`）；Windows 无自定义菜单。
+
 ## 已知坑
 
 - 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 拉预编译静态库。GitHub 不通时用 `SHERPA_ONNX_ARCHIVE_DIR=/path/to/dir`（目录里放 `sherpa-onnx-v1.13.8-<os>-<arch>-static-lib.tar.bz2`）。

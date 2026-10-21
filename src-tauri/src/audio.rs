@@ -218,6 +218,15 @@ fn build_stream(
                 None,
             )
         }
+        SampleFormat::I32 => {
+            let buf = samples.clone();
+            device.build_input_stream(
+                &config,
+                move |data: &[i32], _| append(data, channels, &buf, cap),
+                on_error(app.cloned(), error.clone()),
+                None,
+            )
+        }
         other => return Err(format!("不支持的麦克风采样格式: {other:?}")),
     }
     .map_err(|e| format!("无法打开麦克风（{format:?}）: {e}"))?;

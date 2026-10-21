@@ -775,7 +775,7 @@ body { overflow: hidden; }
 }
 
 .sidebar-top {
-  height: 44px;
+  height: 12px;
   display: flex;
   align-items: flex-end;
   padding: 0 2px 6px;
