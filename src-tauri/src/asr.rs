@@ -255,7 +255,27 @@ impl StreamingEngine {
 
         let recognizer = OnlineRecognizer::create(&config)
             .ok_or_else(|| "无法加载流式模型（文件可能损坏，建议重新下载）".to_string())?;
-        Ok(Self { recognizer })
+        let vad = paths.vad.as_ref().map(|path| VadModelConfig {
+            silero_vad: SileroVadModelConfig {
+                model: Some(path.clone()),
+                threshold: 0.5,
+                min_silence_duration: 0.5,
+                min_speech_duration: 0.25,
+                window_size: 512,
+                max_speech_duration: 20.0,
+            },
+            sample_rate: SAMPLE_RATE,
+            num_threads: 1,
+            provider: Some("cpu".into()),
+            debug: false,
+            ..Default::default()
+        });
+        Ok(Self { recognizer, vad })
+    }
+
+    /// 静音门控用的 VAD 配置（模型缺失时为 None，退化为全量喂入）。
+    pub fn vad(&self) -> Option<&VadModelConfig> {
+        self.vad.as_ref()
     }
 
     pub fn new_stream(&self) -> OnlineStream {
@@ -266,6 +286,7 @@ impl StreamingEngine {
 /// 流式模型句柄。
 pub struct StreamingEngine {
     pub recognizer: OnlineRecognizer,
+    vad: Option<VadModelConfig>,
 }
 
 /// 一次流式识别会话：喂 PCM，收中间结果和断句。
@@ -353,6 +374,15 @@ impl StreamingSession {
             let chunk: Vec<f32> = self.pending.drain(..STREAM_CHUNK).collect();
             self.accept(&chunk, &mut events);
         }
+        events
+    }
+
+    /// 检测到静音时主动收尾：提交当前句子并重置解码器。
+    pub fn force_end(&mut self) -> Vec<StreamEvent> {
+        let mut events = Vec::new();
+        self.commit(&mut events);
+        self.recognizer.recognizer.reset(&self.stream);
+        self.partial.clear();
         events
     }
 

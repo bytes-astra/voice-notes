@@ -398,12 +398,21 @@ fn run_streaming_core<F>(
 where
     F: FnMut(Vec<StreamEvent>),
 {
+    let vad_config = engine.vad().cloned();
     let mut session = StreamingSession::new(engine);
     let resampler = if rate as i32 == asr::SAMPLE_RATE {
         None
     } else {
         LinearResampler::create(rate as i32, asr::SAMPLE_RATE)
     };
+    let vad = vad_config
+        .as_ref()
+        .and_then(|config| sherpa_onnx::VoiceActivityDetector::create(config, 60.0));
+    // 说话起点前留 0.4s，避免 VAD 起音延迟把字头切掉
+    let preroll_limit = (asr::SAMPLE_RATE as usize) / 5 * 2;
+    let mut preroll: Vec<f32> = Vec::new();
+    let mut active = false;
+    let mut last_voice = std::time::Instant::now();
     let mut cursor = 0usize;
 
     while !stop.load(Ordering::Relaxed) {
@@ -416,8 +425,43 @@ where
             Some(resampler) => resampler.resample(&chunk, false),
             None => chunk,
         };
-        if !samples.is_empty() {
+        if samples.is_empty() {
+            continue;
+        }
+
+        let Some(detector) = vad.as_ref() else {
             emit(session.push(&samples));
+            continue;
+        };
+
+        for window in samples.chunks(512) {
+            detector.accept_waveform(window);
+        }
+        let detected = detector.detected();
+        if detected {
+            last_voice = std::time::Instant::now();
+        }
+        let speaking = detected || last_voice.elapsed() < Duration::from_millis(700);
+
+        if speaking {
+            if !active {
+                active = true;
+                if !preroll.is_empty() {
+                    emit(session.push(&std::mem::take(&mut preroll)));
+                }
+            }
+            emit(session.push(&samples));
+        } else {
+            if active {
+                active = false;
+                // 静音开始：立刻收尾当前句子，避免模型在噪声上继续编。
+                emit(session.force_end());
+            }
+            preroll.extend_from_slice(&samples);
+            let excess = preroll.len().saturating_sub(preroll_limit);
+            if excess > 0 {
+                preroll.drain(..excess);
+            }
         }
     }
 
@@ -834,9 +878,13 @@ mod tests {
         let paths = models::StreamingPaths {
             dir: dir.display().to_string(),
             encoder: dir.join("encoder.int8.onnx").display().to_string(),
-            decoder: dir.join("decoder.int8.onnx").display().to_string(),
+            decoder: dir.join("decoder.onnx").display().to_string(),
             joiner: dir.join("joiner.int8.onnx").display().to_string(),
             tokens: dir.join("tokens.txt").display().to_string(),
+            vad: [dir.join("silero_vad.onnx")]
+                .into_iter()
+                .find(|path| path.is_file())
+                .map(|path| path.display().to_string()),
         };
         let engine = Arc::new(StreamingEngine::new(&paths).expect("加载流式模型"));
         let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");

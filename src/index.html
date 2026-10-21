@@ -65,6 +65,7 @@
           <span class="timer" id="timer">00:00</span>
           <span class="hint" id="hint">点击麦克风开始录音</span>
         </div>
+        <div class="live-line hidden" id="live-line" aria-live="off"></div>
         <div class="mode-row" id="mode-row" role="group" aria-label="转写模式">
           <button type="button" class="mode-chip" data-mode="offline" aria-pressed="true">
             <span class="mode-name">非流式</span>
@@ -72,11 +73,11 @@
           </button>
           <button type="button" class="mode-chip" data-mode="streaming" aria-pressed="false">
             <span class="mode-name">流式</span>
-            <span class="mode-desc">边说边出 · 无标点</span>
+            <span class="mode-desc">边说边出 · 仅中文</span>
           </button>
         </div>
         <div class="stream-setup hidden" id="stream-setup">
-          <p class="stream-setup-text" id="stream-setup-text">流式模型（中英双语，约 198 MB）还没下载</p>
+          <p class="stream-setup-text" id="stream-setup-text">流式模型（中文，约 161 MB）还没下载</p>
           <div class="progress hidden" id="stream-progress">
             <div class="progress-track"><div class="progress-fill" id="stream-progress-fill"></div></div>
             <div class="progress-meta">

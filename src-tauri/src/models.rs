@@ -49,43 +49,51 @@ pub const VAD: Asset = Asset {
 
 pub const ASSETS: [&Asset; 3] = [&MODEL, &TOKENS, &VAD];
 
-// ── 流式模型：sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20 (int8) ──
-// 中英双语，真流式 transducer。文件固定到 commit 98590b7。
+// ── 流式模型：sherpa-onnx-streaming-zipformer-zh-2025-06-30 (int8) ──
+// 中文，真流式 transducer。文件固定到 commit ad658fa。
 pub const STREAM_DIR: &str = "streaming";
 
 pub const STREAM_ENCODER: Asset = Asset {
     name: "encoder.int8.onnx",
-    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/encoder-epoch-99-avg-1.int8.onnx",
-    bytes: 181_895_032,
-    sha256: "8fa764187a261844f859d7143ebaa563af5d10adfece4c18a8f414c88cba2a9b",
+    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30/resolve/ad658fa0201659a09ea3c176129a191c77ecae8f/encoder.int8.onnx",
+    bytes: 161_141_793,
+    sha256: "5ac51e27981bb4dab01bb9be4958453ba50c3b61c063ddda0eab23fd3671aa4f",
 };
 
 pub const STREAM_DECODER: Asset = Asset {
-    name: "decoder.int8.onnx",
-    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/decoder-epoch-99-avg-1.int8.onnx",
-    bytes: 13_091_040,
-    sha256: "1a70c593d71e53f023f5f55b0b4cfff5055abb786ee3992e5f63dc2e273cc4fa",
+    name: "decoder.onnx",
+    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30/resolve/ad658fa0201659a09ea3c176129a191c77ecae8f/decoder.onnx",
+    bytes: 5_165_083,
+    sha256: "06522ad63cec0fdf6809f4e1db9bb4f7d710c34582e3b35db62ac60eccafac7e",
 };
 
 pub const STREAM_JOINER: Asset = Asset {
     name: "joiner.int8.onnx",
-    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/joiner-epoch-99-avg-1.int8.onnx",
-    bytes: 3_228_404,
-    sha256: "1ed689c5ed19dbaa725d9d191bb4822b5f4855a39e1ffd28cbc1f340d25b2ee0",
+    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30/resolve/ad658fa0201659a09ea3c176129a191c77ecae8f/joiner.int8.onnx",
+    bytes: 1_033_416,
+    sha256: "b34584dc6f561089e1d747fedebb3765f2caa72c927ef54d7ca55e5ae40a814b",
 };
 
 pub const STREAM_TOKENS: Asset = Asset {
     name: "tokens.txt",
-    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/tokens.txt",
-    bytes: 56_317,
-    sha256: "a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3",
+    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30/resolve/ad658fa0201659a09ea3c176129a191c77ecae8f/tokens.txt",
+    bytes: 20_628,
+    sha256: "6193c7ea1c96d0d9a1e9652789b40d13a8a913b434a5451e93158f5a09fd6652",
 };
 
-pub const STREAM_ASSETS: [&Asset; 4] = [
+pub const STREAM_VAD: Asset = Asset {
+    name: "silero_vad.onnx",
+    path: "/csukuangfj/vad/resolve/fba88cd2e921609e7675c3aaf51e0b9b295da4bc/silero_vad.onnx",
+    bytes: 1_807_522,
+    sha256: "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
+};
+
+pub const STREAM_ASSETS: [&Asset; 5] = [
     &STREAM_ENCODER,
     &STREAM_DECODER,
     &STREAM_JOINER,
     &STREAM_TOKENS,
+    &STREAM_VAD,
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -96,6 +104,7 @@ pub struct StreamingPaths {
     pub decoder: String,
     pub joiner: String,
     pub tokens: String,
+    pub vad: Option<String>,
 }
 
 pub fn streaming_total_bytes() -> u64 {
@@ -123,6 +132,9 @@ pub fn resolve_streaming(app: &AppHandle) -> Option<StreamingPaths> {
         decoder: decoder.to_string_lossy().into_owned(),
         joiner: joiner.to_string_lossy().into_owned(),
         tokens: tokens.to_string_lossy().into_owned(),
+        vad: Some(dir.join(STREAM_VAD.name))
+            .filter(|path| exists(path))
+            .map(|path| path.to_string_lossy().into_owned()),
     })
 }
 

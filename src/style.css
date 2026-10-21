@@ -225,7 +225,7 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .link {
-  order: 8;
+  order: 9;
   margin-top: 10px;
   border: 0;
   padding: 0;
@@ -373,10 +373,30 @@ main { display: flex; flex-direction: column; gap: 16px; }
   font-size: 13px;
   max-width: 380px;
   text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.live-line {
+  order: 4;
+  width: 100%;
+  max-width: 620px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1.55;
+  text-align: left;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .mode-row {
-  order: 4;
+  order: 5;
   display: inline-flex;
   gap: 4px;
   margin-top: 16px;
@@ -411,7 +431,7 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .mode-chip:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .stream-setup {
-  order: 5;
+  order: 6;
   width: 100%;
   max-width: 520px;
   margin-top: 14px;
@@ -429,7 +449,7 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .stream-setup .row { margin-top: 8px; }
 
 .lang-row {
-  order: 6;
+  order: 7;
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -450,6 +470,7 @@ main { display: flex; flex-direction: column; gap: 16px; }
   transition: all 0.15s;
 }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip:disabled { opacity: 0.4; cursor: not-allowed; border-color: var(--line); color: var(--muted); }
 .chip[aria-pressed="true"] {
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -458,7 +479,7 @@ main { display: flex; flex-direction: column; gap: 16px; }
 }
 
 .kbd-hint {
-  order: 7;
+  order: 8;
   margin: 14px 0 0;
   font-size: 11.5px;
   color: var(--muted);

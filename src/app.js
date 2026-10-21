@@ -38,7 +38,7 @@ const state = {
 }
 
 const STREAM_ASSETS = new Set(['encoder.int8.onnx', 'decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt'])
-const STREAM_LANGS = ['auto', 'zh', 'en']
+const STREAM_LANGS = ['auto', 'zh']
 
 const els = {
   app: document.querySelector('.app'),
@@ -56,6 +56,7 @@ const els = {
   mic: $('mic-btn'),
   timer: $('timer'),
   hint: $('hint'),
+  liveLine: $('live-line'),
   modeRow: $('mode-row'),
   streamSetup: $('stream-setup'),
   streamSetupText: $('stream-setup-text'),
@@ -164,6 +165,10 @@ function setPhase(phase) {
   els.mic.disabled = phase === 'requesting' || phase === 'transcribing'
   if (phase === 'idle') els.hint.textContent = idleHint()
   else if (HINTS[phase]) els.hint.textContent = HINTS[phase]
+  if (phase !== 'recording') {
+    els.liveLine.classList.add('hidden')
+    els.liveLine.textContent = ''
+  }
   if (phase === 'idle') resetWave()
   renderMode()
 }
@@ -496,10 +501,16 @@ function renderMode() {
     chip.disabled = state.phase !== 'idle'
   }
   if (state.phase === 'idle') els.hint.textContent = idleHint()
+  if (state.status) {
+    for (const chip of els.langRow.children) {
+      chip.disabled = state.status.mode === 'streaming' && !STREAM_LANGS.includes(chip.dataset.lang)
+      chip.title = chip.disabled ? '流式模式只支持中文' : ''
+    }
+  }
   const needStream = mode === 'streaming' && !state.status?.streamingReady
   els.streamSetup.classList.toggle('hidden', !needStream)
   if (needStream && state.status) {
-    els.streamSetupText.textContent = `流式模型（中英双语，约 ${fmtBytes(state.status.streamingTotalBytes || 0)}）还没下载`
+    els.streamSetupText.textContent = `流式模型（中文，约 ${fmtBytes(state.status.streamingTotalBytes || 0)}）还没下载`
   }
 }
 
@@ -510,6 +521,11 @@ async function setMode(mode) {
     state.engine = 'idle'
     renderStatus()
     if (mode === 'streaming') {
+      if (!STREAM_LANGS.includes(state.status.language)) {
+        state.status = await invoke('set_language', { language: 'auto' })
+        toast('流式模式只支持中文，语言已切到自动')
+        renderStatus()
+      }
       if (!state.status.streamingReady) {
         toast('先下载流式模型再使用')
       } else {
@@ -552,7 +568,13 @@ async function downloadStreamingModel() {
 function showPartial(partial) {
   if (state.phase !== 'recording') return
   const text = (partial || '').trim()
-  els.hint.textContent = text ? `正在识别：${text.length > 48 ? `…${text.slice(-48)}` : text}` : '正在听…'
+  if (!text) {
+    els.liveLine.classList.add('hidden')
+    els.liveLine.textContent = ''
+    return
+  }
+  els.liveLine.textContent = text.length > 160 ? `…${text.slice(-160)}` : text
+  els.liveLine.classList.remove('hidden')
 }
 
 function renderLang() {
@@ -572,7 +594,7 @@ function renderLang() {
 async function setLanguage(language) {
   try {
     if (state.status?.mode === 'streaming' && !STREAM_LANGS.includes(language)) {
-      toast('流式模型只支持中文 / English，已切回非流式模式')
+      toast('流式模型只支持中文，已切回非流式模式')
       state.status = await invoke('set_mode', { mode: 'offline' })
     }
     state.status = await invoke('set_language', { language })

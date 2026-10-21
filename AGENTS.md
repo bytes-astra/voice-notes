@@ -32,7 +32,8 @@ wav.rs       PCM16 WAV 解析（前端载荷）
 - 事件：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`。改事件名要同步 `src/app.js` 的 `listenEvents()`。
 - **两种模式**：`settings.mode = offline | streaming`。非流式走 SenseVoice（VAD 分句）；流式走 Zipformer transducer，`start_recording` 先 `ensure_streaming_engine` 再起采集，`run_streaming_core` 每 60ms 从录音缓冲按游标取新采样、重采样后喂给 `StreamingSession`。
 - **流式必须按 200ms（3200 样本）分片、且只在 `is_ready()` 为真时 `decode()`**，否则 sherpa-onnx 特征缓冲会越界直接 abort（`features.cc GetFrames`）。这是踩过的坑，别改成小分片或无条件 decode。
-- 流式模型是独立的一组 assets（`STREAM_*`），固定中英双语 Zipformer；语言选粤/日/韩时前端会自动切回非流式。
+- 流式模型是独立的一组 assets（`STREAM_*`）：`streaming-zipformer-zh-int8-2025-06-30` + `silero_vad.onnx`，只覆盖中文；语言选粤/日/韩时前端会自动切回非流式。
+- 流式链路带 **VAD 门控**：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字），起音前保留 0.4s 预录避免切字头。
 - 模型固定版本（HF commit + sha256 在 `models.rs` 的 `MODEL/TOKENS/VAD` 常量里）。换模型必须同时改 bytes/sha256，否则下载校验会失败。
 - 录音缓冲上限 600 秒（`audio.rs` 的 `MAX_SECONDS`），前端 `MAX_SECONDS` 也要一起改。
 

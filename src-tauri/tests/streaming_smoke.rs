@@ -13,7 +13,7 @@ fn model_paths() -> Option<StreamingPaths> {
         .ok()
         .map(PathBuf::from)?;
     let encoder = dir.join("encoder.int8.onnx");
-    let decoder = dir.join("decoder.int8.onnx");
+    let decoder = dir.join("decoder.onnx");
     let joiner = dir.join("joiner.int8.onnx");
     let tokens = dir.join("tokens.txt");
     if !(encoder.is_file() && decoder.is_file() && joiner.is_file() && tokens.is_file()) {
@@ -25,6 +25,10 @@ fn model_paths() -> Option<StreamingPaths> {
         decoder: decoder.display().to_string(),
         joiner: joiner.display().to_string(),
         tokens: tokens.display().to_string(),
+        vad: [dir.join("silero_vad.onnx")]
+            .into_iter()
+            .find(|path| path.is_file())
+            .map(|path| path.display().to_string()),
     })
 }
 
