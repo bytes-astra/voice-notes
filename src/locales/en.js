@@ -5,6 +5,8 @@ window.I18N_LOCALES['en'] = {
   'app.brand': 'Voice to Text',
   'app.startFailed': 'Failed to start: {error}',
 
+  'theme.toDark': 'Switch to dark',
+  'theme.toLight': 'Switch to light',
   'nav.new': 'New transcription',
   'nav.transcribe': 'Transcribe',
   'nav.history': 'History',

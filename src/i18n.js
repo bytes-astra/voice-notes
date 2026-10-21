@@ -11,6 +11,8 @@
       'app.brand': '语音转文字',
       'app.startFailed': '启动失败：{error}',
 
+      'theme.toDark': '切换到深色',
+      'theme.toLight': '切换到浅色',
       'nav.new': '开始新转写',
       'nav.transcribe': '转写',
       'nav.history': '历史',
