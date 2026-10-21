@@ -71,7 +71,7 @@ window.I18N_LOCALES['en'] = {
   'model.badge.offlineMissing': 'One-shot model missing',
   'model.badge.error': '{name} failed to load',
   'model.badge.loading': 'Loading {name}…',
-  'model.badge.ready': '{name} ready',
+  'model.badge.ready': 'Model ready',
   'model.badge.checking': 'Checking models…',
   'model.label.streaming': 'Streaming model',
   'model.label.offline': 'One-shot model',

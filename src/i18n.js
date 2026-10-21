@@ -76,7 +76,7 @@
       'model.badge.offlineMissing': '整段模型未下载',
       'model.badge.error': '{name}加载失败',
       'model.badge.loading': '正在加载{name}…',
-      'model.badge.ready': '{name}已就绪',
+      'model.badge.ready': '模型已就绪',
       'model.badge.checking': '正在检查模型…',
       'model.label.streaming': '流式模型',
       'model.label.offline': '整段模型',
