@@ -81,6 +81,7 @@ const els = {
   settingsVersion: $('settings-version'),
   settingsDownload: $('settings-download'),
   settingsPickModel: $('settings-pick-model'),
+  settingsClearModel: $('settings-clear-model'),
   settingsPickOutput: $('settings-pick-output'),
   settingsOpenOutput: $('settings-open-output'),
   itnToggle: $('itn-toggle'),
@@ -481,6 +482,7 @@ function renderStatus() {
   els.mic.classList.toggle('disabled', !ready)
   els.mic.title = ready ? '' : streamingMode ? '需要先下载流式模型' : '需要先下载语音模型'
 
+  els.settingsClearModel.classList.toggle('hidden', !status.modelDirCustom)
   els.settingsModel.textContent = ready
     ? `${status.modelSource} · ${status.modelDir}`
     : `未就绪 · 需要下载 ${fmtBytes(status.totalBytes)}`
@@ -817,6 +819,20 @@ function bindUI() {
   els.settingsPickModel.addEventListener('click', () => {
     els.settings.close()
     void pickModelDir()
+  })
+  els.settingsClearModel.addEventListener('click', async () => {
+    try {
+      state.status = await invoke('set_model_dir', { dir: null })
+      renderStatus()
+      if (state.status.modelReady) {
+        toast('已切换为应用内模型目录')
+        void warmUp()
+      } else {
+        toast('已切换为应用内模型目录，需要先下载模型')
+      }
+    } catch (error) {
+      toast(fmtError(error), 'error')
+    }
   })
   els.settingsPickOutput.addEventListener('click', () => void pickOutputDir())
   els.settingsOpenOutput.addEventListener('click', () => void openOutputDir())
