@@ -1,0 +1,37 @@
+[package]
+name = "voice-notes"
+version = "0.1.0"
+description = "Local speech-to-text with SenseVoiceSmall INT8"
+edition = "2021"
+rust-version = "1.78"
+
+[lib]
+name = "voice_notes_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sherpa-onnx = "1.13.8"
+cpal = "0.15"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = "0.3"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+dirs = "6"
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "unwind"
+strip = true

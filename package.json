@@ -1,0 +1,14 @@
+{
+  "name": "voice-notes",
+  "private": true,
+  "version": "0.1.0",
+  "description": "本地语音转文字桌面应用（SenseVoiceSmall INT8）",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icon": "tauri icon src-tauri/icon-source.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

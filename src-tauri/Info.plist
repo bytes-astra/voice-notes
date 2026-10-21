@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>VoiceNotes 需要使用麦克风，把您的语音在本机转成文字。</string>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+</dict>
+</plist>

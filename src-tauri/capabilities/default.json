@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "VoiceNotes 主窗口权限",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "clipboard-manager:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text",
+    "opener:default",
+    "opener:allow-open-path",
+    "opener:allow-open-url"
+  ]
+}
