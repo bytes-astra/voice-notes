@@ -15,10 +15,21 @@ pub fn should_correct(enabled: bool, model_ready: bool, sample_count: usize) -> 
     enabled && model_ready && sample_count >= MIN_SAMPLES
 }
 
+/// 中文/英文标点：用来判断一段文本是否已经带标点。
+const PUNCTUATION_MARKS: [char; 12] = [
+    '，', '。', '！', '？', '、', '；', '：', '“', '”', '（', '）', ',',
+];
+
 /// 给识别结果补标点：逐句加标点后重新拼接。
+///
+/// 已经带标点的句子原样保留：SenseVoice 开 ITN 时自己就输出标点，
+/// 再套一遍标点模型会变成「。。」。
 pub fn punctuate(transcript: Transcript, punctuator: &PunctuationEngine) -> Transcript {
     let mut out = transcript;
     for segment in out.segments.iter_mut() {
+        if segment.text.chars().any(|c| PUNCTUATION_MARKS.contains(&c)) {
+            continue;
+        }
         segment.text = punctuator.apply(&segment.text);
     }
     out.text = join_segments(out.segments.iter().map(|s| s.text.as_str()));

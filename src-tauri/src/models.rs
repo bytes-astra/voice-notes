@@ -226,10 +226,10 @@ fn exists(path: &Path) -> bool {
 fn candidate_dirs(app: &AppHandle, settings_dir: Option<&str>) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
     if let Some(dir) = settings_dir {
-        out.push((PathBuf::from(dir), "自定义目录".to_string()));
+        out.push((PathBuf::from(dir), "custom".to_string()));
     }
     if let Ok(data) = app.path().app_data_dir() {
-        out.push((data.join("models"), "应用数据".to_string()));
+        out.push((data.join("models"), "app_data".to_string()));
     }
     out
 }

@@ -120,6 +120,35 @@ fn corrects_only_when_enabled_and_ready() {
     assert!(!should_correct(true, true, 100), "音频太短不应校正");
 }
 
+/// SenseVoice 开着 ITN 时自己就带标点，再套一遍标点模型会变成「。。」。
+#[test]
+fn does_not_duplicate_existing_punctuation() {
+    let Ok(model) = std::env::var("VOICE_NOTES_PUNCT_MODEL") else {
+        eprintln!("跳过：没有标点模型（VOICE_NOTES_PUNCT_MODEL）");
+        return;
+    };
+    let Ok(punctuator) = PunctuationEngine::new(&model) else {
+        eprintln!("跳过：标点模型加载失败");
+        return;
+    };
+
+    let corrected = transcript("今天上午10点，记得去三楼取快递。", 200);
+    let result = punctuate(corrected, &punctuator);
+    println!("已有标点：{}", result.text);
+
+    assert!(
+        !result.text.contains("。。"),
+        "不该出现重复句号：{}",
+        result.text
+    );
+    assert!(
+        !result.text.contains("，，"),
+        "不该出现重复逗号：{}",
+        result.text
+    );
+    assert_eq!(result.text, "今天上午10点，记得去三楼取快递。");
+}
+
 #[test]
 fn punctuates_corrected_text() {
     let Ok(model) = std::env::var("VOICE_NOTES_PUNCT_MODEL") else {

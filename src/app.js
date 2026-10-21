@@ -5,14 +5,15 @@ const { listen } = window.__TAURI__.event
 const { open: openDialog } = window.__TAURI__.dialog
 const { writeText } = window.__TAURI__.clipboardManager
 const { openPath } = window.__TAURI__.opener
+const { t } = window.I18N
 
 const LANGS = [
-  ['auto', '自动'],
-  ['zh', '中文'],
-  ['en', 'English'],
-  ['yue', '粤语'],
-  ['ja', '日本語'],
-  ['ko', '한국어'],
+  ['auto', t('lang.auto')],
+  ['zh', t('lang.zh')],
+  ['en', t('lang.en')],
+  ['yue', t('lang.yue')],
+  ['ja', t('lang.ja')],
+  ['ko', t('lang.ko')],
 ]
 const HISTORY_KEY = 'voicenotes.history.v1'
 const THEME_KEY = 'voicenotes.theme'
@@ -104,12 +105,12 @@ const els = {
   navItems: document.querySelectorAll('.nav-item'),
 }
 
-const VIEW_TITLES = { transcribe: '转写', history: '历史', settings: '设置' }
+const VIEW_TITLES = { transcribe: t('view.transcribe'), history: t('view.history'), settings: t('view.settings') }
 
 function switchView(view) {
   if (!VIEW_TITLES[view]) return
   if (state.phase === 'recording' && view !== 'transcribe') {
-    toast('先结束当前录音')
+    toast(t('toast.recordingBusy'))
     return
   }
   state.view = view
@@ -124,13 +125,31 @@ function switchView(view) {
   updateViewSub()
 }
 
+const LANG_LABELS = {
+  auto: t('lang.autoDetect'),
+  zh: t('lang.zh'),
+  en: t('lang.en'),
+  yue: t('lang.yue'),
+  ja: t('lang.ja'),
+  ko: t('lang.ko'),
+}
+
+/// 模型徽标文案：流式与非流式用同一套说法，避免两处提示对不上。
+function modelBadgeText(phase) {
+  const name = state.status?.mode === 'streaming' ? t('model.label.streaming') : t('model.label.offline')
+  if (phase === 'error') return t('model.badge.error', { name })
+  if (phase === 'loading') return t('model.badge.loading', { name })
+  return t('model.badge.ready', { name })
+}
+
 function updateViewSub() {
   if (!state.status) return
-  const lang = { auto: '自动', zh: '中文', en: 'English', yue: '粤语', ja: '日本語', ko: '한국어' }[state.status.language] || '自动'
+  const lang = LANG_LABELS[state.status.language] || t('lang.autoDetect')
   if (state.view === 'transcribe') {
-    els.viewSub.textContent = state.status.mode === 'streaming' ? `流式 · ${lang}` : `非流式 · ${lang}`
+    // 流式模型只支持中文，标题里就直接写清楚，不显示“自动识别”
+    els.viewSub.textContent = state.status.mode === 'streaming' ? t('view.sub.streaming') : t('view.sub.offline', { lang })
   } else if (state.view === 'history') {
-    els.viewSub.textContent = `${state.history.length} 条记录`
+    els.viewSub.textContent = t('view.sub.history', { count: state.history.length })
   } else {
     els.viewSub.textContent = `VoiceNotes ${state.status.appVersion || ''}`
   }
@@ -156,8 +175,8 @@ function fmtClock(seconds) {
 }
 
 function fmtDuration(seconds) {
-  if (seconds < 60) return `${seconds.toFixed(1)} 秒`
-  return `${Math.floor(seconds / 60)} 分 ${Math.round(seconds % 60)} 秒`
+  if (seconds < 60) return t('duration.seconds', { seconds: seconds.toFixed(1) })
+  return t('duration.minutes', { minutes: Math.floor(seconds / 60), seconds: Math.round(seconds % 60) })
 }
 
 function loadHistory() {
@@ -193,19 +212,19 @@ function toast(message, type = 'info') {
 /* ── 录音界面 ─────────────────────────────────────────── */
 
 const HINTS = {
-  requesting: '正在准备麦克风…',
-  recording: '正在录音，点方块或空格结束',
-  transcribing: '正在转写…',
+  requesting: t('record.preparing'),
+  recording: t('record.recording'),
+  transcribing: t('record.transcribing'),
 }
 
 function idleHint() {
-  return state.status?.mode === 'streaming' ? '点击麦克风开始实时转写' : '点击麦克风开始录音'
+  return state.status?.mode === 'streaming' ? t('record.idleStreaming') : t('record.idle')
 }
 
 function setPhase(phase) {
   state.phase = phase
   els.app.dataset.phase = phase
-  els.mic.setAttribute('aria-label', phase === 'recording' ? '结束录音' : '开始录音')
+  els.mic.setAttribute('aria-label', phase === 'recording' ? t('record.micStop') : t('record.micStart'))
   els.mic.querySelector('.mic-glyph').classList.toggle('hidden', phase === 'recording')
   els.mic.querySelector('.stop-glyph').classList.toggle('hidden', phase !== 'recording')
   els.mic.disabled = phase === 'requesting' || phase === 'transcribing'
@@ -262,12 +281,12 @@ function stopTimer() {
 async function startRecording() {
   const streaming = state.status?.mode === 'streaming'
   if (streaming && !state.status.streamingReady) {
-    toast('流式模型还没下载', 'error')
+    toast(t('model.streamingMissing'), 'error')
     els.streamSetup.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     return
   }
   if (!streaming && !state.status?.modelReady) {
-    toast('模型还没下载，先点上面的「下载模型」', 'error')
+    toast(t('model.offlineMissing'), 'error')
     els.setup.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     return
   }
@@ -279,7 +298,7 @@ async function startRecording() {
     els.timer.textContent = '00:00'
     if (state.status?.mode === 'streaming') {
       els.text.value = ''
-      els.meta.innerHTML = '<span>实时转写中…</span>'
+      els.meta.innerHTML = '<span>' + t('record.live') + '</span>'
     }
     startTimer()
     setPhase('recording')
@@ -295,11 +314,11 @@ async function stopRecording() {
   stopTimer()
   els.timer.textContent = fmtClock(elapsed)
   setPhase('transcribing')
-  els.hint.textContent = '正在转写…（第一次会先加载模型）'
+  els.hint.textContent = t('record.transcribingFirst')
   try {
     const transcript = await invoke('stop_recording')
     showTranscript(transcript)
-    toast(transcript.text ? '转写完成' : '没有识别到语音')
+    toast(transcript.text ? t('result.done') : t('result.none'))
   } catch (error) {
     toast(fmtError(error), 'error')
   } finally {
@@ -323,7 +342,7 @@ function showTranscript(transcript) {
   const text = (transcript.text || '').trim()
   els.text.value = text
   if (!text) {
-    els.meta.innerHTML = '<span>没有识别到内容，换个安静点的环境再试试</span>'
+    els.meta.innerHTML = '<span>' + t('record.empty') + '</span>'
     return
   }
   const audio = transcript.durationSeconds || 0
@@ -332,11 +351,11 @@ function showTranscript(transcript) {
   const chars = [...text].length
   els.meta.innerHTML = ''
   for (const part of [
-    `音频 ${fmtDuration(audio)}`,
-    `转写 ${elapsed.toFixed(1)} 秒`,
-    `实时率 ${rtf}×`,
-    `${chars} 字`,
-    transcript.corrected ? '已用 SenseVoice 校正' : null,
+    t('result.audio', { duration: fmtDuration(audio) }),
+    t('result.elapsed', { seconds: elapsed.toFixed(1) }),
+    t('result.rtf', { rtf }),
+    t('result.chars', { count: chars }),
+    transcript.corrected ? t('result.corrected') : null,
   ]) {
     if (!part) continue
     const span = document.createElement('span')
@@ -373,7 +392,7 @@ function renderHistory() {
     const main = document.createElement('button')
     main.type = 'button'
     main.className = 'history-main'
-    main.title = '载入到结果框'
+    main.title = t('history.load')
     const text = document.createElement('div')
     text.className = 'history-text'
     text.textContent = item.text
@@ -385,7 +404,7 @@ function renderHistory() {
       hour: '2-digit',
       minute: '2-digit',
     })
-    const parts = [when, fmtDuration(item.durationSeconds || 0), `${[...item.text].length} 字`]
+    const parts = [when, fmtDuration(item.durationSeconds || 0), t('result.chars', { count: [...item.text].length })]
     for (const part of parts) {
       const span = document.createElement('span')
       span.textContent = part
@@ -396,7 +415,7 @@ function renderHistory() {
       els.text.value = item.text
       els.meta.innerHTML = ''
       const span = document.createElement('span')
-      span.textContent = `来自历史 · ${when}`
+      span.textContent = t('history.from', { when })
       els.meta.appendChild(span)
       els.text.focus()
     })
@@ -404,9 +423,9 @@ function renderHistory() {
     const actions = document.createElement('div')
     actions.className = 'history-actions'
     actions.append(
-      iconAction('复制', copyIcon(), () => copyText(item.text)),
-      iconAction('保存', saveIcon(), () => saveText(item.text)),
-      iconAction('删除', trashIcon(), () => {
+      iconAction(t('history.copy'), copyIcon(), () => copyText(item.text)),
+      iconAction(t('history.save'), saveIcon(), () => saveText(item.text)),
+      iconAction(t('history.delete'), trashIcon(), () => {
         state.history = state.history.filter((entry) => entry.id !== item.id)
         saveHistory()
         renderHistory()
@@ -445,18 +464,18 @@ function trashIcon() {
 
 async function copyText(text) {
   if (!text || !text.trim()) {
-    toast('没有可复制的文字')
+    toast(t('result.noCopy'))
     return
   }
   try {
     await writeText(text)
-    toast('已复制到剪贴板')
+    toast(t('result.copied'))
   } catch {
     try {
       await navigator.clipboard.writeText(text)
-      toast('已复制到剪贴板')
+      toast(t('result.copied'))
     } catch {
-      toast('复制失败', 'error')
+      toast(t('result.copyFailed'), 'error')
     }
   }
 }
@@ -466,17 +485,17 @@ function buildFileName(text) {
   const now = new Date()
   const pad = (n) => String(n).padStart(2, '0')
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-  return `${head || '转写'}-${stamp}`
+  return t('history.filename', { head: head || t('view.transcribe'), stamp })
 }
 
 async function saveText(text) {
   if (!text || !text.trim()) {
-    toast('没有可保存的文字')
+    toast(t('result.noSave'))
     return
   }
   try {
     const saved = await invoke('save_text', { text, fileName: buildFileName(text) })
-    toast(`已保存：${saved.path}`)
+    toast(t('result.saved', { path: saved.path }))
   } catch (error) {
     toast(fmtError(error), 'error')
   }
@@ -489,7 +508,7 @@ async function refreshStatus() {
     state.status = await invoke('status')
     renderStatus()
   } catch (error) {
-    toast(`读取状态失败：${fmtError(error)}`, 'error')
+    toast(t('result.readStatusFailed', { error: fmtError(error) }), 'error')
   }
 }
 
@@ -503,50 +522,48 @@ function renderStatus() {
   if (streamingMode) {
     els.badge.className = ready ? 'badge' : 'badge warn'
     els.badge.textContent = ready
-      ? state.engine === 'error'
-        ? '流式模型加载失败'
-        : state.engine === 'loading'
-          ? '正在加载流式模型…'
-          : '流式已就绪'
-      : '流式模型未下载'
+      ? modelBadgeText(state.engine)
+      : t('model.badge.streamingMissing')
     els.dot.dataset.state = state.engine === 'error' ? 'error' : state.engine === 'loading' ? 'loading' : ready ? 'ready' : 'idle'
   } else if (!ready) {
-    els.badge.textContent = '未下载模型'
+    els.badge.textContent = t('model.badge.offlineMissing')
     els.badge.className = 'badge warn'
     els.dot.dataset.state = 'idle'
     const partial = status.installedBytes || 0
     if (partial > 0 && !state.downloading) {
       els.setupProgress.classList.remove('hidden')
       setProgress(partial, status.totalBytes)
-      els.setupText.textContent = `已缓存的模型：${fmtBytes(partial)} / ${fmtBytes(status.totalBytes)}`
+      els.setupText.textContent = t('setup.cached', { done: fmtBytes(partial), total: fmtBytes(status.totalBytes) })
     }
   } else {
     els.badge.className = 'badge'
-    els.badge.textContent =
-      state.engine === 'error' ? '模型加载失败' : state.engine === 'loading' ? '正在加载模型…' : '模型已就绪'
+    els.badge.textContent = modelBadgeText(state.engine)
     els.dot.dataset.state = state.engine === 'error' ? 'error' : state.engine === 'loading' ? 'loading' : 'ready'
   }
 
   els.mic.classList.toggle('disabled', !ready)
-  els.mic.title = ready ? '' : streamingMode ? '需要先下载流式模型' : '需要先下载语音模型'
+  els.mic.title = ready ? '' : streamingMode ? t('model.needStreaming') : t('model.needOffline')
 
   els.settingsClearModel.classList.toggle('hidden', !status.modelDirCustom)
   els.settingsModel.textContent = ready
-    ? `${status.modelSource} · ${status.modelDir}`
-    : `未就绪 · 需要下载 ${fmtBytes(status.totalBytes)}`
+    ? t('settings.modelPath', {
+        source: t(`model.source.${status.modelSource || 'app_data'}`),
+        dir: status.modelDir,
+      })
+    : t('settings.modelNotReady', { size: fmtBytes(status.totalBytes) })
   els.settingsOutput.textContent = status.outputDir
-  els.settingsVersion.textContent = `VoiceNotes ${status.appVersion} · SenseVoiceSmall INT8`
+  els.settingsVersion.textContent = t('settings.version', { version: status.appVersion })
   els.itnToggle.checked = !!status.itn
   els.punctToggle.checked = !!status.punct
   els.punctStatus.textContent = status.punctReady
-    ? '标点模型已就绪（CT-Transformer zh-en）'
-    : `标点模型未下载（约 ${fmtBytes(status.punctTotalBytes || 0)}），仅流式模式使用`
+    ? t('settings.punctReady')
+    : t('settings.punctMissing', { size: fmtBytes(state.punctTotalBytes || 0) })
   els.punctDownload.classList.toggle('hidden', status.punctReady)
   els.hybridToggle.checked = !!status.hybrid
   els.hybridStatus.textContent = status.modelReady
-    ? '流式结果正常就直接用；只有出现重复字、空结果这类明显异常时，才用非流式模型复核'
-    : '需要先下载非流式模型才能复核'
-  els.modelMode.textContent = streamingMode ? '流式 · 中文' : '非流式 · SenseVoice'
+    ? t('settings.hybridReady')
+    : t('settings.hybridNeedModel')
+  els.modelMode.textContent = streamingMode ? t('model.name.streaming') : t('model.name.offline')
   updateViewSub()
 
   for (const button of els.langRow.children) {
@@ -565,13 +582,13 @@ function renderMode() {
   if (state.status) {
     for (const chip of els.langRow.children) {
       chip.disabled = state.status.mode === 'streaming' && !STREAM_LANGS.includes(chip.dataset.lang)
-      chip.title = chip.disabled ? '流式模式只支持中文' : ''
+      chip.title = chip.disabled ? t('mode.streamingOnlyZh') : ''
     }
   }
   const needStream = mode === 'streaming' && !state.status?.streamingReady
   els.streamSetup.classList.toggle('hidden', !needStream)
   if (needStream && state.status) {
-    els.streamSetupText.textContent = `流式模型（中文，约 ${fmtBytes(state.status.streamingTotalBytes || 0)}）还没下载`
+    els.streamSetupText.textContent = t('mode.streamingMissing', { size: fmtBytes(state.status.streamingTotalBytes || 0) })
   }
 }
 
@@ -584,11 +601,11 @@ async function setMode(mode) {
     if (mode === 'streaming') {
       if (!STREAM_LANGS.includes(state.status.language)) {
         state.status = await invoke('set_language', { language: 'auto' })
-        toast('流式模式只支持中文，语言已切到自动')
+        toast(t('mode.langSwitched'))
         renderStatus()
       }
       if (!state.status.streamingReady) {
-        toast('先下载流式模型再使用')
+        toast(t('mode.streamingDownloadFirst'))
       } else {
         void invoke('warm_up_streaming').catch(() => {})
       }
@@ -611,14 +628,14 @@ async function downloadStreamingModel() {
   els.streamCancel.classList.remove('hidden')
   els.streamProgress.classList.remove('hidden')
   setStreamProgress(0, state.status?.streamingTotalBytes || 0)
-  els.streamProgressText.textContent = '准备下载…'
+  els.streamProgressText.textContent = t('setup.preparing')
   try {
     state.status = await invoke('download_streaming_model')
-    toast('流式模型已就绪')
+    toast(t('model.badge.streamingReady'))
     renderStatus()
   } catch (error) {
     toast(fmtError(error), 'error')
-    els.streamProgressText.textContent = `下载失败：${fmtError(error)}`
+    els.streamProgressText.textContent = t('setup.downloadFailed', { error: fmtError(error) })
   } finally {
     state.downloadingStreaming = false
     els.streamDownload.disabled = false
@@ -655,7 +672,7 @@ function renderLang() {
 async function setLanguage(language) {
   try {
     if (state.status?.mode === 'streaming' && !STREAM_LANGS.includes(language)) {
-      toast('流式模型只支持中文，已切回非流式模式')
+      toast(t('mode.switchedBack'))
       state.status = await invoke('set_mode', { mode: 'offline' })
     }
     state.status = await invoke('set_language', { language })
@@ -688,18 +705,18 @@ async function downloadModel() {
   els.cancelDownloadBtn.classList.remove('hidden')
   els.setupProgress.classList.remove('hidden')
   setProgress(0, state.status?.totalBytes || 0)
-  els.setupText.textContent = '准备下载…'
+  els.setupText.textContent = t('setup.preparing')
   try {
     state.status = await invoke('download_model')
     state.downloading = false
-    els.setupText.textContent = '下载完成'
-    toast('模型已就绪，可以开始录音了')
+    els.setupText.textContent = t('setup.done')
+    toast(t('model.readyToast'))
     renderStatus()
     warmUp()
   } catch (error) {
     state.downloading = false
     toast(fmtError(error), 'error')
-    els.setupText.textContent = `下载失败：${fmtError(error)}`
+    els.setupText.textContent = t('setup.downloadFailed', { error: fmtError(error) })
   } finally {
     state.downloading = false
     els.downloadBtn.disabled = false
@@ -709,16 +726,16 @@ async function downloadModel() {
 }
 
 async function pickModelDir() {
-  const dir = await openDialog({ directory: true, multiple: false, title: '选择包含 model.int8.onnx 和 tokens.txt 的目录' })
+  const dir = await openDialog({ directory: true, multiple: false, title: t('setup.chooseDir') })
   if (!dir) return
   try {
     state.status = await invoke('set_model_dir', { dir })
     renderStatus()
     if (state.status.modelReady) {
-      toast('模型已就绪')
+      toast(t('model.ready'))
       warmUp()
     } else {
-      toast('这个目录里没有找到 model.int8.onnx / tokens.txt', 'error')
+      toast(t('setup.noModel'), 'error')
     }
   } catch (error) {
     toast(fmtError(error), 'error')
@@ -765,15 +782,15 @@ async function downloadPunctuationModel() {
   if (state.downloadingPunct) return
   state.downloadingPunct = true
   els.punctDownload.disabled = true
-  els.punctStatus.textContent = '准备下载…'
+  els.punctStatus.textContent = t('setup.preparing')
   try {
     state.status = await invoke('download_punctuation_model')
     state.status = await invoke('set_punct', { enabled: true })
-    toast('标点模型已就绪，已开启自动标点')
+    toast(t('settings.punctEnabled'))
     renderStatus()
   } catch (error) {
     toast(fmtError(error), 'error')
-    els.punctStatus.textContent = `下载失败：${fmtError(error)}`
+    els.punctStatus.textContent = t('setup.downloadFailed', { error: fmtError(error) })
   } finally {
     state.downloadingPunct = false
     els.punctDownload.disabled = false
@@ -782,16 +799,16 @@ async function downloadPunctuationModel() {
 
 async function transcribeFile(file) {
   if (!state.status?.modelReady) {
-    toast('模型还没下载，先下载模型再转写文件', 'error')
+    toast(t('result.fileNeedModel'), 'error')
     return
   }
   if (state.phase === 'recording') {
-    toast('先结束当前录音')
+    toast(t('toast.recordingBusy'))
     return
   }
   if (state.phase !== 'idle') return
   setPhase('transcribing')
-  els.hint.textContent = `正在解码 ${file.name}…`
+  els.hint.textContent = t('result.fileDecode', { name: file.name })
   let context
   try {
     context = new AudioContext()
@@ -804,17 +821,17 @@ async function transcribeFile(file) {
     source.connect(offline.destination)
     source.start()
     const rendered = await offline.startRendering()
-    els.hint.textContent = `正在转写 ${file.name}…`
+    els.hint.textContent = t('result.fileTranscribe', { name: file.name })
     const audio = audioBase64(encodeWave(rendered.getChannelData(0)))
     const transcript = await invoke('transcribe_wav', {
       audioBase64: audio,
       language: state.status.language,
     })
     showTranscript(transcript)
-    toast(transcript.text ? `已转写 ${file.name}` : '没有识别到语音')
+    toast(transcript.text ? t('result.fileDone', { name: file.name }) : t('result.none'))
   } catch (error) {
     console.error(error)
-    toast(`无法转写这个文件：${fmtError(error)}`, 'error')
+    toast(t('result.fileFailed', { error: fmtError(error) }), 'error')
   } finally {
     if (context) await context.close().catch(() => {})
     setPhase('idle')
@@ -822,12 +839,12 @@ async function transcribeFile(file) {
 }
 
 async function pickOutputDir() {
-  const dir = await openDialog({ directory: true, multiple: false, title: '选择保存目录' })
+  const dir = await openDialog({ directory: true, multiple: false, title: t('settings.chooseOutputTitle') })
   if (!dir) return
   try {
     state.status = await invoke('set_output_dir', { dir })
     renderStatus()
-    toast('保存目录已更新')
+    toast(t('settings.outputChanged'))
   } catch (error) {
     toast(fmtError(error), 'error')
   }
@@ -855,7 +872,7 @@ function bindUI() {
   els.saveBtn.addEventListener('click', () => saveText(els.text.value))
   els.clearBtn.addEventListener('click', () => {
     els.text.value = ''
-    els.meta.innerHTML = '<span>等待录音</span>'
+    els.meta.innerHTML = '<span>' + t('result.waiting') + '</span>'
     els.text.focus()
   })
 
@@ -886,12 +903,12 @@ function bindUI() {
   }
   els.newBtn.addEventListener('click', () => {
     if (state.phase !== 'idle') {
-      toast('先结束当前录音')
+      toast(t('toast.recordingBusy'))
       return
     }
     switchView('transcribe')
     els.text.value = ''
-    els.meta.innerHTML = '<span>等待录音</span>'
+    els.meta.innerHTML = '<span>' + t('result.waiting') + '</span>'
     els.timer.textContent = '00:00'
     els.text.focus()
   })
@@ -909,10 +926,10 @@ function bindUI() {
       state.status = await invoke('set_model_dir', { dir: null })
       renderStatus()
       if (state.status.modelReady) {
-        toast('已切换为应用内模型目录')
+        toast(t('settings.switchedAppModel'))
         void warmUp()
       } else {
-        toast('已切换为应用内模型目录，需要先下载模型')
+        toast(t('settings.switchedAppModelNeedDownload'))
       }
     } catch (error) {
       toast(fmtError(error), 'error')
@@ -925,13 +942,13 @@ function bindUI() {
     const wants = els.punctToggle.checked
     if (wants && !state.status?.punctReady) {
       els.punctToggle.checked = false
-      toast('先下载标点模型（约 281 MB）')
+      toast(t('settings.punctNeedDownload'))
       return
     }
     try {
       state.status = await invoke('set_punct', { enabled: wants })
       renderStatus()
-      toast(wants ? '流式结果会自动加标点' : '已关闭自动标点')
+      toast(wants ? t('settings.punctAutoOn') : t('settings.punctAutoOff'))
     } catch (error) {
       els.punctToggle.checked = !wants
       toast(fmtError(error), 'error')
@@ -943,7 +960,7 @@ function bindUI() {
     try {
       state.status = await invoke('set_hybrid', { enabled: wants })
       renderStatus()
-      toast(wants ? '异常结果会用 SenseVoice 复核' : '已关闭异常复核')
+      toast(wants ? t('settings.hybridOn') : t('settings.hybridOff'))
     } catch (error) {
       els.hybridToggle.checked = !wants
       toast(fmtError(error), 'error')
@@ -1050,23 +1067,23 @@ async function listenEvents() {
     const progress = event.payload || {}
     if (state.downloadingPunct) {
       const pct = progress.total > 0 ? Math.round(((progress.done || 0) / progress.total) * 100) : 0
-      els.punctStatus.textContent = `标点模型下载中 ${pct}% · ${fmtBytes(progress.done || 0)} / ${fmtBytes(progress.total || 0)}`
+      els.punctStatus.textContent = t('progress.punct', { pct, done: fmtBytes(progress.done || 0), total: fmtBytes(progress.total || 0) })
       return
     }
     if (state.downloadingStreaming) {
       els.streamProgress.classList.remove('hidden')
       setStreamProgress(progress.done || 0, progress.total || 0)
       const label =
-        { downloading: '下载中', verifying: '校验中', connecting: '连接中', complete: '完成' }[progress.phase] || '下载中'
-      const host = progress.source?.startsWith('http') ? new URL(progress.source).host : '本地缓存'
+        { downloading: t('progress.downloading'), verifying: t('progress.verifying'), connecting: t('progress.connecting'), complete: t('progress.complete') }[progress.phase] || t('progress.downloading')
+      const host = progress.source?.startsWith('http') ? new URL(progress.source).host : t('progress.cache')
       els.streamProgressText.textContent = `${label} ${progress.resource} · ${fmtBytes(progress.done || 0)} / ${fmtBytes(progress.total || 0)}${host ? ` · ${host}` : ''}`
       return
     }
     if (!state.downloading && progress.phase !== 'verifying') return
     els.setupProgress.classList.remove('hidden')
     setProgress(progress.done || 0, progress.total || 0)
-    const label = { downloading: '下载中', verifying: '校验中', connecting: '连接中', complete: '完成' }[progress.phase] || '下载中'
-    const host = progress.source?.startsWith('http') ? new URL(progress.source).host : progress.source === 'cache' ? '本地缓存' : ''
+    const label = { downloading: t('progress.downloading'), verifying: t('progress.verifying'), connecting: t('progress.connecting'), complete: t('progress.complete') }[progress.phase] || t('progress.downloading')
+    const host = progress.source?.startsWith('http') ? new URL(progress.source).host : progress.source === 'cache' ? t('progress.cache') : ''
     els.setupText.textContent = `${label} ${progress.resource}${progress.phase === 'downloading' ? ` · ${fmtBytes(progress.done)} / ${fmtBytes(progress.total)}` : ''}${host ? ` · ${host}` : ''}`
     if (progress.phase === 'error' && progress.message) toast(progress.message, 'error')
   })
@@ -1089,7 +1106,7 @@ async function listenEvents() {
     const payload = event.payload || {}
     if (payload.phase === 'loading') {
       state.engine = 'loading'
-      if (state.phase === 'requesting') els.hint.textContent = '正在加载流式模型…'
+      if (state.phase === 'requesting') els.hint.textContent = t('record.loadingStreaming')
       renderStatus()
     } else if (payload.phase === 'ready') {
       state.engine = 'ready'
@@ -1097,7 +1114,7 @@ async function listenEvents() {
     } else if (payload.phase === 'error') {
       state.engine = 'error'
       renderStatus()
-      toast(payload.message || '流式模型加载失败', 'error')
+      toast(payload.message || modelBadgeText('error'), 'error')
     }
   })
 
@@ -1107,16 +1124,16 @@ async function listenEvents() {
     if (phase === 'error') {
       els.dot.dataset.state = 'error'
       els.badge.className = 'badge danger'
-      els.badge.textContent = '模型加载失败'
-      toast(event.payload?.message || '模型加载失败', 'error')
+      els.badge.textContent = modelBadgeText('error')
+      toast(event.payload?.message || modelBadgeText('error'), 'error')
     } else if (phase === 'loading') {
       els.dot.dataset.state = 'loading'
       els.badge.className = 'badge'
-      els.badge.textContent = '正在加载模型…'
+      els.badge.textContent = modelBadgeText('loading')
     } else if (phase === 'ready') {
       els.dot.dataset.state = 'ready'
       els.badge.className = 'badge'
-      els.badge.textContent = '模型已就绪'
+      els.badge.textContent = modelBadgeText('ready')
     }
   })
 }
@@ -1126,6 +1143,7 @@ async function init() {
   const theme = localStorage.getItem(THEME_KEY)
   if (theme) document.documentElement.dataset.theme = theme
 
+  I18N.apply()
   buildWave()
   renderLang()
   renderHistory()
@@ -1141,5 +1159,5 @@ async function init() {
 
 init().catch((error) => {
   console.error(error)
-  toast(`启动失败：${fmtError(error)}`, 'error')
+  toast(t('app.startFailed', { error: fmtError(error) }), 'error')
 })
