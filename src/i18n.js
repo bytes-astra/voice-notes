@@ -43,7 +43,7 @@
 
       'record.idle': '点击麦克风开始录音',
       'record.idleStreaming': '点击麦克风开始实时转写',
-      'record.preparing': '正在准备麦克风…',
+      'record.preparing': '正在准备麦克风…（首次会弹系统授权框）',
       'record.recording': '正在录音，点方块或空格结束',
       'record.transcribing': '正在转写…',
       'record.transcribingFirst': '正在转写…（第一次会先加载模型）',
@@ -54,6 +54,7 @@
       'record.micStop': '结束录音',
       'record.hint': '空格 开始 / 结束 · Esc 取消 · 也可以把音频文件拖进窗口',
       'record.device': '设备',
+      'record.micDenied': '没有麦克风权限：{error}',
       'record.deviceDefault': '系统默认',
       'record.deviceSystemDefault': '系统默认',
       'record.deviceChanged': '已切换输入设备：{name}',

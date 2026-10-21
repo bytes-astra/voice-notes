@@ -566,6 +566,15 @@ fn set_punct(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<St
 }
 
 /// 列出系统里的输入设备（麦克风）。
+/// 预热麦克风：提前触发系统权限弹窗（界面渲染完之后再调用）。
+#[tauri::command]
+async fn warm_up_mic(state: State<'_, AppState>) -> Result<(), String> {
+    let device = state.settings().input_device;
+    tauri::async_runtime::spawn_blocking(move || audio::probe_input(device.as_deref()))
+        .await
+        .map_err(|e| format!("预热麦克风失败: {e}"))?
+}
+
 #[tauri::command]
 fn list_input_devices() -> Vec<audio::InputDevice> {
     audio::list_input_devices()
@@ -993,6 +1002,7 @@ pub fn run() {
             set_punct,
             set_hybrid,
             list_input_devices,
+            warm_up_mic,
             set_input_device,
             start_recording,
             stop_recording,

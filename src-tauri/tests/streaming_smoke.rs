@@ -142,3 +142,11 @@ fn picks_requested_input_device() {
         "找不到就退回系统默认"
     );
 }
+
+/// 预热麦克风：提前触发系统权限弹窗，不真正录音。
+#[test]
+fn probes_input_device() {
+    let result = voice_notes_lib::audio::probe_input(None);
+    println!("probe_input → {result:?}");
+    assert!(result.is_ok(), "打开输入设备失败：{result:?}");
+}

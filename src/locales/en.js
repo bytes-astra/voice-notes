@@ -38,7 +38,7 @@ window.I18N_LOCALES['en'] = {
 
   'record.idle': 'Click the microphone to start recording',
   'record.idleStreaming': 'Click the microphone to start live transcription',
-  'record.preparing': 'Waking up the microphone…',
+  'record.preparing': 'Opening the microphone… (a system prompt appears the first time)',
   'record.recording': 'Recording — click the square or press Space to stop',
   'record.transcribing': 'Transcribing…',
   'record.transcribingFirst': 'Transcribing… (the model loads on the first run)',
@@ -49,6 +49,7 @@ window.I18N_LOCALES['en'] = {
   'record.micStop': 'Stop recording',
   'record.hint': 'Space start / stop · Esc cancel · you can also drop audio files onto the window',
   'record.device': 'Device',
+  'record.micDenied': 'No microphone permission: {error}',
   'record.deviceDefault': 'System default',
   'record.deviceSystemDefault': 'system default',
   'record.deviceChanged': 'Input device: {name}',

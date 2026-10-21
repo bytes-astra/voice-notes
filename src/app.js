@@ -188,9 +188,9 @@ function toast(message, type = 'info') {
 /* ── 录音界面 ─────────────────────────────────────────── */
 
 const HINTS = {
-  requesting: t('record.preparing'),
-  recording: t('record.recording'),
-  transcribing: t('record.transcribing'),
+  requesting: 'record.preparing',
+  recording: 'record.recording',
+  transcribing: 'record.transcribing',
 }
 
 function idleHint() {
@@ -205,7 +205,7 @@ function setPhase(phase) {
   els.mic.querySelector('.stop-glyph').classList.toggle('hidden', phase !== 'recording')
   els.mic.disabled = phase === 'requesting' || phase === 'transcribing'
   if (phase === 'idle') els.hint.textContent = idleHint()
-  else if (HINTS[phase]) els.hint.textContent = HINTS[phase]
+  else if (HINTS[phase]) els.hint.textContent = t(HINTS[phase])
   if (phase !== 'recording') {
     els.liveLine.classList.add('hidden')
     els.liveLine.textContent = ''
@@ -268,6 +268,15 @@ async function startRecording() {
   }
   if (state.phase !== 'idle') return
   setPhase('requesting')
+  try {
+    // 先单独触发一次麦克风权限（macOS 在第一次打开输入流时才弹框），
+    // 用户同意后再开始录音；不同意就停在这里。
+    await invoke('warm_up_mic')
+  } catch (error) {
+    setPhase('idle')
+    toast(t('record.micDenied', { error: fmtError(error) }), 'error')
+    return
+  }
   try {
     await invoke('start_recording')
     state.startedAt = performance.now()
@@ -1071,13 +1080,32 @@ function bindUI() {
   })
 }
 
+/// 窗口底色跟着主题走：否则 webview 重载（系统权限弹窗、应用重启）时会闪白。
+const WINDOW_BG = {
+  light: { r: 243, g: 244, b: 247, a: 1 },
+  dark: { r: 11, g: 13, b: 16, a: 1 },
+}
+
+function currentTheme() {
+  const stored = document.documentElement.dataset.theme
+  if (stored === 'dark' || stored === 'light') return stored
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+function syncWindowBackground() {
+  try {
+    const win = window.__TAURI__?.window?.getCurrentWindow?.()
+    win?.setBackgroundColor?.(WINDOW_BG[currentTheme()])
+  } catch {
+    /* 忽略 */
+  }
+}
+
 function toggleTheme() {
-  const current =
-    document.documentElement.dataset.theme ||
-    (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-  const next = current === 'dark' ? 'light' : 'dark'
+  const next = currentTheme() === 'dark' ? 'light' : 'dark'
   document.documentElement.dataset.theme = next
   localStorage.setItem(THEME_KEY, next)
+  syncWindowBackground()
 }
 
 /* ── 启动 ─────────────────────────────────────────────── */
@@ -1175,6 +1203,7 @@ async function init() {
   document.body.classList.toggle('macos', navigator.userAgent.includes('Mac'))
   const theme = localStorage.getItem(THEME_KEY)
   if (theme) document.documentElement.dataset.theme = theme
+  syncWindowBackground()
 
   applyLocale(localStorage.getItem(LOCALE_KEY) || 'system')
   buildWave()

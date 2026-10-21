@@ -41,6 +41,7 @@ wav.rs       PCM16 WAV 解析（前端载荷）
 - **SenseVoice 开 ITN 时自己就输出标点**（关掉 ITN 才是纯文本）。所以标点模型只能补在**没有标点**的句子上，否则会叠成「。。」——`hybrid::punctuate` 会跳过已带标点的句子。
 - 流式链路带 **VAD 门控**：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字），起音前保留 0.4s 预录避免切字头。
 - 模型固定版本（HF commit + sha256 在 `models.rs` 的 `MODEL/TOKENS/VAD` 常量里）。换模型必须同时改 bytes/sha256，否则下载校验会失败。
+- **麦克风权限在点麦克风时才申请**（`warm_up_mic` 先单独打开一次输入流触发系统弹窗，用户同意后再开始录音）。macOS 弹权限框时会停止绘制应用窗口（那一瞬间是白的，进程不会重启），所以申请时机要选在用户预期内，别在启动时偷偷弹。
 - **输入设备可选**：`list_input_devices` 命令列出 cpal 输入设备（默认设备带标记），`set_input_device` 存进 settings（None = 系统默认），`audio::start` 按名字挑设备；挑不到就退回默认。
 - 录音缓冲上限 600 秒（`audio.rs` 的 `MAX_SECONDS`），前端 `MAX_SECONDS` 也要一起改。
 

@@ -114,6 +114,47 @@ pub fn pick_device_name(requested: Option<&str>, available: &[String]) -> Option
         .cloned()
 }
 
+/// 打开一次输入设备（不录音），用来提前触发系统的麦克风权限弹窗。
+///
+/// macOS 是在第一次真正打开输入流时才弹权限框的；放在界面渲染完之后调用，
+/// 用户看到的是已经画好的界面，而不是对着白屏等弹窗。
+pub fn probe_input(device: Option<&str>) -> Result<(), String> {
+    let host = cpal::default_host();
+    let available: Vec<String> = list_input_devices()
+        .into_iter()
+        .map(|device| device.name)
+        .collect();
+    let picked = pick_device_name(device, &available);
+    let device = match picked {
+        Some(name) => host
+            .input_devices()
+            .ok()
+            .and_then(|mut devices| {
+                devices.find(|device| device.name().map(|n| n == name).unwrap_or(false))
+            })
+            .ok_or_else(|| format!("找不到输入设备：{name}"))?,
+        None => host
+            .default_input_device()
+            .ok_or_else(|| "没有可用的麦克风".to_string())?,
+    };
+    let supported = device
+        .default_input_config()
+        .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
+    let format = supported.sample_format();
+    let config: cpal::StreamConfig = supported.config();
+    let stream = match format {
+        SampleFormat::F32 => device.build_input_stream(&config, |_: &[f32], _| {}, |_| {}, None),
+        SampleFormat::I16 => device.build_input_stream(&config, |_: &[i16], _| {}, |_| {}, None),
+        SampleFormat::U16 => device.build_input_stream(&config, |_: &[u16], _| {}, |_| {}, None),
+        SampleFormat::I32 => device.build_input_stream(&config, |_: &[i32], _| {}, |_| {}, None),
+        other => return Err(format!("不支持的采样格式：{other:?}")),
+    }
+    .map_err(|e| format!("打开麦克风失败: {e}"))?;
+    // 立刻丢弃即可：系统权限是在打开流的时候触发的。
+    drop(stream);
+    Ok(())
+}
+
 /// 打开默认输入设备开始采集；音频只留在内存里，停止后由调用方转写。
 pub fn start(app: AppHandle, device: Option<&str>) -> Result<Recorder, String> {
     start_with(Some(app), device)
