@@ -1010,38 +1010,6 @@ function toggleTheme() {
   localStorage.setItem(THEME_KEY, next)
 }
 
-/* ── 全屏适配 ─────────────────────────────────────────── */
-
-async function syncFullscreen() {
-  let fullscreen = false
-  try {
-    const win = window.__TAURI__?.window?.getCurrentWindow?.()
-    if (win?.isFullscreen) fullscreen = await win.isFullscreen()
-  } catch {
-    /* 退回尺寸判断 */
-  }
-  if (!fullscreen) {
-    // 全屏时 webview 正好铺满屏幕；最大化（zoom）仍会保留菜单栏高度
-    const screenW = window.screen?.width || 0
-    const screenH = window.screen?.height || 0
-    if (screenW > 0 && screenH > 0) {
-      fullscreen = window.innerWidth >= screenW - 1 && window.innerHeight >= screenH - 1
-    }
-  }
-  document.body.classList.toggle('fullscreen', fullscreen)
-}
-
-function watchFullscreen() {
-  void syncFullscreen()
-  window.addEventListener('resize', () => void syncFullscreen())
-  try {
-    const win = window.__TAURI__?.window?.getCurrentWindow?.()
-    win?.onResized?.(() => void syncFullscreen())
-  } catch {
-    /* 忽略 */
-  }
-}
-
 /* ── 启动 ─────────────────────────────────────────────── */
 
 async function listenEvents() {
@@ -1143,7 +1111,6 @@ async function init() {
   renderHistory()
   bindUI()
   await listenEvents()
-  watchFullscreen()
   await refreshStatus()
   switchView('transcribe')
   if (state.status?.modelReady) void warmUp()

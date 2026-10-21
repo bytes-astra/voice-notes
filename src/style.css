@@ -956,9 +956,6 @@ body.macos .sidebar-top { height: 78px; padding-bottom: 4px; }
 
 /* ── 宽屏 / 全屏适配 ──────────────────────────────────── */
 
-/* 全屏时没有红绿灯，收掉侧栏顶部占位 */
-body.fullscreen .sidebar-top { height: 26px; padding-bottom: 0; }
-
 @media (min-width: 1280px) {
   .main-scroll { display: flex; flex-direction: column; padding: 22px 28px 24px; }
   .view { flex: 0 0 auto; max-width: 920px; }
