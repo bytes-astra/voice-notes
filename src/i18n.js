@@ -19,11 +19,8 @@
       'view.transcribe': '转写',
       'view.history': '历史',
       'view.settings': '设置',
-      'view.sub.streaming': '流式 · 中文',
-      'view.sub.offline': '整段 · {lang}',
-      'view.sub.history': '{count} 条记录',
 
-      'lang.auto': '自动',
+      'lang.auto': '自动检测',
       'lang.zh': '中文',
       'lang.en': 'English',
       'model.source.app_data': '应用数据',
@@ -31,7 +28,6 @@
       'lang.yue': '粤语',
       'lang.ja': '日本語',
       'lang.ko': '한국어',
-      'lang.autoDetect': '自动识别',
 
       'setup.title': '首次使用：下载整段模型',
       'setup.desc':

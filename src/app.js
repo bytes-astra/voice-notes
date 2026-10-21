@@ -97,7 +97,6 @@ const els = {
   fileInput: $('file-input'),
   pickFileBtn: $('pick-file-btn'),
   viewTitle: $('view-title'),
-  viewSub: $('view-sub'),
   headHint: $('head-hint'),
   modelMode: $('model-mode'),
   historyCount: $('history-count'),
@@ -122,37 +121,14 @@ function switchView(view) {
     item.setAttribute('aria-current', item.dataset.view === view ? 'page' : 'false')
   }
   els.viewTitle.textContent = VIEW_TITLES[view]
-  updateViewSub()
 }
 
-const LANG_LABELS = {
-  auto: t('lang.autoDetect'),
-  zh: t('lang.zh'),
-  en: t('lang.en'),
-  yue: t('lang.yue'),
-  ja: t('lang.ja'),
-  ko: t('lang.ko'),
-}
-
-/// 模型徽标文案：流式与非流式用同一套说法，避免两处提示对不上。
+/// 模型徽标文案：流式与整段用同一套说法，避免两处提示对不上。
 function modelBadgeText(phase) {
   const name = state.status?.mode === 'streaming' ? t('model.label.streaming') : t('model.label.offline')
-  if (phase === 'error') return t('model.badge.error', { name })
-  if (phase === 'loading') return t('model.badge.loading', { name })
-  return t('model.badge.ready', { name })
-}
-
-function updateViewSub() {
-  if (!state.status) return
-  const lang = LANG_LABELS[state.status.language] || t('lang.autoDetect')
-  if (state.view === 'transcribe') {
-    // 流式模型只支持中文，标题里就直接写清楚，不显示“自动识别”
-    els.viewSub.textContent = state.status.mode === 'streaming' ? t('view.sub.streaming') : t('view.sub.offline', { lang })
-  } else if (state.view === 'history') {
-    els.viewSub.textContent = t('view.sub.history', { count: state.history.length })
-  } else {
-    els.viewSub.textContent = `VoiceNotes ${state.status.appVersion || ''}`
-  }
+  if (phase === 'error') return `${name}加载失败`
+  if (phase === 'loading') return `正在加载${name}…`
+  return `${name}已就绪`
 }
 
 /* ── 基础工具 ─────────────────────────────────────────── */
@@ -564,7 +540,6 @@ function renderStatus() {
     ? t('settings.hybridReady')
     : t('settings.hybridNeedModel')
   els.modelMode.textContent = streamingMode ? t('model.name.streaming') : t('model.name.offline')
-  updateViewSub()
 
   for (const button of els.langRow.children) {
     button.setAttribute('aria-pressed', String(button.dataset.lang === status.language))
