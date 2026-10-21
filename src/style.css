@@ -953,3 +953,52 @@ body.macos .sidebar-top { height: 78px; padding-bottom: 4px; }
   .main-scroll { padding: 14px 14px 22px; }
   .main-head { padding: 0 14px; }
 }
+
+/* ── 宽屏 / 全屏适配 ──────────────────────────────────── */
+
+/* 全屏时没有红绿灯，收掉侧栏顶部占位 */
+body.fullscreen .sidebar-top { height: 26px; padding-bottom: 0; }
+
+@media (min-width: 1280px) {
+  .main-scroll { display: flex; flex-direction: column; padding: 22px 28px 24px; }
+  .view { flex: 0 0 auto; max-width: 920px; }
+  .view[data-view-panel="transcribe"] {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: 900px;
+    margin-block: auto;
+    max-width: 1200px;
+    display: grid;
+    grid-template-columns: minmax(340px, 0.95fr) minmax(380px, 1.05fr);
+    grid-template-rows: auto 1fr;
+    gap: 18px;
+    align-items: stretch;
+  }
+  .view[data-view-panel="transcribe"] #setup { grid-column: 1 / -1; grid-row: 1; }
+  .view[data-view-panel="transcribe"] .recorder { grid-column: 1; grid-row: 2; }
+  .view[data-view-panel="transcribe"] .result {
+    grid-column: 2;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .view[data-view-panel="transcribe"] .result textarea {
+    flex: 1 1 auto;
+    min-height: 220px;
+    max-height: none;
+  }
+  .view[data-view-panel="transcribe"] .recorder {
+    align-self: stretch;
+    justify-content: center;
+  }
+}
+
+@media (min-width: 1600px) {
+  .sidebar { width: 260px; flex-basis: 260px; }
+  .view[data-view-panel="transcribe"] { max-width: 1320px; }
+}
+
+@media (min-width: 1920px) {
+  .view[data-view-panel="transcribe"] { max-width: 1320px; }
+}

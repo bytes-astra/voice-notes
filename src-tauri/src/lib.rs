@@ -878,8 +878,11 @@ fn install_menu(app: &mut tauri::App) -> tauri::Result<()> {
         .item(&PredefinedMenuItem::paste(handle, None)?)
         .item(&PredefinedMenuItem::select_all(handle, None)?)
         .build()?;
+    let view_menu = SubmenuBuilder::new(handle, "视图")
+        .item(&PredefinedMenuItem::fullscreen(handle, None)?)
+        .build()?;
     let menu = MenuBuilder::new(handle)
-        .items(&[&app_menu, &edit_menu])
+        .items(&[&app_menu, &edit_menu, &view_menu])
         .build()?;
     app.set_menu(menu)?;
     Ok(())
