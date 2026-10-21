@@ -7,12 +7,15 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 pub const LANGUAGES: [&str; 6] = ["auto", "zh", "en", "yue", "ja", "ko"];
+pub const MODES: [&str; 2] = ["offline", "streaming"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// auto | zh | en | yue | ja | ko
     pub language: String,
+    /// offline（SenseVoice 整段）| streaming（Zipformer 实时）
+    pub mode: String,
     /// 逆文本归一化（数字、标点）
     pub itn: bool,
     pub output_dir: Option<String>,
@@ -23,6 +26,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             language: "auto".into(),
+            mode: "offline".into(),
             itn: true,
             output_dir: None,
             model_dir: None,
@@ -34,6 +38,9 @@ impl Settings {
     pub fn normalize(mut self) -> Self {
         if !LANGUAGES.contains(&self.language.as_str()) {
             self.language = "auto".into();
+        }
+        if !MODES.contains(&self.mode.as_str()) {
+            self.mode = "offline".into();
         }
         self
     }

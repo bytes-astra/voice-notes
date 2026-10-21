@@ -11,11 +11,7 @@ use voice_notes_lib::models::ModelPaths;
 fn model_paths() -> Option<ModelPaths> {
     let dir = std::env::var("VOICE_NOTES_MODEL_DIR")
         .ok()
-        .map(PathBuf::from)
-        .or_else(|| {
-            let home = std::env::var("HOME").ok()?;
-            Some(PathBuf::from(home).join(".dsh/speech-to-text/sensevoice/models/sensevoice-onnx"))
-        })?;
+        .map(PathBuf::from)?;
 
     let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
         .into_iter()

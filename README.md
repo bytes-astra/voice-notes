@@ -1,6 +1,6 @@
 # VoiceNotes · 本地语音转文字
 
-用 **SenseVoiceSmall (INT8)** 在本机把语音转成文字。Tauri 2 桌面应用，macOS / Windows / Linux 通用，默认不联网（只有首次下载模型时需要网络）。
+用 **SenseVoiceSmall (INT8)** 在本机把语音转成文字，另有**流式模式**（Zipformer 中英双语，边说边出）。Tauri 2 桌面应用，macOS / Windows / Linux 通用，默认不联网（只有首次下载模型时需要网络）。
 
 参考了 DSH 的语音输入实现（`client-ui-voice-input` + `speech-to-text-sensevoice`）：同样用 Silero VAD 切句 + sherpa-onnx 跑 SenseVoice，同样在前端重采样成 16 kHz 单声道 PCM16。
 
@@ -13,6 +13,12 @@
 首次运行（下载模型 / 复用已有模型，截图见 `docs/screenshots/first-run.png`）：
 
 ![首次运行](docs/screenshots/first-run.png)
+
+流式模式（边说边出，中间结果在计时旁边滚动）与首次切换时的下载提示：
+
+| 流式 | 流式模型未下载 |
+| --- | --- |
+| ![流式](docs/screenshots/streaming.png) | ![流式下载](docs/screenshots/stream-setup.png) |
 
 ## 功能
 
@@ -30,15 +36,14 @@ SenseVoiceSmall INT8 约 **228 MB**，不会打进安装包：
 
 1. 启动后顶部会出现「首次使用：下载语音模型」。
 2. 点 **下载模型**：优先 Hugging Face，失败自动切换 `hf-mirror.com`；支持断点续传（`.part`），下载完做 SHA-256 校验。
-3. 也可以点 **使用已有模型目录**，指向一个包含以下文件的目录：
+3. **流式模型**单独下载（约 190 MB，仅在切到「流式」模式时需要）：点模式切换里的「流式」，按提示下载；它是中英双语模型，所以粤语/日语/韩语会自动切回非流式。
+4. 也可以点 **使用已有模型目录**，指向一个包含以下文件的目录：
 
 ```
 model.int8.onnx   # 或 model.onnx
 tokens.txt
 silero_vad.onnx   # 可选：没有也能转写，只是少了 VAD 分句
 ```
-
-如果本机装过 DSH 并且下过语音模型（`~/.dsh/speech-to-text/sensevoice/models/sensevoice-onnx`），界面会直接提供「使用本机 DSH 模型（免下载）」。
 
 模型来源（固定 commit）：[sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17) · [silero_vad](https://huggingface.co/csukuangfj/vad)。
 
@@ -73,7 +78,7 @@ src/                     前端（原生 JS，无构建）
   style.css              深浅色主题样式
 src-tauri/
   src/lib.rs             Tauri 命令、状态、保存
-  src/asr.rs             SenseVoice 推理 + Silero VAD 分句
+  src/asr.rs             SenseVoice 推理 + Silero VAD 分句 + 流式 Zipformer
   src/audio.rs           cpal 采集、电平、重采样
   src/models.rs          模型定位/下载/校验
   src/settings.rs        设置持久化
@@ -87,19 +92,21 @@ scripts/make-icon.py     生成图标源图
 cd src-tauri
 cargo test --lib                  # 逻辑、WAV 解析、麦克风枚举、重采样
 cargo test --test asr_smoke       # 真模型转写 tests/fixtures/zh.wav（缺模型自动跳过）
+cargo test --test streaming_smoke # 流式识别，100ms 切片模拟麦克风
 
 # 需要真实网络的用例（默认跳过）
 VOICE_NOTES_DOWNLOAD_TEST=1 cargo test --lib downloads_vad -- --nocapture
 VOICE_NOTES_RECORD_TEST=1 cargo test --lib records_microphone -- --nocapture
 ```
 
-`asr_smoke` 默认用 `~/.dsh/speech-to-text/sensevoice/models/sensevoice-onnx`，可用 `VOICE_NOTES_MODEL_DIR` 指定。
+`asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR`，`streaming_smoke` 需要 `VOICE_NOTES_STREAMING_MODEL_DIR`（流式四个文件：`encoder.int8.onnx`/`decoder.int8.onnx`/`joiner.int8.onnx`/`tokens.txt`），未设置时自动跳过。
 实测（Apple Silicon）：5.6 秒中文音频转写耗时约 200 ms，实时率约 0.04×。
 
 ## 已知限制
 
-- 转写是**准实时**：录音结束后统一识别，不是边说边出字（SenseVoice 是非流式模型）。
-- 单次录音上限 10 分钟；单句（VAD 切出来的一段）上限 30 秒。
+- 非流式模式是**准实时**：录音结束后统一识别（SenseVoice 是非流式模型）。要边说边出字请切「流式」。
+- 流式模式只支持**中文 / English**，且**不输出标点**；准确率低于 SenseVoice（漏字、错字更常见），适合快速记录，定稿建议切回非流式重录或用文件转写。
+- 单次录音上限 10 分钟；非流式单句（VAD 切出来的一段）上限 30 秒。
 - 首次转写需要把 239 MB 模型读进内存，约 1–2 秒；之后常驻复用。
 - 说话人分离、时间戳导出、标点模型等未做。
 - 打包 `.dmg` 需要能调用 `hdiutil`；在受限沙箱里 `npm run build` 可能只产出 `.app`（`--bundles app` 可跳过 dmg）。

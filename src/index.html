@@ -33,7 +33,7 @@
           <h2>首次使用：下载语音模型</h2>
           <p class="muted">
             SenseVoiceSmall INT8 约 228&nbsp;MB，只需下载一次，之后完全离线运行。默认从 Hugging Face
-            下载，失败时自动切到 hf-mirror。本机已有模型（例如 DSH 的语音模型）也可以直接复用。
+            下载，失败时自动切到 hf-mirror；也可以直接指向一个已有的本地模型目录。
           </p>
           <div class="progress hidden" id="setup-progress">
             <div class="progress-track"><div class="progress-fill" id="setup-progress-fill"></div></div>
@@ -47,7 +47,6 @@
             <button class="btn" id="pick-model-btn">使用已有模型目录</button>
             <button class="btn ghost hidden" id="cancel-download-btn">取消下载</button>
           </div>
-          <button class="link hidden" id="use-dsh-btn"></button>
         </div>
       </section>
 
@@ -65,6 +64,30 @@
         <div class="rec-status" aria-live="polite">
           <span class="timer" id="timer">00:00</span>
           <span class="hint" id="hint">点击麦克风开始录音</span>
+        </div>
+        <div class="mode-row" id="mode-row" role="group" aria-label="转写模式">
+          <button type="button" class="mode-chip" data-mode="offline" aria-pressed="true">
+            <span class="mode-name">非流式</span>
+            <span class="mode-desc">更准 · 带标点</span>
+          </button>
+          <button type="button" class="mode-chip" data-mode="streaming" aria-pressed="false">
+            <span class="mode-name">流式</span>
+            <span class="mode-desc">边说边出 · 无标点</span>
+          </button>
+        </div>
+        <div class="stream-setup hidden" id="stream-setup">
+          <p class="stream-setup-text" id="stream-setup-text">流式模型（中英双语，约 198 MB）还没下载</p>
+          <div class="progress hidden" id="stream-progress">
+            <div class="progress-track"><div class="progress-fill" id="stream-progress-fill"></div></div>
+            <div class="progress-meta">
+              <span id="stream-progress-text">准备中…</span>
+              <span id="stream-progress-pct">0%</span>
+            </div>
+          </div>
+          <div class="row">
+            <button type="button" class="btn small primary" id="stream-download">下载流式模型</button>
+            <button type="button" class="btn small ghost hidden" id="stream-cancel">取消</button>
+          </div>
         </div>
         <div class="lang-row" id="lang-row" role="group" aria-label="识别语言"></div>
         <p class="kbd-hint">空格 开始 / 结束 · Esc 取消 · 也可以把音频文件拖进窗口</p>
@@ -111,7 +134,6 @@
         <div class="row">
           <button type="button" class="btn small" id="settings-download">下载 / 更新模型</button>
           <button type="button" class="btn small" id="settings-pick-model">选择目录…</button>
-          <button type="button" class="btn small ghost" id="settings-use-dsh">使用 DSH 模型</button>
         </div>
       </section>
       <section>

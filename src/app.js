@@ -33,8 +33,12 @@ const state = {
   history: loadHistory(),
   engine: 'idle',
   downloading: false,
+  downloadingStreaming: false,
   toastTimer: 0,
 }
+
+const STREAM_ASSETS = new Set(['encoder.int8.onnx', 'decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt'])
+const STREAM_LANGS = ['auto', 'zh', 'en']
 
 const els = {
   app: document.querySelector('.app'),
@@ -48,11 +52,19 @@ const els = {
   downloadBtn: $('download-btn'),
   pickModelBtn: $('pick-model-btn'),
   cancelDownloadBtn: $('cancel-download-btn'),
-  useDshBtn: $('use-dsh-btn'),
   wave: $('wave'),
   mic: $('mic-btn'),
   timer: $('timer'),
   hint: $('hint'),
+  modeRow: $('mode-row'),
+  streamSetup: $('stream-setup'),
+  streamSetupText: $('stream-setup-text'),
+  streamProgress: $('stream-progress'),
+  streamProgressFill: $('stream-progress-fill'),
+  streamProgressText: $('stream-progress-text'),
+  streamProgressPct: $('stream-progress-pct'),
+  streamDownload: $('stream-download'),
+  streamCancel: $('stream-cancel'),
   langRow: $('lang-row'),
   text: $('text'),
   meta: $('meta'),
@@ -68,7 +80,6 @@ const els = {
   settingsVersion: $('settings-version'),
   settingsDownload: $('settings-download'),
   settingsPickModel: $('settings-pick-model'),
-  settingsUseDsh: $('settings-use-dsh'),
   settingsPickOutput: $('settings-pick-output'),
   settingsOpenOutput: $('settings-open-output'),
   itnToggle: $('itn-toggle'),
@@ -135,10 +146,13 @@ function toast(message, type = 'info') {
 /* ── 录音界面 ─────────────────────────────────────────── */
 
 const HINTS = {
-  idle: '点击麦克风开始录音',
-  requesting: '正在请求麦克风权限…',
+  requesting: '正在准备麦克风…',
   recording: '正在录音，点方块或空格结束',
   transcribing: '正在转写…',
+}
+
+function idleHint() {
+  return state.status?.mode === 'streaming' ? '点击麦克风开始实时转写' : '点击麦克风开始录音'
 }
 
 function setPhase(phase) {
@@ -148,8 +162,10 @@ function setPhase(phase) {
   els.mic.querySelector('.mic-glyph').classList.toggle('hidden', phase === 'recording')
   els.mic.querySelector('.stop-glyph').classList.toggle('hidden', phase !== 'recording')
   els.mic.disabled = phase === 'requesting' || phase === 'transcribing'
-  if (HINTS[phase]) els.hint.textContent = HINTS[phase]
+  if (phase === 'idle') els.hint.textContent = idleHint()
+  else if (HINTS[phase]) els.hint.textContent = HINTS[phase]
   if (phase === 'idle') resetWave()
+  renderMode()
 }
 
 function buildWave() {
@@ -193,7 +209,13 @@ function stopTimer() {
 }
 
 async function startRecording() {
-  if (!state.status?.modelReady) {
+  const streaming = state.status?.mode === 'streaming'
+  if (streaming && !state.status.streamingReady) {
+    toast('流式模型还没下载', 'error')
+    els.streamSetup.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    return
+  }
+  if (!streaming && !state.status?.modelReady) {
     toast('模型还没下载，先点上面的「下载模型」', 'error')
     els.setup.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     return
@@ -204,6 +226,10 @@ async function startRecording() {
     await invoke('start_recording')
     state.startedAt = performance.now()
     els.timer.textContent = '00:00'
+    if (state.status?.mode === 'streaming') {
+      els.text.value = ''
+      els.meta.innerHTML = '<span>实时转写中…</span>'
+    }
     startTimer()
     setPhase('recording')
   } catch (error) {
@@ -416,10 +442,21 @@ async function refreshStatus() {
 function renderStatus() {
   const status = state.status
   if (!status) return
-  const ready = status.modelReady
-  els.setup.classList.toggle('hidden', ready)
+  const streamingMode = status.mode === 'streaming'
+  const ready = streamingMode ? status.streamingReady : status.modelReady
+  els.setup.classList.toggle('hidden', streamingMode || status.modelReady)
 
-  if (!ready) {
+  if (streamingMode) {
+    els.badge.className = ready ? 'badge' : 'badge warn'
+    els.badge.textContent = ready
+      ? state.engine === 'error'
+        ? '流式模型加载失败'
+        : state.engine === 'loading'
+          ? '正在加载流式模型…'
+          : '流式已就绪'
+      : '流式模型未下载'
+    els.dot.dataset.state = state.engine === 'error' ? 'error' : state.engine === 'loading' ? 'loading' : ready ? 'ready' : 'idle'
+  } else if (!ready) {
     els.badge.textContent = '未下载模型'
     els.badge.className = 'badge warn'
     els.dot.dataset.state = 'idle'
@@ -436,13 +473,8 @@ function renderStatus() {
     els.dot.dataset.state = state.engine === 'error' ? 'error' : state.engine === 'loading' ? 'loading' : 'ready'
   }
 
-  els.useDshBtn.classList.toggle('hidden', !status.dshAvailable)
-  if (status.dshAvailable) {
-    els.useDshBtn.textContent = '已检测到本机 DSH 语音模型 → 直接使用，免下载'
-    els.useDshBtn.title = status.dshDir || ''
-  }
   els.mic.classList.toggle('disabled', !ready)
-  els.mic.title = ready ? '' : '需要先下载语音模型'
+  els.mic.title = ready ? '' : streamingMode ? '需要先下载流式模型' : '需要先下载语音模型'
 
   els.settingsModel.textContent = ready
     ? `${status.modelSource} · ${status.modelDir}`
@@ -450,11 +482,77 @@ function renderStatus() {
   els.settingsOutput.textContent = status.outputDir
   els.settingsVersion.textContent = `VoiceNotes ${status.appVersion} · SenseVoiceSmall INT8`
   els.itnToggle.checked = !!status.itn
-  els.settingsUseDsh.disabled = !status.dshAvailable
 
   for (const button of els.langRow.children) {
     button.setAttribute('aria-pressed', String(button.dataset.lang === status.language))
   }
+  renderMode()
+}
+
+function renderMode() {
+  const mode = state.status?.mode || 'offline'
+  for (const chip of els.modeRow.children) {
+    chip.setAttribute('aria-pressed', String(chip.dataset.mode === mode))
+    chip.disabled = state.phase !== 'idle'
+  }
+  if (state.phase === 'idle') els.hint.textContent = idleHint()
+  const needStream = mode === 'streaming' && !state.status?.streamingReady
+  els.streamSetup.classList.toggle('hidden', !needStream)
+  if (needStream && state.status) {
+    els.streamSetupText.textContent = `流式模型（中英双语，约 ${fmtBytes(state.status.streamingTotalBytes || 0)}）还没下载`
+  }
+}
+
+async function setMode(mode) {
+  if (state.phase !== 'idle' || state.status?.mode === mode) return
+  try {
+    state.status = await invoke('set_mode', { mode })
+    state.engine = 'idle'
+    renderStatus()
+    if (mode === 'streaming') {
+      if (!state.status.streamingReady) {
+        toast('先下载流式模型再使用')
+      } else {
+        void invoke('warm_up_streaming').catch(() => {})
+      }
+    }
+  } catch (error) {
+    toast(fmtError(error), 'error')
+  }
+}
+
+function setStreamProgress(done, total) {
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0
+  els.streamProgressFill.style.width = `${pct}%`
+  els.streamProgressPct.textContent = `${pct}%`
+}
+
+async function downloadStreamingModel() {
+  if (state.downloadingStreaming) return
+  state.downloadingStreaming = true
+  els.streamDownload.disabled = true
+  els.streamCancel.classList.remove('hidden')
+  els.streamProgress.classList.remove('hidden')
+  setStreamProgress(0, state.status?.streamingTotalBytes || 0)
+  els.streamProgressText.textContent = '准备下载…'
+  try {
+    state.status = await invoke('download_streaming_model')
+    toast('流式模型已就绪')
+    renderStatus()
+  } catch (error) {
+    toast(fmtError(error), 'error')
+    els.streamProgressText.textContent = `下载失败：${fmtError(error)}`
+  } finally {
+    state.downloadingStreaming = false
+    els.streamDownload.disabled = false
+    els.streamCancel.classList.add('hidden')
+  }
+}
+
+function showPartial(partial) {
+  if (state.phase !== 'recording') return
+  const text = (partial || '').trim()
+  els.hint.textContent = text ? `正在识别：${text.length > 48 ? `…${text.slice(-48)}` : text}` : '正在听…'
 }
 
 function renderLang() {
@@ -473,6 +571,10 @@ function renderLang() {
 
 async function setLanguage(language) {
   try {
+    if (state.status?.mode === 'streaming' && !STREAM_LANGS.includes(language)) {
+      toast('流式模型只支持中文 / English，已切回非流式模式')
+      state.status = await invoke('set_mode', { mode: 'offline' })
+    }
     state.status = await invoke('set_language', { language })
     renderStatus()
   } catch (error) {
@@ -535,19 +637,6 @@ async function pickModelDir() {
     } else {
       toast('这个目录里没有找到 model.int8.onnx / tokens.txt', 'error')
     }
-  } catch (error) {
-    toast(fmtError(error), 'error')
-  }
-}
-
-async function useDshModel() {
-  const dir = state.status?.dshDir
-  if (!dir) return
-  try {
-    state.status = await invoke('set_model_dir', { dir })
-    renderStatus()
-    toast('已切换到 DSH 的语音模型')
-    warmUp()
   } catch (error) {
     toast(fmtError(error), 'error')
   }
@@ -675,6 +764,18 @@ function bindUI() {
     els.text.focus()
   })
 
+  for (const chip of els.modeRow.children) {
+    chip.addEventListener('click', () => void setMode(chip.dataset.mode))
+  }
+  els.streamDownload.addEventListener('click', () => void downloadStreamingModel())
+  els.streamCancel.addEventListener('click', async () => {
+    try {
+      await invoke('cancel_download')
+    } catch {
+      /* 忽略 */
+    }
+  })
+
   els.downloadBtn.addEventListener('click', () => void downloadModel())
   els.cancelDownloadBtn.addEventListener('click', async () => {
     try {
@@ -684,7 +785,6 @@ function bindUI() {
     }
   })
   els.pickModelBtn.addEventListener('click', () => void pickModelDir())
-  els.useDshBtn.addEventListener('click', () => void useDshModel())
 
   $('settings-btn').addEventListener('click', () => void openSettings())
   $('theme-btn').addEventListener('click', toggleTheme)
@@ -695,10 +795,6 @@ function bindUI() {
   els.settingsPickModel.addEventListener('click', () => {
     els.settings.close()
     void pickModelDir()
-  })
-  els.settingsUseDsh.addEventListener('click', () => {
-    els.settings.close()
-    void useDshModel()
   })
   els.settingsPickOutput.addEventListener('click', () => void pickOutputDir())
   els.settingsOpenOutput.addEventListener('click', () => void openOutputDir())
@@ -796,6 +892,15 @@ async function listenEvents() {
 
   await listen('model:progress', (event) => {
     const progress = event.payload || {}
+    if (state.downloadingStreaming) {
+      els.streamProgress.classList.remove('hidden')
+      setStreamProgress(progress.done || 0, progress.total || 0)
+      const label =
+        { downloading: '下载中', verifying: '校验中', connecting: '连接中', complete: '完成' }[progress.phase] || '下载中'
+      const host = progress.source?.startsWith('http') ? new URL(progress.source).host : '本地缓存'
+      els.streamProgressText.textContent = `${label} ${progress.resource} · ${fmtBytes(progress.done || 0)} / ${fmtBytes(progress.total || 0)}${host ? ` · ${host}` : ''}`
+      return
+    }
     if (!state.downloading && progress.phase !== 'verifying') return
     els.setupProgress.classList.remove('hidden')
     setProgress(progress.done || 0, progress.total || 0)
@@ -803,6 +908,36 @@ async function listenEvents() {
     const host = progress.source?.startsWith('http') ? new URL(progress.source).host : progress.source === 'cache' ? '本地缓存' : ''
     els.setupText.textContent = `${label} ${progress.resource}${progress.phase === 'downloading' ? ` · ${fmtBytes(progress.done)} / ${fmtBytes(progress.total)}` : ''}${host ? ` · ${host}` : ''}`
     if (progress.phase === 'error' && progress.message) toast(progress.message, 'error')
+  })
+
+  await listen('stream:partial', (event) => {
+    const payload = event.payload || {}
+    if (typeof payload.committed === 'string' && els.text.value !== payload.committed) {
+      els.text.value = payload.committed
+    }
+    showPartial(payload.partial)
+  })
+
+  await listen('stream:segment', (event) => {
+    const payload = event.payload || {}
+    if (typeof payload.committed === 'string') els.text.value = payload.committed
+    showPartial('')
+  })
+
+  await listen('streaming:state', (event) => {
+    const payload = event.payload || {}
+    if (payload.phase === 'loading') {
+      state.engine = 'loading'
+      if (state.phase === 'requesting') els.hint.textContent = '正在加载流式模型…'
+      renderStatus()
+    } else if (payload.phase === 'ready') {
+      state.engine = 'ready'
+      renderStatus()
+    } else if (payload.phase === 'error') {
+      state.engine = 'error'
+      renderStatus()
+      toast(payload.message || '流式模型加载失败', 'error')
+    }
   })
 
   await listen('engine:state', (event) => {
@@ -837,6 +972,9 @@ async function init() {
   await listenEvents()
   await refreshStatus()
   if (state.status?.modelReady) void warmUp()
+  if (state.status?.mode === 'streaming' && state.status.streamingReady) {
+    void invoke('warm_up_streaming').catch(() => {})
+  }
 }
 
 init().catch((error) => {

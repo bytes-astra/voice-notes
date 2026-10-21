@@ -33,6 +33,11 @@ impl Recorder {
         self.sample_rate
     }
 
+    /// 共享的原始采样缓冲，流式识别线程按游标增量读取。
+    pub fn buffer(&self) -> Arc<Mutex<Vec<f32>>> {
+        self.samples.clone()
+    }
+
     /// 结束录音并取回设备原始采样（未重采样）。
     pub fn stop(mut self) -> Result<Vec<f32>, String> {
         let _ = self.tx.send(Cmd::Stop);

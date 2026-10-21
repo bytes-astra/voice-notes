@@ -49,6 +49,105 @@ pub const VAD: Asset = Asset {
 
 pub const ASSETS: [&Asset; 3] = [&MODEL, &TOKENS, &VAD];
 
+// ── 流式模型：sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20 (int8) ──
+// 中英双语，真流式 transducer。文件固定到 commit 98590b7。
+pub const STREAM_DIR: &str = "streaming";
+
+pub const STREAM_ENCODER: Asset = Asset {
+    name: "encoder.int8.onnx",
+    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/encoder-epoch-99-avg-1.int8.onnx",
+    bytes: 181_895_032,
+    sha256: "8fa764187a261844f859d7143ebaa563af5d10adfece4c18a8f414c88cba2a9b",
+};
+
+pub const STREAM_DECODER: Asset = Asset {
+    name: "decoder.int8.onnx",
+    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/decoder-epoch-99-avg-1.int8.onnx",
+    bytes: 13_091_040,
+    sha256: "1a70c593d71e53f023f5f55b0b4cfff5055abb786ee3992e5f63dc2e273cc4fa",
+};
+
+pub const STREAM_JOINER: Asset = Asset {
+    name: "joiner.int8.onnx",
+    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/joiner-epoch-99-avg-1.int8.onnx",
+    bytes: 3_228_404,
+    sha256: "1ed689c5ed19dbaa725d9d191bb4822b5f4855a39e1ffd28cbc1f340d25b2ee0",
+};
+
+pub const STREAM_TOKENS: Asset = Asset {
+    name: "tokens.txt",
+    path: "/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/tokens.txt",
+    bytes: 56_317,
+    sha256: "a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3",
+};
+
+pub const STREAM_ASSETS: [&Asset; 4] = [
+    &STREAM_ENCODER,
+    &STREAM_DECODER,
+    &STREAM_JOINER,
+    &STREAM_TOKENS,
+];
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamingPaths {
+    pub dir: String,
+    pub encoder: String,
+    pub decoder: String,
+    pub joiner: String,
+    pub tokens: String,
+}
+
+pub fn streaming_total_bytes() -> u64 {
+    STREAM_ASSETS.iter().map(|a| a.bytes).sum()
+}
+
+/// 流式模型固定放在应用数据目录的 models/streaming 下。
+pub fn resolve_streaming(app: &AppHandle) -> Option<StreamingPaths> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .ok()?
+        .join("models")
+        .join(STREAM_DIR);
+    let encoder = dir.join(STREAM_ENCODER.name);
+    let decoder = dir.join(STREAM_DECODER.name);
+    let joiner = dir.join(STREAM_JOINER.name);
+    let tokens = dir.join(STREAM_TOKENS.name);
+    if !(exists(&encoder) && exists(&decoder) && exists(&joiner) && exists(&tokens)) {
+        return None;
+    }
+    Some(StreamingPaths {
+        dir: dir.to_string_lossy().into_owned(),
+        encoder: encoder.to_string_lossy().into_owned(),
+        decoder: decoder.to_string_lossy().into_owned(),
+        joiner: joiner.to_string_lossy().into_owned(),
+        tokens: tokens.to_string_lossy().into_owned(),
+    })
+}
+
+pub fn streaming_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法定位应用数据目录: {e}"))?
+        .join("models")
+        .join(STREAM_DIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("无法创建流式模型目录: {e}"))?;
+    Ok(dir)
+}
+
+pub async fn download_streaming(
+    dest_dir: &Path,
+    cancel: Arc<AtomicBool>,
+    sink: &dyn ProgressSink,
+) -> Result<(), String> {
+    for asset in STREAM_ASSETS {
+        download_asset(asset, dest_dir, cancel.clone(), sink).await?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ModelPaths {
     pub dir: String,
@@ -80,22 +179,7 @@ fn candidate_dirs(app: &AppHandle, settings_dir: Option<&str>) -> Vec<(PathBuf, 
     if let Ok(data) = app.path().app_data_dir() {
         out.push((data.join("models"), "应用数据".to_string()));
     }
-    if let Some(dsh) = dsh_model_dir() {
-        out.push((dsh, "DSH 语音模型".to_string()));
-    }
     out
-}
-
-/// DSH 已下载的 SenseVoice 模型目录（若存在）。
-pub fn dsh_model_dir() -> Option<PathBuf> {
-    let dir = dirs::home_dir()?.join(".dsh/speech-to-text/sensevoice/models/sensevoice-onnx");
-    if exists(&dir.join(MODEL_FILE)) && exists(&dir.join(TOKENS_FILE)) {
-        Some(dir)
-    } else if exists(&dir.join("model.onnx")) && exists(&dir.join(TOKENS_FILE)) {
-        Some(dir)
-    } else {
-        None
-    }
 }
 
 fn find_vad(dir: &Path) -> Option<PathBuf> {
@@ -112,7 +196,7 @@ fn find_vad(dir: &Path) -> Option<PathBuf> {
         .find(|p| !p.as_os_str().is_empty() && exists(p))
 }
 
-/// 按「自定义目录 > 应用数据 > DSH 目录」的顺序找出可用模型。
+/// 按「自定义目录 > 应用数据」的顺序找出可用模型。
 pub fn resolve(app: &AppHandle, settings_dir: Option<&str>) -> Option<ModelPaths> {
     for (dir, source) in candidate_dirs(app, settings_dir) {
         let Some(model) = [dir.join(MODEL_FILE), dir.join("model.onnx")]

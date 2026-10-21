@@ -1,5 +1,6 @@
 //! SenseVoiceSmall INT8 推理：Silero VAD 切句 + sherpa-onnx 离线识别。
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Serialize;
@@ -14,6 +15,8 @@ pub const SAMPLE_RATE: i32 = 16_000;
 const VAD_WINDOW: usize = 512;
 /// 单次送入模型的音频上限（SenseVoice 训练长度 30s）。
 const MAX_SEGMENT_SECONDS: f32 = 30.0;
+/// 流式输入分片：3200 样本 = 200ms，与官方示例一致。
+const STREAM_CHUNK: usize = 3_200;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Segment {
@@ -221,5 +224,160 @@ mod tests {
     fn strips_sensevoice_tags() {
         assert_eq!(clean("<|zh|><|NEUTRAL|><|Speech|>你好 世界"), "你好 世界");
         assert_eq!(clean("  <|en|>hello   there "), "hello there");
+    }
+}
+
+// ────────────────────────── 流式识别 ──────────────────────────
+
+use sherpa_onnx::{
+    OnlineRecognizer, OnlineRecognizerConfig, OnlineStream, OnlineTransducerModelConfig,
+};
+
+use crate::models::StreamingPaths;
+
+impl StreamingEngine {
+    /// 加载流式 Zipformer（中英双语，greedy search + 端点检测）。
+    pub fn new(paths: &StreamingPaths) -> Result<Self, String> {
+        let mut config = OnlineRecognizerConfig::default();
+        config.model_config.transducer = OnlineTransducerModelConfig {
+            encoder: Some(paths.encoder.clone()),
+            decoder: Some(paths.decoder.clone()),
+            joiner: Some(paths.joiner.clone()),
+        };
+        config.model_config.tokens = Some(paths.tokens.clone());
+        config.model_config.num_threads = threads();
+        config.model_config.provider = Some("cpu".into());
+        config.decoding_method = Some("greedy_search".into());
+        config.enable_endpoint = true;
+        config.rule1_min_trailing_silence = 2.4;
+        config.rule2_min_trailing_silence = 1.2;
+        config.rule3_min_utterance_length = 20.0;
+
+        let recognizer = OnlineRecognizer::create(&config)
+            .ok_or_else(|| "无法加载流式模型（文件可能损坏，建议重新下载）".to_string())?;
+        Ok(Self { recognizer })
+    }
+
+    pub fn new_stream(&self) -> OnlineStream {
+        self.recognizer.create_stream()
+    }
+}
+
+/// 流式模型句柄。
+pub struct StreamingEngine {
+    pub recognizer: OnlineRecognizer,
+}
+
+/// 一次流式识别会话：喂 PCM，收中间结果和断句。
+pub struct StreamingSession {
+    recognizer: Arc<StreamingEngine>,
+    stream: OnlineStream,
+    partial: String,
+    segments: Vec<Segment>,
+    pending: Vec<f32>,
+    fed_samples: usize,
+    segment_start: usize,
+    started: Instant,
+}
+
+/// 流式回调事件。
+#[derive(Clone, Debug)]
+pub enum StreamEvent {
+    Partial(String),
+    Segment(Segment),
+}
+
+impl StreamingSession {
+    pub fn new(engine: Arc<StreamingEngine>) -> Self {
+        let stream = engine.new_stream();
+        Self {
+            recognizer: engine,
+            stream,
+            partial: String::new(),
+            segments: Vec::new(),
+            pending: Vec::new(),
+            fed_samples: 0,
+            segment_start: 0,
+            started: Instant::now(),
+        }
+    }
+
+    /// 按 200ms 一块送入（与官方示例的 chunk_size=3200 对齐），避免过小分片。
+    fn accept(&mut self, chunk: &[f32], events: &mut Vec<StreamEvent>) {
+        self.stream.accept_waveform(SAMPLE_RATE, chunk);
+        self.fed_samples += chunk.len();
+        self.pump(events);
+    }
+
+    /// 只在 ready 时 decode，否则 sherpa-onnx 的特征缓冲会越界。
+    fn pump(&mut self, events: &mut Vec<StreamEvent>) {
+        while self.recognizer.recognizer.is_ready(&self.stream) {
+            self.recognizer.recognizer.decode(&self.stream);
+            if let Some(result) = self.recognizer.recognizer.get_result(&self.stream) {
+                let text = clean(&result.text);
+                if text != self.partial {
+                    self.partial = text.clone();
+                    if !text.is_empty() {
+                        events.push(StreamEvent::Partial(text));
+                    }
+                }
+            }
+            if self.recognizer.recognizer.is_endpoint(&self.stream) {
+                self.commit(events);
+                self.recognizer.recognizer.reset(&self.stream);
+            }
+        }
+    }
+
+    fn commit(&mut self, events: &mut Vec<StreamEvent>) {
+        if self.partial.is_empty() {
+            self.segment_start = self.fed_samples;
+            return;
+        }
+        let segment = Segment {
+            text: self.partial.clone(),
+            start: self.segment_start as f32 / SAMPLE_RATE as f32,
+            end: self.fed_samples as f32 / SAMPLE_RATE as f32,
+        };
+        events.push(StreamEvent::Segment(segment.clone()));
+        self.segments.push(segment);
+        self.segment_start = self.fed_samples;
+        self.partial.clear();
+    }
+
+    /// 喂入 16 kHz 单声道样本，返回需要推给 UI 的事件。
+    pub fn push(&mut self, samples: &[f32]) -> Vec<StreamEvent> {
+        let mut events = Vec::new();
+        self.pending.extend_from_slice(samples);
+        while self.pending.len() >= STREAM_CHUNK {
+            let chunk: Vec<f32> = self.pending.drain(..STREAM_CHUNK).collect();
+            self.accept(&chunk, &mut events);
+        }
+        events
+    }
+
+    /// 结束输入，冲刷最后一段。
+    pub fn finish(&mut self) -> Vec<StreamEvent> {
+        let mut events = Vec::new();
+        if !self.pending.is_empty() {
+            let chunk = std::mem::take(&mut self.pending);
+            self.accept(&chunk, &mut events);
+        }
+        self.stream.input_finished();
+        self.pump(&mut events);
+        self.commit(&mut events);
+        events
+    }
+
+    /// 汇总为最终结果（无标点，流式模型本身不输出标点）。
+    pub fn transcript(self) -> Transcript {
+        let text = join_segments(self.segments.iter().map(|s| s.text.as_str()));
+        Transcript {
+            text,
+            segments: self.segments,
+            duration_seconds: self.fed_samples as f32 / SAMPLE_RATE as f32,
+            elapsed_ms: self.started.elapsed().as_millis() as u64,
+            language: "zh-en".into(),
+        }
     }
 }
