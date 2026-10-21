@@ -654,7 +654,20 @@ function renderLang() {
   }
 }
 
-/// 列出输入设备，第一项是「系统默认」。
+/// 已列出的输入设备（列设备会触发 macOS 权限弹窗，所以只在用户打开下拉框时才去列）
+let deviceCache = []
+
+function deviceItems() {
+  const items = [{ value: '', label: t('record.deviceDefault') }]
+  for (const device of deviceCache) {
+    items.push({
+      value: device.name,
+      label: device.isDefault ? `${device.name} · ${t('record.deviceSystemDefault')}` : device.name,
+    })
+  }
+  return items
+}
+
 async function loadDevices() {
   if (!deviceSelect) return
   let devices = []
@@ -663,14 +676,9 @@ async function loadDevices() {
   } catch {
     devices = []
   }
-  const items = [{ value: '', label: t('record.deviceDefault') }]
-  for (const device of devices) {
-    items.push({
-      value: device.name,
-      label: device.isDefault ? `${device.name} · ${t('record.deviceSystemDefault')}` : device.name,
-    })
-  }
+  deviceCache = devices
   const current = state.status?.inputDevice || deviceSelect.value || ''
+  const items = deviceItems()
   deviceSelect.setItems(items, items.some((item) => item.value === current) ? current : '')
 }
 
@@ -691,7 +699,7 @@ function applyLocale(preference) {
   renderLang()
   renderHistory()
   renderStatus()
-  if (deviceSelect) void loadDevices()
+  if (deviceSelect) deviceSelect.setItems(deviceItems(), deviceSelect.value)
   if (localeSelect) localeSelect.setItems(localeItems(), stored)
   if (state.lastTranscript) showTranscript(state.lastTranscript)
 }
@@ -1015,6 +1023,8 @@ function bindUI() {
   })
   localeSelect.setItems(localeItems(), localStorage.getItem(LOCALE_KEY) || 'system')
   deviceSelect = UISelect.create(els.deviceSelect, {
+    // 列设备会触发 macOS 的麦克风权限弹窗，所以只在用户打开下拉框时才列
+    onBeforeOpen: loadDevices,
     onChange: async (value) => {
       const name = value || null
       try {
@@ -1025,6 +1035,12 @@ function bindUI() {
       }
     },
   })
+  // 先放上已保存的设备名（不枚举设备，避免启动就触发权限弹窗）
+  const savedDevice = state.status?.inputDevice || ''
+  deviceSelect.setItems(
+    [{ value: savedDevice, label: savedDevice || t('record.deviceDefault') }],
+    savedDevice,
+  )
   els.pickFileBtn?.addEventListener('click', () => els.fileInput.click())
   els.fileInput.addEventListener('change', () => {
     const file = els.fileInput.files?.[0]
@@ -1210,7 +1226,11 @@ async function init() {
   renderLang()
   renderHistory()
   bindUI()
-  void loadDevices()
+  // 界面画完再去列设备：列设备会触发 macOS 的麦克风权限弹窗，
+  // 放在渲染之后弹，用户看到的是已经画好的界面。
+  setTimeout(() => {
+    void loadDevices()
+  }, 900)
   await listenEvents()
   await refreshStatus()
   switchView('transcribe')

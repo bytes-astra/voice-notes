@@ -71,10 +71,18 @@
       if (rows[next]) rows[next].focus()
     }
 
-    function open() {
+    async function open() {
       if (popup) {
         close()
         return
+      }
+      // 展开前可以异步准备数据（比如去后端拿设备列表）
+      if (opts.onBeforeOpen) {
+        try {
+          await opts.onBeforeOpen()
+        } catch {
+          /* 忽略：弹层里至少还有旧数据 */
+        }
       }
       popup = document.createElement('div')
       popup.className = 'select-popup'
@@ -116,11 +124,13 @@
       if (selected) selected.focus()
     }
 
-    button.addEventListener('click', open)
+    button.addEventListener('click', () => {
+      void open()
+    })
     button.addEventListener('keydown', (event) => {
       if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
         event.preventDefault()
-        open()
+        void open()
       }
     })
 
