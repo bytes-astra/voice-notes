@@ -64,7 +64,7 @@
 
 - 新增 `Recorder::take_new() -> Vec<f32>`：取走并清空全部未消费样本（`std::mem::take`）。调用方拿到的永远是「新增的那部分」。
 - **电平表要独立**：`peak()`（`audio.rs:354`）现在读的是同一个缓冲的尾巴，缓冲改成消费式后音量表会恒读 0。改法：`append` 同时写进一个独立的 2048 样本环缓冲（`levels`），`peak()` 改读它。
-- 安全阀：未消费样本数超过 `MAX_PENDING_SAMPLES`（60s @ 48kHz = 2_880_000）时，丢弃最旧的样本，**在转写文本里插入缺口标记**（如 `……（此处约 3 秒未识别）……`），并发 `audio:error` 事件弹提示。录音不中断，但缺口是显式可见的，绝不静默丢。
+- 安全阀：未消费样本数超过 `MAX_PENDING_SECONDS * sample_rate`（60 秒，按**设备实际采样率**算，不能写死 48kHz 的样本数）时，丢弃最旧的样本，**在转写文本里插入缺口标记**（如 `……（此处约 3 秒未识别）……`），并发 `audio:error` 事件弹提示。录音不中断，但缺口是显式可见的，绝不静默丢。
 
 两个模式都不再持有历史音频：**内存恒定**。
 
@@ -85,6 +85,7 @@ loop {
 ```
 
 - 整段的 VAD 配置与现状一致：`threshold 0.5` / `min_silence_duration 0.5` / `min_speech_duration 0.25` / `max_speech_duration 30.0`，`VoiceActivityDetector::create(cfg, 32.0)`。
+- **两种模式的 VAD 参数不同是刻意的**：流式侧 `max_speech_duration: 20.0`（`asr.rs:271`），旁边还有 transducer 自己的 `rule3_min_utterance_length = 20.0` —— 流式要短句、响应快；整段侧 30s 是因为 SenseVoice 在 ≤30s 区间最准。别当 bug「修」成一致。
 - **出字粒度保持 30s**：句子由 VAD 在静音 0.5s 处切出，连续说话最长 30s 才出一句（SenseVoice 的擅长区间，识别最准）。为免用户以为卡死，界面上加一个**不依赖 VAD 的「正在听…」指示**（跟随实时音量/计时器）。
 - 停止时：置 stop 标志 → 线程把 VAD 里剩余的句子 flush 出来识别 → join → 返回 `Transcript`。
 - 引擎：ASR 线程启动时从 `state.engine` 缓存**取走** `Engine`（SenseVoice），停止时**还回**缓存 —— 文件转写随后可以复用已加载的模型，不必重新加载 200MB。
@@ -96,6 +97,7 @@ loop {
   原因：现状 `Engine::transcribe` 内部自带 VAD，而新路径已经在外层用 VAD 切好句子，再走一遍是双重 VAD（句子内部还会被再切一次，边界行为会变）。
 - `Transcript` 的累计口径：逐句识别没有「一次性」的 `duration_seconds` / `elapsed_ms`。
   新路径自己累加：`duration_seconds` = 墙钟录音时长，`elapsed_ms` = 各句纯推理耗时之和（RTF 仍然有意义）。历史记录用这两个字段。
+- **两个计数器，口径必须分开**：`recorded_samples`（送进 `push` 的样本总数，**不含** `finish()` flush 的 VAD 残留）用来判断「录音太短」；`recognized_samples`（VAD 切出并识别的句子的样本数之和）用来判断「没识别到内容」。混在一起会让「录音时长」算错（VAD 残留多半是静音）。
 - `start_recording` 必须检查整段模型是否就绪：现状是**停止时**才检查（`transcribe_samples` 里报「模型未就绪」），改成边录边之后必须在开始录音前拦下来并提示。流式模式已有这个检查（`models::resolve_streaming`），整段补上同样的（`models::resolve`）。
 
 ### 3. hybrid：删复核，留检测

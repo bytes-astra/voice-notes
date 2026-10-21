@@ -27,7 +27,7 @@
 
 1. **结果区的时长/耗时常为 0** —— `Transcript` 序列化成 snake_case，前端读 camelCase（现存 bug，详见 Task 5 Step 3）。→ **Task 5**，加一个断言 `serde_json::to_value(&transcript)` 里 `durationSeconds` 存在的单元测试
 2. **录音中途模型/引擎出问题**（模型文件被删、引擎加载失败）→ 用户应该看到明确报错，而不是录音跑完才失败或静默无输出 → **Task 4**，`start_recording` 在整段模型缺失时返回错误（前端 `startRecording` 已有的错误提示路径覆盖）
-3. **录音几乎没声音**（静音、极轻的呼吸）→ 应该给出「没识别到内容」而不是空白结果或崩溃 → **Task 4**，`stop_recording` 在 `consumed_samples` 太少时返回「录音太短，至少说 0.2 秒」
+3. **录音几乎没声音**（静音、极轻的呼吸）→ 应该给出「没识别到内容」而不是空白结果或崩溃 → **Task 4**：`recorded_samples` 太少（< 0.2 秒）→ 返回「录音太短，至少说 0.2 秒」；`recognized_samples` 为 0 → 返回「没有识别到内容，换个安静点的环境再试试」
 4. **用户在一个句子说到一半时停止录音** → 该句也要被识别出来 → **Task 3**，`offline_session_finishes_partial_sentence`（见该任务 Step 1）
 5. **文件解码失败 / 格式不支持**（损坏的 mp4、非音频文件）→ 明确报错，不静默产出空结果 → **Task 6**，`decode_to_16k` 对损坏文件返回 `Err`
 6. **录音中切换语言或 ITN** → 语言芯片在录音中已禁用（`src/app.js` 的 `chip.disabled = state.phase !== 'idle'`）；引擎在开始录音时构建一次，录音中不换 → **Task 7**，Playwright 用例断言录音状态下语言芯片是 disabled
@@ -44,9 +44,9 @@
 - Consumes: 现有 `Recorder`、`append()`、`peak()`、`MAX_SECONDS`
 - Produces:
   ```rust
-  pub struct SampleQueue { /* Arc<Mutex<Vec<f32>>> */ }
+  pub struct SampleQueue { /* Arc<Mutex<Vec<f32>>> + sample_rate */ }
   impl SampleQueue {
-      pub fn new() -> Self;
+      pub fn new(sample_rate: u32) -> Self;            // 上限 = MAX_PENDING_SECONDS * sample_rate
       pub fn push(&self, samples: &[f32]);
       pub fn take_new(&self) -> NewAudio;
   }
@@ -54,9 +54,9 @@
   impl Recorder {
       pub fn queue(&self) -> SampleQueue;
   }
-  pub fn gap_marker(dropped_samples: u32) -> String;   // 例如「……（此处约 3 秒未识别）……」
+  pub fn gap_marker(dropped_samples: u32, sample_rate: u32) -> String;   // 例如「……（此处约 3 秒未识别）……」
   ```
-  常量：`pub const MAX_PENDING_SAMPLES: usize = 2_880_000;`（48kHz 下 60 秒）
+  常量：`pub const MAX_PENDING_SECONDS: u32 = 60;` —— **按实际采样率算**（麦克风可能是 44.1k/16k，不能写死 48kHz 的样本数）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -65,7 +65,7 @@
 ```rust
 #[test]
 fn take_new_consumes_samples() {
-    let q = SampleQueue::new();
+    let q = SampleQueue::new(48_000);
     q.push(&[1.0, 2.0, 3.0]);
     let got = q.take_new();
     assert_eq!(got.samples, vec![1.0, 2.0, 3.0]);
@@ -75,16 +75,26 @@ fn take_new_consumes_samples() {
 
 #[test]
 fn take_new_drops_oldest_when_over_limit() {
-    let q = SampleQueue::new();
-    q.push(&vec![0.0; MAX_PENDING_SAMPLES + 100]);
+    let q = SampleQueue::new(48_000);
+    let limit = MAX_PENDING_SECONDS as usize * 48_000;
+    q.push(&vec![0.0; limit + 100]);
     let got = q.take_new();
     assert_eq!(got.dropped, 100);
-    assert_eq!(got.samples.len(), MAX_PENDING_SAMPLES);
+    assert_eq!(got.samples.len(), limit);
+}
+
+#[test]
+fn pending_limit_follows_sample_rate() {
+    // 16 kHz 的设备上限应该按 16k 算，不能拿 48k 的样本数去卡
+    let q = SampleQueue::new(16_000);
+    let limit = MAX_PENDING_SECONDS as usize * 16_000;
+    q.push(&vec![0.0; limit]);
+    assert_eq!(q.take_new().dropped, 0);
 }
 
 #[test]
 fn gap_marker_mentions_seconds() {
-    assert!(gap_marker(48_000).contains("2"));   // 48000 @48k = 1 秒
+    assert!(gap_marker(48_000, 48_000).contains("1"));   // 48000 @48k = 1 秒
 }
 ```
 
@@ -95,11 +105,11 @@ Expected: FAIL —— `SampleQueue` / `gap_marker` 未定义
 
 - [ ] **Step 3: 实现**
 
-- 新增 `SampleQueue`，内部 `Arc<Mutex<Vec<f32>>>`；`push(&self, samples: &[f32])` 追加；`take_new(&self) -> NewAudio` 取走全部未消费样本（`std::mem::take`），若取之前长度超过 `MAX_PENDING_SAMPLES` 则先丢最旧的并把丢弃数放进 `dropped`。
-- `Recorder` 里的 `samples: Arc<Mutex<Vec<f32>>>` 改成 `queue: SampleQueue`；`Recorder::queue()` 返回 clone。
-- `append()` 里对 `cap` 的 600s 判断删掉（上限改由 `SampleQueue` 的 `MAX_PENDING_SAMPLES` 负责）。
+- 新增 `SampleQueue`，内部 `Arc<Mutex<Vec<f32>>>` + 采样率；`push(&self, samples: &[f32])` 追加；`take_new(&self) -> NewAudio` 取走全部未消费样本（`std::mem::take`），若取之前长度超过 `MAX_PENDING_SECONDS * sample_rate` 则先丢最旧的并把丢弃数放进 `dropped`。
+- `Recorder` 里的 `samples: Arc<Mutex<Vec<f32>>>` 改成 `queue: SampleQueue`（构造时传入设备采样率）；`Recorder::queue()` 返回 clone。
+- `append()` 里对 `cap` 的 600s 判断删掉（上限改由 `SampleQueue` 的 `MAX_PENDING_SECONDS` 负责）。
 - **电平表独立**：`Recorder` 另加 `levels: Arc<Mutex<Vec<f32>>>`（容量 2048 的环形缓冲），`append()` 同时把样本写进去；`peak()` 改读 `levels` 而不是采集缓冲的尾巴。
-- `gap_marker(dropped_samples: u32) -> String`：按 `dropped_samples / 48000` 估算秒数（不足 1 秒按 1 秒算），返回形如 `……（此处约 3 秒未识别）……` 的字符串。
+- `gap_marker(dropped_samples: u32, sample_rate: u32) -> String`：按 `dropped_samples / sample_rate` 估算秒数（不足 1 秒按 1 秒算），返回形如 `……（此处约 3 秒未识别）……` 的字符串。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -199,7 +209,8 @@ git commit -m "feat(asr): 新增 recognize()，跳过内部 VAD 直接解码"
       pub fn finish(&mut self) -> Vec<OfflineEvent>;   // flush VAD 里没成句的剩余音频
       pub fn segments(&self) -> &[Segment];
       pub fn elapsed_ms(&self) -> u64;                  // 纯推理耗时累计
-      pub fn consumed_samples(&self) -> usize;          // 已消费的样本数（判断「录得太短」用）
+      pub fn recorded_samples(&self) -> usize;         // 送进 push 的样本总数（判断「录音太短」用）
+      pub fn recognized_samples(&self) -> usize;       // VAD 切出并识别的句子的样本数之和（判断「没识别到内容」用）
   }
   ```
 
@@ -276,12 +287,16 @@ Expected: FAIL —— `OfflineSession` 未定义
   - `start` / `end` 用**累计已消费样本数**换算成秒，与 `Engine::transcribe` 的口径一致。
 - `finish()`：`detector.flush()` 后把剩余句子同样识别产出。
 - `elapsed_ms`：每次 `recognize` 前后取 `Instant::now()` 差值累加。
-- `consumed_samples`：`push` 收到的样本总数 + `finish` 里 flush 的样本数。
+- **两个计数器，口径必须分开**（混在一起会把「录音时长」算错）：
+  - `recorded_samples`：`push` 收到的样本总数，**不含** `finish()` 里 flush 的部分。`finish()` flush 的是 VAD 内部缓冲里的残留（多半是静音），算进去会让「录音太短」的判断失真。
+  - `recognized_samples`：VAD 切出、并且真的送去识别的那些句子的样本数之和。用来判断「录了半天但一句都没识别出来」。
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: 同 Step 2
 Expected: PASS
+
+> ⚠️ **如果等价性测试失败，不要靠放宽归一化规则让它变绿** —— 那是在掩盖真问题。先查清楚：是不是 VAD 喂的窗口大小不对（sherpa 的 `accept_waveform` 要求窗口 == `window_size` = 512 样本）、是不是 `finish()` 的 flush 没接上、是不是分段边界算错了。确认原因后再改实现，并把结论写进提交说明。
 
 - [ ] **Step 5: 提交**
 
@@ -370,7 +385,7 @@ Expected: FAIL（整段路径已改但流式路径仍用旧的游标 `take_new`�
 `src-tauri/src/lib.rs`：
 
 - 新增 `fn run_offline(app, engine: Arc<Engine>, queue: SampleQueue, rate: u32, stop: Arc<AtomicBool>) -> Transcript`：循环 `queue.take_new()` → 重采样到 16k（复用 `LinearResampler`，与 `run_streaming_core` 同样写法）→ `session.push(...)` → 每产出一句就 `app.emit("stream:segment", ...)`；`stop` 为真时 `session.finish()` 收尾并返回 `Transcript`。
-- **缺口标记**：`take_new()` 返回的 `dropped > 0` 时，把 `audio::gap_marker(dropped)` 作为一个 `Segment` 插进结果（`text` 就是那段标记，`start`/`end` 用当前时间轴），并 `app.emit("audio:error", "识别跟不上，部分音频未转写")`。录音不中断，缺口在文本里看得见。
+- **缺口标记**：`take_new()` 返回的 `dropped > 0` 时，把 `audio::gap_marker(dropped, sample_rate)` 作为一个 `Segment` 插进结果（`text` 就是那段标记，`start`/`end` 用当前时间轴），并 `app.emit("audio:error", "识别跟不上，部分音频未转写")`。录音不中断，缺口在文本里看得见。
 - `start_recording` 的整段分支：先检查整段模型就绪（`models::resolve(&app, settings.model_dir.as_deref())`，没有就返回「整段模型未就绪，请先下载」），从 `state.engine` 缓存**取走** `Engine`（`Arc`），起线程，存 `AppState.offline_session`。
 - `stop_recording` 的整段分支：停采集 → 置 stop → `rx.recv_timeout(20s)` → 把 `Engine` **还回** `state.engine` 缓存 → 返回 Transcript。
 - `transcribe_samples` 保留（文件转写与 `warm_up` 仍用），但 `correct_streaming` 的调用点删除（Task 5）。
@@ -498,15 +513,35 @@ symphonia = { version = "0.5", features = ["all"] }
 ```rust
 /// 解码一个真实 mp3，采样数与时长符合预期
 #[test]
-fn decodes_mp3_to_16k() {
-    let path = std::path::Path::new("tests/fixtures/sample.mp3");
-    if !path.exists() { eprintln!("跳过：缺少 sample.mp3"); return; }
-    let mut total = 0usize;
-    let info = voice_notes_lib::decode::decode_to_16k(path, |chunk| { total += chunk.len(); Ok(()) }).unwrap();
-    assert_eq!(info.sample_rate, 16_000);
-    assert!(total > 16_000);   // 至少 1 秒
+fn decodes_mp3_to_16k() { ... }
+
+/// 解码 AAC（m4a）—— mp4 容器的音频轨
+#[test]
+fn decodes_m4a_aac() { ... }
+
+/// 损坏的文件必须明确报错，不能静默产出空结果
+#[test]
+fn corrupted_file_returns_error() {
+    let path = std::path::Path::new("tests/fixtures/broken.mp4");
+    if !path.exists() { eprintln!("跳过：缺少 broken.mp4"); return; }
+    let err = voice_notes_lib::decode::decode_to_16k(path, |_| Ok(())).unwrap_err();
+    assert!(!err.is_empty());
+}
+
+/// 不支持的格式要给出可读错误
+#[test]
+fn unsupported_format_returns_error() {
+    let path = std::path::Path::new("tests/fixtures/not_audio.txt");
+    ...
 }
 ```
+
+**fixture 怎么来**（symphonia 0.5 对容器/编码的支持是有限的，测试要覆盖到真实场景）：
+- `sample.wav`：`afconvert -f WAVE -d LEI16@16000 -c 1` 从现有 `zh.wav` 转
+- `sample.mp3`：macOS 自带 `afconvert` 不能直出 mp3 → 用 `lame`（若装了）或从 sherpa-onnx 测试资源里取；**没有就跳过该用例**，别造假的
+- `sample.m4a`（AAC-LC，mp4 容器最常见）：`afconvert -f m4af -d aac in.wav out.m4a`
+- `broken.mp4`：拿 `sample.m4a` 的前 1KB 截断
+- `sample.mov`：macOS 不好造，**需要人工提供一个真 mov 样本**；没有就跳过，并在 README 里注明「mov 未验证」
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -557,6 +592,7 @@ git commit -m "feat(decode): 用 symphonia 在后端解码音频文件"
   - `stream:segment` → 追加 `payload.segment` 到结果区；`stream:partial` → 只更新实时行
   - 文件转写走 `invoke('transcribe_file', { path })`，删掉前端 `decodeAudioData` / `encodeWave` / `audioBase64` 的文件路径用法
   - 整段模式录音中显示「正在听…」指示（不依赖 VAD，跟随音量）
+    > 已核实：`audio:level` 事件在 `audio::start` 的采集循环里发出（`audio.rs:199`），**两种模式共用**，所以整段模式收得到音量数据，不需要额外改造。
   - `Transcript.quality_warning` 非空时弹提示
 
 - [ ] **Step 1: 写失败测试（Playwright）**
@@ -637,7 +673,11 @@ git commit -m "feat(ui): 录音不限时长，增量出字，整段实时指示�
 - 加一条：**事件载荷是增量的**（`stream:segment` 只带新句子），不要改回累计全文。
 - 加一条：**hybrid 只做检测不做复核**；`is_degenerate` 命中只提示不改文本。
 - 删掉「不要用 SenseVoice 无脑覆盖流式结果」那条复核相关的约定，保留「流式实测更准」的结论。
-- 更新「已知坑」：加上「senseVoice 单次输入 30s 上限」「symphonia 0.5 的 MSRV 与 0.6 的差别」。
+- 更新「已知坑」：
+  - 「SenseVoice 单次输入 30s 上限」
+  - 「symphonia 0.5 的 MSRV 与 0.6 的差别」
+  - **「`VoiceActivityDetector::accept_waveform()` 的窗口必须等于 `window_size`（512 样本）」** —— 改成 3200（跟流式对齐）会直接崩
+  - **「流式的 VAD `max_speech_duration` 是 20s，整段是 30s，这是刻意的」** —— 流式侧旁边还有 transducer 自己的 `rule3_min_utterance_length = 20.0`，两处都是短句优先；整段侧要 30s 是因为 SenseVoice 在 ≤30s 区间最准。别当 bug「修」成一致。
 
 - [ ] **Step 2: 出图**
 

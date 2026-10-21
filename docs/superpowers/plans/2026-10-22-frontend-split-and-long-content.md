@@ -223,6 +223,8 @@ Phase A 是纯重构，测试策略是「**行为不变**」：
 
 沿用 `docs/superpowers/plans/2026-10-22-long-content.md` 的任务分解，**补上每一步落在哪个模块**：
 
+> 那份计划已按代码评审意见修订过（2026-10-22）：安全阀上限改为按设备实际采样率算（`MAX_PENDING_SECONDS * sample_rate`）；`recorded_samples` / `recognized_samples` 两个计数器口径分开；symphonia 测试补齐 AAC/损坏文件/不支持格式三类；「文本等价性测试失败时停下来分析，不要放宽归一化规则」写成硬要求；两种模式的 VAD 参数差异（流式 20s / 整段 30s）写进 AGENTS 已知坑。
+
 | Phase B 任务 | 后端改动 | 前端落点（拆分后的模块） |
 |---|---|---|
 | B1 采集缓冲消费化 + 电平环 | `audio.rs`：`SampleQueue` / `NewAudio` / `gap_marker` | — |
