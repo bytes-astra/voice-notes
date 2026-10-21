@@ -43,7 +43,7 @@ wav.rs       PCM16 WAV 解析（前端载荷）
 - **SenseVoice 开 ITN 时自己就输出标点**（关掉 ITN 才是纯文本）。所以标点模型只能补在**没有标点**的句子上，否则会叠成「。。」——`hybrid::punctuate` 会跳过已带标点的句子。
 - 流式链路带 **VAD 门控**：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字），起音前保留 0.4s 预录避免切字头。
 - 模型固定版本（HF commit + sha256 在 `models.rs` 的 `MODEL/TOKENS/VAD` 常量里）。换模型必须同时改 bytes/sha256，否则下载校验会失败。
-- **麦克风权限在点麦克风时才申请**（`warm_up_mic` 先单独打开一次输入流触发系统弹窗，用户同意后再开始录音）。macOS 弹权限框时会停止绘制应用窗口（那一瞬间是白的，进程不会重启），所以申请时机要选在用户预期内，别在启动时偷偷弹。
+- **麦克风权限在点麦克风时才申请**（`warm_up_mic` 先单独打开一次输入流触发系统弹窗，用户同意后再开始录音）。实测：弹框期间应用窗口是空白的，进程没有重启（空白的原因没查清）。所以申请时机要选在用户预期内——别在启动时偷偷弹。
 - **输入设备可选**：`list_input_devices` 命令列出 cpal 输入设备（默认设备带标记），`set_input_device` 存进 settings（None = 系统默认），`audio::start` 按名字挑设备；挑不到就退回默认。
 - 录音缓冲上限 600 秒（`audio.rs` 的 `MAX_SECONDS`），前端 `MAX_SECONDS` 也要一起改。
 
@@ -68,7 +68,7 @@ cargo test --test hybrid -- --nocapture   # 复核策略 + 标点（VOICE_NOTES_
 ## 已知坑
 
 - 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 拉预编译静态库。GitHub 不通时用 `SHERPA_ONNX_ARCHIVE_DIR=/path/to/dir`（目录里放 `sherpa-onnx-v1.13.8-<os>-<arch>-static-lib.tar.bz2`）。
-- **webview 重绘时的白闪**：`html` 必须铺上 `var(--bg)`，窗口底色也要跟着主题走（`syncWindowBackground()` → `setBackgroundColor`，需要 `core:window:allow-set-background-color` 权限）。只给 `body` 上色不够，CSS 还没生效时 webview 是纯白。
+- **避免 webview 重绘时闪白**：`html` 铺上 `var(--bg)`，窗口底色跟着主题走（`syncWindowBackground()` → `setBackgroundColor`，需要 `core:window:allow-set-background-color` 权限）。只给 `body` 上色是不够的。
 - macOS 未签名构建的麦克风权限可能需要在「系统设置 → 隐私与安全性 → 麦克风」手动勾选；已签名的正式包才会弹标准授权框。
 - 外壳是「侧边栏 + 主区」：`.app[data-view]` 控制 `[data-view-panel]` 显隐，`switchView()` 统一处理导航高亮/标题；录音中不允许切走。新增页面 = 一个 `[data-view-panel]` + 一个 `.nav-item`。
 - 拖动窗口靠 `data-tauri-drag-region="deep"`（`.sidebar-top` 与 `.main-head`，按钮自动排除）+ **`core:window:allow-start-dragging` 权限**——这个权限不在 `core:default` 里，删了窗口就拖不动。macOS 侧边栏顶部用 `body.macos .sidebar-top { height: 78px }` 给红绿灯留位，别把品牌压到窗口按钮下面。
