@@ -69,6 +69,7 @@ silero_vad.onnx   # 可选：没有也能转写，只是少了 VAD 分句
 npm install          # 只装 @tauri-apps/cli
 npm run dev          # 开发模式
 npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
+npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML 引用是否存在
 ```
 
 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 下载对应平台的**预编译静态库**（onnxruntime 等），之后走缓存。

@@ -11,6 +11,7 @@ window.I18N_LOCALES['en'] = {
   'nav.transcribe': 'Transcribe',
   'nav.history': 'History',
   'nav.settings': 'Settings',
+  'nav.label': 'Main navigation',
 
   'view.transcribe': 'Transcribe',
   'view.history': 'History',
@@ -19,6 +20,7 @@ window.I18N_LOCALES['en'] = {
   'lang.auto': 'Auto detect',
   'lang.zh': 'Chinese',
   'lang.en': 'English',
+  'lang.group': 'Recognition language',
   'lang.yue': 'Cantonese',
   'lang.ja': 'Japanese',
   'lang.ko': 'Korean',
@@ -39,7 +41,7 @@ window.I18N_LOCALES['en'] = {
   'setup.cached': 'Cached model: {done} / {total}',
 
   'record.idle': 'Click the microphone to start recording',
-  'record.idleStreaming': 'Click the microphone to start live transcription',
+  'record.section': 'Transcription area',
   'record.preparing': 'Opening the microphone… (a system prompt appears the first time)',
   'record.recording': 'Recording — click the square or press Space to stop',
   'record.transcribing': 'Transcribing…',
@@ -58,6 +60,7 @@ window.I18N_LOCALES['en'] = {
   'record.deviceChangedDefault': 'Using the system default input device',
 
   'mode.offline': 'One-shot',
+  'mode.group': 'Transcription mode',
   'mode.offlineDesc': 'Whole clip in one pass · punctuation',
   'mode.streaming': 'Streaming',
   'mode.streamingDesc': 'Text as you speak · Chinese only',
@@ -90,7 +93,7 @@ window.I18N_LOCALES['en'] = {
   'result.copy': 'Copy',
   'result.save': 'Save',
   'result.clear': 'Clear',
-  'result.waiting': 'Waiting for recording',
+  'result.waiting': 'Waiting for a transcript',
   'result.placeholder': 'The transcript appears here — you can edit it',
   'result.pickFile': 'Transcribe an audio / video file…',
   'result.audio': 'Audio {duration}',

@@ -17,6 +17,7 @@
       'nav.transcribe': '转写',
       'nav.history': '历史',
       'nav.settings': '设置',
+      'nav.label': '主导航',
 
       'view.transcribe': '转写',
       'view.history': '历史',
@@ -25,6 +26,7 @@
       'lang.auto': '自动检测',
       'lang.zh': '中文',
       'lang.en': 'English',
+      'lang.group': '识别语言',
       'model.source.app_data': '应用数据',
       'model.source.custom': '自定义目录',
       'lang.yue': '粤语',
@@ -44,7 +46,7 @@
       'setup.cached': '已缓存的模型：{done} / {total}',
 
       'record.idle': '点击麦克风开始录音',
-      'record.idleStreaming': '点击麦克风开始实时转写',
+      'record.section': '转写区',
       'record.preparing': '正在准备麦克风…（首次会弹系统授权框）',
       'record.recording': '正在录音，点方块或空格结束',
       'record.transcribing': '正在转写…',
@@ -63,6 +65,7 @@
       'record.deviceChangedDefault': '已改用系统默认输入设备',
 
       'mode.offline': '整段',
+      'mode.group': '转写模式',
       'mode.offlineDesc': '录完再转 · 带标点',
       'mode.streaming': '流式',
       'mode.streamingDesc': '实时出字 · 仅中文',
@@ -95,7 +98,7 @@
       'result.copy': '复制',
       'result.save': '保存',
       'result.clear': '清空',
-      'result.waiting': '等待录音',
+      'result.waiting': '等待转写',
       'result.placeholder': '转写结果会出现在这里，可以直接编辑',
       'result.pickFile': '转写音频 / 视频文件…',
       'result.audio': '音频 {duration}',

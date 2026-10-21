@@ -194,13 +194,17 @@ const HINTS = {
 }
 
 function idleHint() {
-  return state.status?.mode === 'streaming' ? t('record.idleStreaming') : t('record.idle')
+  return t('record.idle')
+}
+
+function renderMicLabel() {
+  els.mic.setAttribute('aria-label', state.phase === 'recording' ? t('record.micStop') : t('record.micStart'))
 }
 
 function setPhase(phase) {
   state.phase = phase
   els.app.dataset.phase = phase
-  els.mic.setAttribute('aria-label', phase === 'recording' ? t('record.micStop') : t('record.micStart'))
+  renderMicLabel()
   els.mic.querySelector('.mic-glyph').classList.toggle('hidden', phase === 'recording')
   els.mic.querySelector('.stop-glyph').classList.toggle('hidden', phase !== 'recording')
   els.mic.disabled = phase === 'requesting' || phase === 'transcribing'
@@ -700,6 +704,7 @@ function applyLocale(preference) {
   renderHistory()
   renderStatus()
   renderThemeIcon()
+  renderMicLabel()
   if (deviceSelect) deviceSelect.setItems(deviceItems(), deviceSelect.value)
   if (localeSelect) localeSelect.setItems(localeItems(), stored)
   if (state.lastTranscript) showTranscript(state.lastTranscript)

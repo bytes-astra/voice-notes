@@ -14,6 +14,10 @@ npm run build          # 打包 → src-tauri/target/release/bundle/
 - **下拉框用自绘组件 `src/select.js`**（`UISelect.create(el, {onChange})`）：原生 `<select>` 在 macOS/Windows 样式不可控。弹层挂在 body 上用 fixed 定位，避免被滚动容器裁掉。
 - **所有界面文案走 `src/i18n.js` 的字典**：JS 里用 `t('key', {变量})`，HTML 里给元素加 `data-i18n="key"`（还有 `data-i18n-title/-placeholder/-aria`），启动时 `I18N.apply()` 填充。加语言 = 加一个字典，不要在代码里写死中文。后端也别返回中文展示文案（模型来源返回 `app_data` / `custom` 这样的 token）。
 - **字典文案必须在渲染时取，不能在模块顶层就取**：`const LANGS = [['auto', t('lang.auto')]]` 这种写法在切语言时不会跟着变（已经踩过两次：语言芯片、阶段提示 HINTS）。正确写法是存 key，渲染时 `t(key)`。
+- **`aria-label` 也要走 i18n**（`data-i18n-aria="key"`），别在 HTML 里写死中文：写死的那份在英文界面下会漏出来（麦克风按钮踩过）。**随状态变的中文标签**（麦克风「开始录音 / 结束录音」）要用单独的渲染函数（如 `renderMicLabel()`），并在 `applyLocale()` 里重新调一次——`I18N.apply()` 只认 HTML 上的静态 `data-i18n-aria`，不会跟着阶段变。
+- **改文案后跑 `npm run check:i18n`**：检查各语言字典 key 是否对齐、`index.html` 引用的 key 是否存在（漏 key 会直接把 key 名显示在界面上）。
+- **同一个控件的文案不要按模式变**：麦克风下方的空闲提示语两种模式统一写「点击麦克风开始录音」，模式差异由「整段 / 流式」芯片的副标题说明。按钮动作永远是录音，提示语却写成「实时转写」会让人以为点的是转写已有文件。
+
 - 前端通过 `window.__TAURI__.*` 调插件（`withGlobalTauri: true`），调用面在 `src/app.js` 顶部集中解构。
 - 权限声明在 `src-tauri/capabilities/default.json`；新增插件命令时要同步加权限，否则运行时直接拒绝。
 - 麦克风用途说明在 `src-tauri/Info.plist`（`NSMicrophoneUsageDescription`），通过 `bundle.macOS.infoPlist` 合并进 .app。
@@ -76,4 +80,6 @@ cargo test --test hybrid -- --nocapture   # 复核策略 + 标点（VOICE_NOTES_
 - 拖动窗口靠 `data-tauri-drag-region="deep"`（`.sidebar-top` 与 `.main-head`，按钮自动排除）+ **`core:window:allow-start-dragging` 权限**——这个权限不在 `core:default` 里，删了窗口就拖不动。macOS 侧边栏顶部用 `body.macos .sidebar-top { height: 78px }` 给红绿灯留位，别把品牌压到窗口按钮下面。
 - macOS 全屏时红绿灯会自动隐藏、鼠标移到顶部才滑出；侧栏顶部占位**始终**保留 78px，不随全屏变化（否则内容会在进出全屏时跳动）。
 - **改 UI 要在浏览器里验**：用 Playwright + 一个假 `window.__TAURI__`（mock `invoke`）把 `src/` 跑起来，检查「没有未翻译的 key」「切换语言/模式后文案都跟着变」「控制台无报错」。截图同理——**要等页面渲染完再截**，否则会截到半成品（语言芯片、下拉框都还没画出来）。
+- **harness 的静态服务器用 Node 起，别用 `python -m http.server`**：python 那个会偶发 `ERR_CONNECTION_RESET`（app.js / i18n.js 加载失败），表现是 `state is not defined` 或页面半渲染，很容易误判成代码问题。截图脚本里加一行 `page.on('requestfailed', ...)` 就能立刻看出是服务器抖了。
+
 - 端到端冒烟结果：非流式 5.6s 中文 ≈ 200ms（RTF 0.04）；流式同段音频首字约 1 个分片、整段 0.5s 内出完，无标点。
