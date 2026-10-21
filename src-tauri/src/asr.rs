@@ -18,6 +18,8 @@ const VAD_WINDOW: usize = 512;
 const MAX_SEGMENT_SECONDS: f32 = 30.0;
 /// 流式输入分片：3200 样本 = 200ms，与官方示例一致。
 const STREAM_CHUNK: usize = 3_200;
+/// 收尾时补的静音长度（300ms）：让解码器把句尾最后一个字冲出来。
+const TAIL_SILENCE_SAMPLES: usize = 4_800;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Segment {
@@ -33,6 +35,8 @@ pub struct Transcript {
     pub duration_seconds: f32,
     pub elapsed_ms: u64,
     pub language: String,
+    /// 最终文本是否来自非流式校正（流式模式结束后用 SenseVoice 复核过）。
+    pub corrected: bool,
 }
 
 pub struct Engine {
@@ -143,6 +147,7 @@ impl Engine {
             duration_seconds: duration,
             elapsed_ms: started.elapsed().as_millis() as u64,
             language: self.language.clone(),
+            corrected: false,
         }
     }
 }
@@ -429,6 +434,14 @@ impl StreamingSession {
             let chunk = std::mem::take(&mut self.pending);
             self.accept(&chunk, &mut events);
         }
+        // 结尾补一小段静音：解码器需要一点尾部上下文才会吐出最后一个字，
+        // 否则句尾会被丢掉（“产品评审会” → “产品评审”）。
+        let silence = vec![0.0f32; TAIL_SILENCE_SAMPLES];
+        for chunk in silence.chunks(STREAM_CHUNK) {
+            self.accept(chunk, &mut events);
+        }
+        // 补的静音不算音频时长。
+        self.fed_samples = self.fed_samples.saturating_sub(TAIL_SILENCE_SAMPLES);
         self.stream.input_finished();
         self.pump(&mut events);
         self.commit(&mut events);
@@ -444,6 +457,7 @@ impl StreamingSession {
             duration_seconds: self.fed_samples as f32 / SAMPLE_RATE as f32,
             elapsed_ms: self.started.elapsed().as_millis() as u64,
             language: "zh-en".into(),
+            corrected: false,
         }
     }
 }

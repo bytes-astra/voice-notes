@@ -87,6 +87,8 @@ const els = {
   settingsOpenOutput: $('settings-open-output'),
   itnToggle: $('itn-toggle'),
   punctToggle: $('punct-toggle'),
+  hybridToggle: $('hybrid-toggle'),
+  hybridStatus: $('hybrid-status'),
   punctStatus: $('punct-status'),
   punctDownload: $('punct-download'),
   toast: $('toast'),
@@ -334,7 +336,9 @@ function showTranscript(transcript) {
     `转写 ${elapsed.toFixed(1)} 秒`,
     `实时率 ${rtf}×`,
     `${chars} 字`,
+    transcript.corrected ? '已用 SenseVoice 校正' : null,
   ]) {
+    if (!part) continue
     const span = document.createElement('span')
     span.textContent = part
     els.meta.appendChild(span)
@@ -538,6 +542,10 @@ function renderStatus() {
     ? '标点模型已就绪（CT-Transformer zh-en）'
     : `标点模型未下载（约 ${fmtBytes(status.punctTotalBytes || 0)}），仅流式模式使用`
   els.punctDownload.classList.toggle('hidden', status.punctReady)
+  els.hybridToggle.checked = !!status.hybrid
+  els.hybridStatus.textContent = status.modelReady
+    ? '流式结果正常就直接用；只有出现重复字、空结果这类明显异常时，才用非流式模型复核'
+    : '需要先下载非流式模型才能复核'
   els.modelMode.textContent = streamingMode ? '流式 · 中文' : '非流式 · SenseVoice'
   updateViewSub()
 
@@ -926,6 +934,18 @@ function bindUI() {
       toast(wants ? '流式结果会自动加标点' : '已关闭自动标点')
     } catch (error) {
       els.punctToggle.checked = !wants
+      toast(fmtError(error), 'error')
+    }
+  })
+
+  els.hybridToggle.addEventListener('change', async () => {
+    const wants = els.hybridToggle.checked
+    try {
+      state.status = await invoke('set_hybrid', { enabled: wants })
+      renderStatus()
+      toast(wants ? '异常结果会用 SenseVoice 复核' : '已关闭异常复核')
+    } catch (error) {
+      els.hybridToggle.checked = !wants
       toast(fmtError(error), 'error')
     }
   })

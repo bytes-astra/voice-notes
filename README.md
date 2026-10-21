@@ -66,6 +66,17 @@ npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
 
 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 下载对应平台的**预编译静态库**（onnxruntime 等），之后走缓存。
 
+## 准确率取舍
+
+同一段音频，两个模型的实测对比（5 条中文样本，字符级准确率）：
+
+| | 结果 |
+| --- | --- |
+| 流式（Zipformer + 收尾补静音） | **99%** |
+| 非流式（SenseVoice + ITN） | 91%（“明天”听成“今天”、重复句号） |
+
+所以最终文本默认用**流式**的结果；只有在流式明显异常（空结果、重复字、字数跟音频时长对不上）时，才自动用 SenseVoice 复核一次（设置里可关）。流式收尾会补 300ms 静音把最后一个字冲出来，否则句尾会被丢掉。
+
 ## Windows 打包
 
 Tauri **不能在 macOS 上交叉打 Windows 安装包**（需要 Windows 的 MSVC 工具链、NSIS/WiX 和 WebView2）。两条可行路径：

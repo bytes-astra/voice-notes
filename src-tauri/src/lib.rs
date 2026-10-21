@@ -2,6 +2,7 @@
 
 pub mod asr;
 pub mod audio;
+pub mod hybrid;
 pub mod models;
 pub mod settings;
 pub mod wav;
@@ -78,6 +79,7 @@ pub struct Status {
     streaming_total_bytes: u64,
     punct: bool,
     punct_ready: bool,
+    hybrid: bool,
     punct_bytes: u64,
     punct_total_bytes: u64,
     app_version: String,
@@ -199,6 +201,7 @@ fn status_of(app: &AppHandle, settings: &Settings) -> Status {
         streaming_total_bytes: models::streaming_total_bytes(),
         punct: settings.punct,
         punct_ready: models::resolve_punctuation(app).is_some(),
+        hybrid: settings.hybrid,
         punct_bytes: models::punctuation_install_dir(app)
             .ok()
             .and_then(|dir| fs::metadata(dir.join(models::PUNCT.name)).ok())
@@ -561,6 +564,19 @@ fn set_punct(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<St
 }
 
 #[tauri::command]
+fn set_hybrid(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Status, String> {
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| "设置状态异常".to_string())?;
+        guard.hybrid = enabled;
+    }
+    persist(&app, &state)?;
+    Ok(status_of(&app, &state.settings()))
+}
+
+#[tauri::command]
 async fn download_punctuation_model(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -677,13 +693,14 @@ async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Tr
 
     if let Some(stream) = stream {
         // 先停采集（缓冲里已有全部音频），无论成功与否都要让流式线程收尾。
-        let stopped = recorder.stop();
+        let rate = recorder.sample_rate();
+        let samples = recorder.stop()?;
         stream.stop.store(true, Ordering::SeqCst);
-        stopped?;
-        return stream
+        let streaming = stream
             .rx
             .recv_timeout(Duration::from_secs(20))
-            .map_err(|_| "流式识别收尾超时".to_string());
+            .map_err(|_| "流式识别收尾超时".to_string())?;
+        return Ok(correct_streaming(&app, &state, streaming, samples, rate).await);
     }
 
     let rate = recorder.sample_rate();
@@ -712,6 +729,43 @@ async fn transcribe_wav(
         .filter(|l| settings::LANGUAGES.contains(&l.as_str()))
         .filter(|l| l != "auto");
     transcribe_samples(&app, &state, samples, language).await
+}
+
+/// 流式结束后用非流式 SenseVoice 校正最终文本。
+///
+/// 校正失败（模型没下、音频太短、推理出错）时保留流式结果，不打断流程。
+async fn correct_streaming(
+    app: &AppHandle,
+    state: &AppState,
+    streaming: Transcript,
+    samples: Vec<f32>,
+    rate: u32,
+) -> Transcript {
+    let settings = state.settings();
+    if !settings.hybrid {
+        return streaming;
+    }
+    // 流式结果正常就不必再跑一遍非流式：实测修好收尾后流式更准，也省掉一次推理。
+    if !hybrid::is_degenerate(&streaming.text, streaming.duration_seconds) {
+        return streaming;
+    }
+    let model_ready = models::resolve(app, settings.model_dir.as_deref()).is_some();
+    let samples = audio::resample_to_16k(samples, rate);
+    if !hybrid::should_correct(settings.hybrid, model_ready, samples.len()) {
+        return streaming;
+    }
+    let Ok(corrected) = transcribe_samples(app, state, samples, None).await else {
+        return streaming;
+    };
+    let corrected = if settings.punct {
+        match ensure_punctuation(app, state).await {
+            Ok(punctuator) => hybrid::punctuate(corrected, &punctuator),
+            Err(_) => corrected,
+        }
+    } else {
+        corrected
+    };
+    hybrid::finalize(streaming, Some(corrected))
 }
 
 async fn transcribe_samples(
@@ -911,6 +965,7 @@ pub fn run() {
             warm_up_streaming,
             set_mode,
             set_punct,
+            set_hybrid,
             start_recording,
             stop_recording,
             cancel_recording,

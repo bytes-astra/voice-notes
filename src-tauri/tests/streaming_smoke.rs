@@ -79,3 +79,35 @@ fn streams_chinese_fixture() {
     assert!(partials > 0, "没有产生中间结果");
     assert!(transcript.duration_seconds > 0.0);
 }
+
+/// 收尾必须把最后一个字冲出来：解码器需要一点尾部上下文，
+/// 否则句尾会被丢掉（“产品评审” → “产品评审会”少一个字）。
+#[test]
+fn flushes_trailing_words_on_finish() {
+    let Some(paths) = model_paths() else {
+        eprintln!("跳过：找不到流式模型（VOICE_NOTES_STREAMING_MODEL_DIR）");
+        return;
+    };
+
+    for (fixture, tail) in [
+        ("tests/fixtures/zh-tail.wav", "评审会"),
+        ("tests/fixtures/zh-tail2.wav", "确认一下"),
+    ] {
+        let engine = Arc::new(StreamingEngine::new(&paths).expect("加载流式模型"));
+        let wave = sherpa_onnx::Wave::read(fixture).expect("读取测试音频");
+
+        let mut session = StreamingSession::new(engine, None);
+        for chunk in wave.samples().chunks(3_200) {
+            session.push(chunk);
+        }
+        session.finish();
+
+        let transcript = session.transcript();
+        println!("{} → {}", fixture, transcript.text);
+        assert!(
+            transcript.text.contains(tail),
+            "{fixture} 的句尾应完整包含“{tail}”，实际：{}",
+            transcript.text
+        );
+    }
+}

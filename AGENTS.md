@@ -34,6 +34,8 @@ wav.rs       PCM16 WAV 解析（前端载荷）
 - **流式必须按 200ms（3200 样本）分片、且只在 `is_ready()` 为真时 `decode()`**，否则 sherpa-onnx 特征缓冲会越界直接 abort（`features.cc GetFrames`）。这是踩过的坑，别改成小分片或无条件 decode。
 - 流式模型是独立的一组 assets（`STREAM_*`）：`streaming-zipformer-zh-int8-2025-06-30` + `silero_vad.onnx`，只覆盖中文；语言选粤/日/韩时前端会自动切回非流式。
 - 标点模型（`PUNCT`，CT-Transformer zh-en，281 MB）独立放在 `models/punct/`，默认关闭；开启后 `StreamEmitter` 在每句定稿时调用 `PunctuationEngine::apply`，实时中间结果（partial）不加标点。模型缺失/加载失败时静默降级，不阻断录音。
+- **流式收尾必须补 300ms 静音**（`asr.rs` 的 `TAIL_SILENCE_SAMPLES`）：解码器需要尾部上下文才会吐出最后一个字，不补就会丢句尾（“产品评审会”→“产品评审”）。补的静音不计入音频时长。
+- **不要用 SenseVoice 无脑覆盖流式结果**：实测（5 条中文样本）修收尾后流式 99%、SenseVoice 91%，SenseVoice 会把“明天”听成“今天”、还多吐重复句号。校正只在流式结果明显异常（空/重复字/字数与时长对不上）时才接管，见 `hybrid::is_degenerate`。
 - 流式链路带 **VAD 门控**：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字），起音前保留 0.4s 预录避免切字头。
 - 模型固定版本（HF commit + sha256 在 `models.rs` 的 `MODEL/TOKENS/VAD` 常量里）。换模型必须同时改 bytes/sha256，否则下载校验会失败。
 - 录音缓冲上限 600 秒（`audio.rs` 的 `MAX_SECONDS`），前端 `MAX_SECONDS` 也要一起改。

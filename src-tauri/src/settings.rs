@@ -20,6 +20,8 @@ pub struct Settings {
     pub itn: bool,
     /// 流式结果是否用标点模型补标点
     pub punct: bool,
+    /// 流式结束后是否用非流式 SenseVoice 校正最终文本
+    pub hybrid: bool,
     pub output_dir: Option<String>,
     pub model_dir: Option<String>,
 }
@@ -31,6 +33,7 @@ impl Default for Settings {
             mode: "offline".into(),
             itn: true,
             punct: false,
+            hybrid: true,
             output_dir: None,
             model_dir: None,
         }
