@@ -53,6 +53,11 @@
       'record.micStart': '开始录音',
       'record.micStop': '结束录音',
       'record.hint': '空格 开始 / 结束 · Esc 取消 · 也可以把音频文件拖进窗口',
+      'record.device': '设备',
+      'record.deviceDefault': '系统默认',
+      'record.deviceSystemDefault': '系统默认',
+      'record.deviceChanged': '已切换输入设备：{name}',
+      'record.deviceChangedDefault': '已改用系统默认输入设备',
 
       'mode.offline': '整段',
       'mode.offlineDesc': '录完再转 · 带标点',
@@ -88,6 +93,7 @@
       'result.save': '保存',
       'result.clear': '清空',
       'result.waiting': '等待录音',
+      'result.placeholder': '转写结果会出现在这里，可以直接编辑',
       'result.pickFile': '转写音频 / 视频文件…',
       'result.audio': '音频 {duration}',
       'result.elapsed': '转写 {seconds} 秒',
@@ -118,6 +124,10 @@
       'history.delete': '删除',
       'history.filename': '{head}-{stamp}',
 
+      'settings.interface': '界面语言',
+      'settings.localeSystem': '跟随系统',
+      'settings.localeZh': '简体中文',
+      'settings.localeEn': 'English',
       'settings.model': '整段模型',
       'settings.modelDownload': '下载 / 更新模型',
       'settings.chooseDir': '选择目录…',
@@ -166,6 +176,11 @@
     },
   }
 
+  // 外部字典（src/locales/*.js）合并进来，加语言不用改这个文件
+  for (const [locale, dict] of Object.entries(window.I18N_LOCALES || {})) {
+    LOCALES[locale] = { ...(LOCALES[locale] || {}), ...dict }
+  }
+
   let current = 'zh-CN'
 
   function t(key, vars) {
@@ -196,10 +211,19 @@
     }
   }
 
+  /// 'system' 表示跟随系统语言。
+  function resolveLocale(preference) {
+    if (preference && LOCALES[preference]) return preference
+    const wanted = (navigator.language || 'zh-CN').toLowerCase()
+    if (wanted.startsWith('zh')) return 'zh-CN'
+    return Object.keys(LOCALES).find((locale) => locale !== 'zh-CN') || 'zh-CN'
+  }
+
   function setLocale(locale) {
-    if (!LOCALES[locale]) return false
-    current = locale
-    document.documentElement.lang = locale
+    const resolved = resolveLocale(locale)
+    if (!LOCALES[resolved]) return false
+    current = resolved
+    document.documentElement.lang = resolved
     apply()
     return true
   }

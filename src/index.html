@@ -129,6 +129,10 @@
               </div>
             </div>
             <div class="lang-row" id="lang-row" role="group" aria-label="识别语言"></div>
+            <div class="device-row">
+              <span class="device-label" data-i18n="record.device">设备</span>
+              <div id="device-select" class="select" data-i18n-aria="record.device"></div>
+            </div>
             <p class="kbd-hint" data-i18n="record.hint">空格 开始 / 结束 · Esc 取消 · 也可以把音频文件拖进窗口</p>
             <button type="button" class="link" id="pick-file-btn" data-i18n="result.pickFile">转写音频 / 视频文件…</button>
           </section>
@@ -142,7 +146,7 @@
                 <button class="btn small ghost" id="clear-btn" data-i18n="result.clear">清空</button>
               </div>
             </div>
-            <textarea id="text" spellcheck="false" placeholder="转写结果会出现在这里，可以直接编辑"></textarea>
+            <textarea id="text" spellcheck="false" placeholder="转写结果会出现在这里，可以直接编辑" data-i18n-placeholder="result.placeholder"></textarea>
             <div class="meta" id="meta"><span data-i18n="result.waiting">等待录音</span></div>
           </section>
         </section>
@@ -175,6 +179,12 @@
               <div class="row">
                 <button type="button" class="btn small" id="settings-pick-output" data-i18n="settings.chooseDir">选择目录…</button>
                 <button type="button" class="btn small ghost" id="settings-open-output" data-i18n="settings.openFolder">打开文件夹</button>
+              </div>
+            </section>
+            <section>
+              <h3 data-i18n="settings.interface">界面语言</h3>
+              <div class="row">
+                <div id="locale-select" class="select" data-i18n-aria="settings.interface"></div>
               </div>
             </section>
             <section>
@@ -218,6 +228,8 @@
   <div class="toast hidden" id="toast" role="status"></div>
   <input type="file" id="file-input" accept="audio/*,video/*" hidden />
 
+  <script src="locales/en.js"></script>
+  <script src="select.js"></script>
   <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>

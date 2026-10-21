@@ -77,13 +77,51 @@ struct LevelPayload {
     elapsed: f32,
 }
 
+/// 一个可用的输入设备。
+#[derive(Clone, Debug, Serialize)]
+pub struct InputDevice {
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// 列出系统里的输入设备（麦克风）。
+pub fn list_input_devices() -> Vec<InputDevice> {
+    let host = cpal::default_host();
+    let default_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
+    let Ok(devices) = host.input_devices() else {
+        return Vec::new();
+    };
+    devices
+        .filter_map(|device| {
+            let name = device.name().ok()?;
+            let is_default = default_name.as_deref() == Some(name.as_str());
+            Some(InputDevice { name, is_default })
+        })
+        .collect()
+}
+
+/// 在设备名列表里挑一个：精确匹配才选它，其余情况用系统默认（返回 None）。
+pub fn pick_device_name(requested: Option<&str>, available: &[String]) -> Option<String> {
+    let wanted = requested?.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    available
+        .iter()
+        .find(|name| name.as_str() == wanted)
+        .cloned()
+}
+
 /// 打开默认输入设备开始采集；音频只留在内存里，停止后由调用方转写。
-pub fn start(app: AppHandle) -> Result<Recorder, String> {
-    start_with(Some(app))
+pub fn start(app: AppHandle, device: Option<&str>) -> Result<Recorder, String> {
+    start_with(Some(app), device)
 }
 
 /// 与 [`start`] 相同，但不发 UI 事件（测试/无界面场景用）。
-pub fn start_with(app: Option<AppHandle>) -> Result<Recorder, String> {
+pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Recorder, String> {
+    let device = device.map(|name| name.to_string());
     let (tx, rx) = mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, String>>();
     let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
@@ -94,17 +132,21 @@ pub fn start_with(app: Option<AppHandle>) -> Result<Recorder, String> {
     let join = thread::Builder::new()
         .name("microphone".into())
         .spawn(move || {
-            let stream =
-                match build_stream(app.as_ref(), thread_samples.clone(), thread_error.clone()) {
-                    Ok((stream, rate)) => {
-                        let _ = ready_tx.send(Ok(rate));
-                        stream
-                    }
-                    Err(err) => {
-                        let _ = ready_tx.send(Err(err));
-                        return;
-                    }
-                };
+            let stream = match build_stream(
+                app.as_ref(),
+                thread_samples.clone(),
+                thread_error.clone(),
+                device.as_deref(),
+            ) {
+                Ok((stream, rate)) => {
+                    let _ = ready_tx.send(Ok(rate));
+                    stream
+                }
+                Err(err) => {
+                    let _ = ready_tx.send(Err(err));
+                    return;
+                }
+            };
             let _ = stream.play();
             let started = Instant::now();
             let mut last_tick = Instant::now();
@@ -165,11 +207,26 @@ fn build_stream(
     app: Option<&AppHandle>,
     samples: Arc<Mutex<Vec<f32>>>,
     error: Arc<Mutex<Option<String>>>,
+    wanted: Option<&str>,
 ) -> Result<(cpal::Stream, u32), String> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "没有可用的麦克风".to_string())?;
+    let available: Vec<String> = list_input_devices()
+        .into_iter()
+        .map(|device| device.name)
+        .collect();
+    let picked = pick_device_name(wanted, &available);
+    let device = match picked {
+        Some(name) => host
+            .input_devices()
+            .ok()
+            .and_then(|mut devices| {
+                devices.find(|device| device.name().map(|n| n == name).unwrap_or(false))
+            })
+            .ok_or_else(|| format!("找不到输入设备：{name}"))?,
+        None => host
+            .default_input_device()
+            .ok_or_else(|| "没有可用的麦克风".to_string())?,
+    };
     let supported = device
         .default_input_config()
         .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
@@ -307,7 +364,7 @@ mod tests {
             eprintln!("跳过：未设置 VOICE_NOTES_RECORD_TEST");
             return;
         }
-        let recorder = start_with(None).expect("打开麦克风");
+        let recorder = start_with(None, None).expect("打开麦克风");
         let rate = recorder.sample_rate();
         std::thread::sleep(std::time::Duration::from_secs(2));
         let samples = recorder.stop().expect("停止录音");

@@ -22,6 +22,8 @@ pub struct Settings {
     pub punct: bool,
     /// 流式结束后是否用非流式 SenseVoice 校正最终文本
     pub hybrid: bool,
+    /// 使用的输入设备名（None = 系统默认）
+    pub input_device: Option<String>,
     pub output_dir: Option<String>,
     pub model_dir: Option<String>,
 }
@@ -34,6 +36,7 @@ impl Default for Settings {
             itn: true,
             punct: false,
             hybrid: true,
+            input_device: None,
             output_dir: None,
             model_dir: None,
         }

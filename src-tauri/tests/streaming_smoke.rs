@@ -111,3 +111,34 @@ fn flushes_trailing_words_on_finish() {
         );
     }
 }
+
+#[test]
+fn picks_requested_input_device() {
+    use voice_notes_lib::audio::pick_device_name;
+
+    let available = vec![
+        "MacBook Pro Microphone".to_string(),
+        "USB 麦克风".to_string(),
+    ];
+
+    assert_eq!(
+        pick_device_name(None, &available),
+        None,
+        "没指定就用系统默认"
+    );
+    assert_eq!(
+        pick_device_name(Some(""), &available),
+        None,
+        "空名字等于没指定"
+    );
+    assert_eq!(
+        pick_device_name(Some("USB 麦克风"), &available),
+        Some("USB 麦克风".to_string()),
+        "精确匹配应被选中"
+    );
+    assert_eq!(
+        pick_device_name(Some("不存在的设备"), &available),
+        None,
+        "找不到就退回系统默认"
+    );
+}

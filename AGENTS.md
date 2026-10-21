@@ -11,6 +11,7 @@ npm run build          # 打包 → src-tauri/target/release/bundle/
 ```
 
 - 前端是**原生 JS**：`src/index.html` + `app.js` + `style.css` + `i18n.js`，没有打包器、没有框架、没有 TypeScript。不要为 UI 引入构建步骤。
+- **下拉框用自绘组件 `src/select.js`**（`UISelect.create(el, {onChange})`）：原生 `<select>` 在 macOS/Windows 样式不可控。弹层挂在 body 上用 fixed 定位，避免被滚动容器裁掉。
 - **所有界面文案走 `src/i18n.js` 的字典**：JS 里用 `t('key', {变量})`，HTML 里给元素加 `data-i18n="key"`（还有 `data-i18n-title/-placeholder/-aria`），启动时 `I18N.apply()` 填充。加语言 = 加一个字典，不要在代码里写死中文。后端也别返回中文展示文案（模型来源返回 `app_data` / `custom` 这样的 token）。
 - 前端通过 `window.__TAURI__.*` 调插件（`withGlobalTauri: true`），调用面在 `src/app.js` 顶部集中解构。
 - 权限声明在 `src-tauri/capabilities/default.json`；新增插件命令时要同步加权限，否则运行时直接拒绝。
@@ -40,6 +41,7 @@ wav.rs       PCM16 WAV 解析（前端载荷）
 - **SenseVoice 开 ITN 时自己就输出标点**（关掉 ITN 才是纯文本）。所以标点模型只能补在**没有标点**的句子上，否则会叠成「。。」——`hybrid::punctuate` 会跳过已带标点的句子。
 - 流式链路带 **VAD 门控**：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字），起音前保留 0.4s 预录避免切字头。
 - 模型固定版本（HF commit + sha256 在 `models.rs` 的 `MODEL/TOKENS/VAD` 常量里）。换模型必须同时改 bytes/sha256，否则下载校验会失败。
+- **输入设备可选**：`list_input_devices` 命令列出 cpal 输入设备（默认设备带标记），`set_input_device` 存进 settings（None = 系统默认），`audio::start` 按名字挑设备；挑不到就退回默认。
 - 录音缓冲上限 600 秒（`audio.rs` 的 `MAX_SECONDS`），前端 `MAX_SECONDS` 也要一起改。
 
 ## 测试

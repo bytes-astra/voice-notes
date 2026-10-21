@@ -7,16 +7,10 @@ const { writeText } = window.__TAURI__.clipboardManager
 const { openPath } = window.__TAURI__.opener
 const { t } = window.I18N
 
-const LANGS = [
-  ['auto', t('lang.auto')],
-  ['zh', t('lang.zh')],
-  ['en', t('lang.en')],
-  ['yue', t('lang.yue')],
-  ['ja', t('lang.ja')],
-  ['ko', t('lang.ko')],
-]
+const LANGS = ['auto', 'zh', 'en', 'yue', 'ja', 'ko']
 const HISTORY_KEY = 'voicenotes.history.v1'
 const THEME_KEY = 'voicenotes.theme'
+const LOCALE_KEY = 'voicenotes.locale'
 const BARS = 48
 // 空闲时的静态波形剪影，避免整片区空着
 const IDLE_WAVE = [4, 6, 9, 13, 18, 24, 19, 14, 10, 7, 5, 8, 12, 17, 23, 28, 22, 16, 11, 7, 5, 6, 10, 15, 21, 26, 20, 15, 10, 7, 6, 9, 14, 19, 24, 18, 13, 9, 6, 5, 7, 11, 16, 21, 17, 12, 8, 5]
@@ -24,6 +18,9 @@ const MAX_SECONDS = 600
 const MIB = 1024 * 1024
 
 const $ = (id) => document.getElementById(id)
+
+let deviceSelect = null
+let localeSelect = null
 
 const state = {
   status: null,
@@ -37,6 +34,7 @@ const state = {
   downloadingStreaming: false,
   downloadingPunct: false,
   view: 'transcribe',
+  lastTranscript: null,
   toastTimer: 0,
 }
 
@@ -70,6 +68,8 @@ const els = {
   streamDownload: $('stream-download'),
   streamCancel: $('stream-cancel'),
   langRow: $('lang-row'),
+  deviceSelect: $('device-select'),
+  localeSelect: $('locale-select'),
   text: $('text'),
   meta: $('meta'),
   copyBtn: $('copy-btn'),
@@ -126,9 +126,9 @@ function switchView(view) {
 /// 模型徽标文案：流式与整段用同一套说法，避免两处提示对不上。
 function modelBadgeText(phase) {
   const name = state.status?.mode === 'streaming' ? t('model.label.streaming') : t('model.label.offline')
-  if (phase === 'error') return `${name}加载失败`
-  if (phase === 'loading') return `正在加载${name}…`
-  return `${name}已就绪`
+  if (phase === 'error') return t('model.badge.error', { name })
+  if (phase === 'loading') return t('model.badge.loading', { name })
+  return t('model.badge.ready', { name })
 }
 
 /* ── 基础工具 ─────────────────────────────────────────── */
@@ -315,6 +315,7 @@ async function cancelRecording() {
 }
 
 function showTranscript(transcript) {
+  state.lastTranscript = transcript
   const text = (transcript.text || '').trim()
   els.text.value = text
   if (!text) {
@@ -632,16 +633,58 @@ function showPartial(partial) {
 
 function renderLang() {
   els.langRow.innerHTML = ''
-  for (const [code, label] of LANGS) {
+  for (const code of LANGS) {
     const button = document.createElement('button')
     button.type = 'button'
     button.className = 'chip'
     button.dataset.lang = code
-    button.textContent = label
+    button.textContent = t(`lang.${code}`)
     button.setAttribute('aria-pressed', 'false')
     button.addEventListener('click', () => setLanguage(code))
     els.langRow.appendChild(button)
   }
+}
+
+/// 列出输入设备，第一项是「系统默认」。
+async function loadDevices() {
+  if (!deviceSelect) return
+  let devices = []
+  try {
+    devices = (await invoke('list_input_devices')) || []
+  } catch {
+    devices = []
+  }
+  const items = [{ value: '', label: t('record.deviceDefault') }]
+  for (const device of devices) {
+    items.push({
+      value: device.name,
+      label: device.isDefault ? `${device.name} · ${t('record.deviceSystemDefault')}` : device.name,
+    })
+  }
+  const current = state.status?.inputDevice || deviceSelect.value || ''
+  deviceSelect.setItems(items, items.some((item) => item.value === current) ? current : '')
+}
+
+/// 界面语言下拉。
+function localeItems() {
+  return [
+    { value: 'system', label: t('settings.localeSystem') },
+    { value: 'zh-CN', label: t('settings.localeZh') },
+    { value: 'en', label: t('settings.localeEn') },
+  ]
+}
+
+/// 切换界面语言：存到 localStorage，然后重绘所有动态文案。
+function applyLocale(preference) {
+  const stored = preference || localStorage.getItem(LOCALE_KEY) || 'system'
+  I18N.setLocale(stored)
+  if (preference) localStorage.setItem(LOCALE_KEY, preference)
+  renderLang()
+  renderHistory()
+  renderStatus()
+  if (deviceSelect) void loadDevices()
+  if (localeSelect) localeSelect.setItems(localeItems(), stored)
+  if (state.lastTranscript) showTranscript(state.lastTranscript)
 }
 
 async function setLanguage(language) {
@@ -958,6 +1001,21 @@ function bindUI() {
     renderHistory()
   })
 
+  localeSelect = UISelect.create(els.localeSelect, {
+    onChange: (value) => applyLocale(value),
+  })
+  localeSelect.setItems(localeItems(), localStorage.getItem(LOCALE_KEY) || 'system')
+  deviceSelect = UISelect.create(els.deviceSelect, {
+    onChange: async (value) => {
+      const name = value || null
+      try {
+        state.status = await invoke('set_input_device', { name })
+        toast(name ? t('record.deviceChanged', { name }) : t('record.deviceChangedDefault'))
+      } catch (error) {
+        toast(fmtError(error), 'error')
+      }
+    },
+  })
   els.pickFileBtn?.addEventListener('click', () => els.fileInput.click())
   els.fileInput.addEventListener('change', () => {
     const file = els.fileInput.files?.[0]
@@ -1118,11 +1176,12 @@ async function init() {
   const theme = localStorage.getItem(THEME_KEY)
   if (theme) document.documentElement.dataset.theme = theme
 
-  I18N.apply()
+  applyLocale(localStorage.getItem(LOCALE_KEY) || 'system')
   buildWave()
   renderLang()
   renderHistory()
   bindUI()
+  void loadDevices()
   await listenEvents()
   await refreshStatus()
   switchView('transcribe')

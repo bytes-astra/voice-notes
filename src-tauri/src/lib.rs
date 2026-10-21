@@ -80,6 +80,7 @@ pub struct Status {
     punct: bool,
     punct_ready: bool,
     hybrid: bool,
+    input_device: Option<String>,
     punct_bytes: u64,
     punct_total_bytes: u64,
     app_version: String,
@@ -202,6 +203,7 @@ fn status_of(app: &AppHandle, settings: &Settings) -> Status {
         punct: settings.punct,
         punct_ready: models::resolve_punctuation(app).is_some(),
         hybrid: settings.hybrid,
+        input_device: settings.input_device.clone(),
         punct_bytes: models::punctuation_install_dir(app)
             .ok()
             .and_then(|dir| fs::metadata(dir.join(models::PUNCT.name)).ok())
@@ -563,6 +565,30 @@ fn set_punct(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<St
     Ok(status_of(&app, &state.settings()))
 }
 
+/// 列出系统里的输入设备（麦克风）。
+#[tauri::command]
+fn list_input_devices() -> Vec<audio::InputDevice> {
+    audio::list_input_devices()
+}
+
+/// 记住要用的输入设备（None = 系统默认）。
+#[tauri::command]
+fn set_input_device(
+    app: AppHandle,
+    state: State<AppState>,
+    name: Option<String>,
+) -> Result<Status, String> {
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| "设置状态异常".to_string())?;
+        guard.input_device = name.filter(|value| !value.trim().is_empty());
+    }
+    persist(&app, &state)?;
+    Ok(status_of(&app, &state.settings()))
+}
+
 #[tauri::command]
 fn set_hybrid(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Status, String> {
     {
@@ -636,7 +662,7 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
         } else {
             None
         };
-        let recorder = audio::start(app.clone())?;
+        let recorder = audio::start(app.clone(), settings.input_device.as_deref())?;
         let buffer = recorder.buffer();
         let rate = recorder.sample_rate();
         let stop = Arc::new(AtomicBool::new(false));
@@ -665,7 +691,7 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
     if models::resolve(&app, settings.model_dir.as_deref()).is_none() {
         return Err("模型未就绪，请先下载语音模型".into());
     }
-    let recorder = audio::start(app)?;
+    let recorder = audio::start(app, settings.input_device.as_deref())?;
     *state
         .recorder
         .lock()
@@ -966,6 +992,8 @@ pub fn run() {
             set_mode,
             set_punct,
             set_hybrid,
+            list_input_devices,
+            set_input_device,
             start_recording,
             stop_recording,
             cancel_recording,
