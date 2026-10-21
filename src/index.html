@@ -7,170 +7,208 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="app">
-    <header class="topbar" data-tauri-drag-region="deep">
-      <div class="brand">
-        <span class="dot" id="engine-dot" data-state="idle"></span>
-        <h1>语音转文字</h1>
-        <span class="badge" id="model-badge">正在检查模型…</span>
+  <div class="app" data-phase="idle" data-view="transcribe">
+    <aside class="sidebar">
+      <div class="sidebar-top" data-tauri-drag-region="deep">
+        <div class="brand" data-tauri-drag-region="deep">
+          <span class="logo" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14">
+              <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/>
+              <path d="M5.8 11.2a6.2 6.2 0 0 0 12.4 0M12 17.4V20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <span class="brand-name">语音转文字</span>
+          <span class="dot" id="engine-dot" data-state="idle"></span>
+        </div>
       </div>
-      <div class="top-actions">
+
+      <button class="new-btn" id="new-btn">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        开始新转写
+      </button>
+
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item" data-view="transcribe" aria-current="page">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M5.8 11.2a6.2 6.2 0 0 0 12.4 0M12 17.4V20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <span>转写</span>
+        </button>
+        <button class="nav-item" data-view="history">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <span>历史</span>
+          <span class="nav-count" id="history-count">0</span>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.5a7.9 7.9 0 0 0 0-3l2-1.5-2-3.4-2.3.9a7.6 7.6 0 0 0-2.6-1.5L14 2.5h-4l-.5 2.5a7.6 7.6 0 0 0-2.6 1.5l-2.3-.9-2 3.4 2 1.5a7.9 7.9 0 0 0 0 3l-2 1.5 2 3.4 2.3-.9a7.6 7.6 0 0 0 2.6 1.5l.5 2.5h4l.5-2.5a7.6 7.6 0 0 0 2.6-1.5l2.3.9 2-3.4-2-1.5Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+          <span>设置</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="model-status">
+          <span class="badge" id="model-badge">正在检查模型…</span>
+          <span class="model-mode" id="model-mode">—</span>
+        </div>
         <button class="icon-btn" id="theme-btn" aria-label="切换深浅色" title="切换深浅色">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3v2m0 14v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M3 12h2m14 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
-        </button>
-        <button class="icon-btn" id="settings-btn" aria-label="设置" title="设置">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.5a7.9 7.9 0 0 0 0-3l2-1.5-2-3.4-2.3.9a7.6 7.6 0 0 0-2.6-1.5L14 2.5h-4l-.5 2.5a7.6 7.6 0 0 0-2.6 1.5l-2.3-.9-2 3.4 2 1.5a7.9 7.9 0 0 0 0 3l-2 1.5 2 3.4 2.3-.9a7.6 7.6 0 0 0 2.6 1.5l.5 2.5h4l.5-2.5a7.6 7.6 0 0 0 2.6-1.5l2.3.9 2-3.4-2-1.5Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+          <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 3v2m0 14v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M3 12h2m14 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
         </button>
       </div>
-    </header>
+    </aside>
 
-    <main>
-      <section id="setup" class="card setup hidden" aria-live="polite">
-        <div class="setup-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 3v11m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <main class="main">
+      <header class="main-head" data-tauri-drag-region="deep">
+        <div class="main-title">
+          <h1 id="view-title">转写</h1>
+          <span class="sub" id="view-sub">—</span>
         </div>
-        <div class="setup-body">
-          <h2>首次使用：下载语音模型</h2>
-          <p class="muted">
-            SenseVoiceSmall INT8 约 228&nbsp;MB，只需下载一次，之后完全离线运行。默认从 Hugging Face
-            下载，失败时自动切到 hf-mirror；也可以直接指向一个已有的本地模型目录。
-          </p>
-          <div class="progress hidden" id="setup-progress">
-            <div class="progress-track"><div class="progress-fill" id="setup-progress-fill"></div></div>
-            <div class="progress-meta">
-              <span id="setup-progress-text">准备中…</span>
-              <span id="setup-progress-pct">0%</span>
+        <div class="head-actions">
+          <span class="hint-inline" id="head-hint"></span>
+        </div>
+      </header>
+
+      <div class="main-scroll">
+        <section class="view" data-view-panel="transcribe">
+          <section id="setup" class="card setup hidden" aria-live="polite">
+            <div class="setup-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 3v11m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </div>
-          </div>
-          <div class="setup-actions">
-            <button class="btn primary" id="download-btn">下载模型</button>
-            <button class="btn" id="pick-model-btn">使用已有模型目录</button>
-            <button class="btn ghost hidden" id="cancel-download-btn">取消下载</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="card recorder" aria-label="录音区">
-        <div class="wave" id="wave" aria-hidden="true"></div>
-        <button class="mic" id="mic-btn" aria-label="开始录音">
-          <svg class="mic-glyph" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
-            <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/>
-            <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          </svg>
-          <svg class="stop-glyph hidden" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
-            <rect x="7" y="7" width="10" height="10" rx="2.2" fill="currentColor"/>
-          </svg>
-        </button>
-        <div class="rec-status" aria-live="polite">
-          <span class="timer" id="timer">00:00</span>
-          <span class="hint" id="hint">点击麦克风开始录音</span>
-        </div>
-        <div class="live-line hidden" id="live-line" aria-live="off"></div>
-        <div class="mode-row" id="mode-row" role="group" aria-label="转写模式">
-          <button type="button" class="mode-chip" data-mode="offline" aria-pressed="true">
-            <span class="mode-name">非流式</span>
-            <span class="mode-desc">更准 · 带标点</span>
-          </button>
-          <button type="button" class="mode-chip" data-mode="streaming" aria-pressed="false">
-            <span class="mode-name">流式</span>
-            <span class="mode-desc">边说边出 · 仅中文</span>
-          </button>
-        </div>
-        <div class="stream-setup hidden" id="stream-setup">
-          <p class="stream-setup-text" id="stream-setup-text">流式模型（中文，约 161 MB）还没下载</p>
-          <div class="progress hidden" id="stream-progress">
-            <div class="progress-track"><div class="progress-fill" id="stream-progress-fill"></div></div>
-            <div class="progress-meta">
-              <span id="stream-progress-text">准备中…</span>
-              <span id="stream-progress-pct">0%</span>
+            <div class="setup-body">
+              <h2>首次使用：下载语音模型</h2>
+              <p class="muted">
+                SenseVoiceSmall INT8 约 228&nbsp;MB，只需下载一次，之后完全离线运行。默认从 Hugging Face
+                下载，失败时自动切到 hf-mirror；也可以直接指向一个已有的本地模型目录。
+              </p>
+              <div class="progress hidden" id="setup-progress">
+                <div class="progress-track"><div class="progress-fill" id="setup-progress-fill"></div></div>
+                <div class="progress-meta">
+                  <span id="setup-progress-text">准备中…</span>
+                  <span id="setup-progress-pct">0%</span>
+                </div>
+              </div>
+              <div class="setup-actions">
+                <button class="btn primary" id="download-btn">下载模型</button>
+                <button class="btn" id="pick-model-btn">使用已有模型目录</button>
+                <button class="btn ghost hidden" id="cancel-download-btn">取消下载</button>
+              </div>
             </div>
-          </div>
-          <div class="row">
-            <button type="button" class="btn small primary" id="stream-download">下载流式模型</button>
-            <button type="button" class="btn small ghost hidden" id="stream-cancel">取消</button>
-          </div>
-        </div>
-        <div class="lang-row" id="lang-row" role="group" aria-label="识别语言"></div>
-        <p class="kbd-hint">空格 开始 / 结束 · Esc 取消 · 也可以把音频文件拖进窗口</p>
-        <button type="button" class="link" id="pick-file-btn">转写音频 / 视频文件…</button>
-      </section>
+          </section>
 
-      <section class="card result">
-        <div class="card-head">
-          <h2>转写结果</h2>
-          <div class="card-actions">
-            <button class="btn small" id="copy-btn">复制</button>
-            <button class="btn small" id="save-btn">保存</button>
-            <button class="btn small ghost" id="clear-btn">清空</button>
-          </div>
-        </div>
-        <textarea id="text" spellcheck="false" placeholder="转写结果会出现在这里，可以直接编辑"></textarea>
-        <div class="meta" id="meta"><span>等待录音</span></div>
-      </section>
+          <section class="card recorder" aria-label="录音区">
+            <div class="wave" id="wave" aria-hidden="true"></div>
+            <button class="mic" id="mic-btn" aria-label="开始录音">
+              <svg class="mic-glyph" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
+                <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/>
+                <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <svg class="stop-glyph hidden" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+                <rect x="7" y="7" width="10" height="10" rx="2.2" fill="currentColor"/>
+              </svg>
+            </button>
+            <div class="rec-status" aria-live="polite">
+              <span class="timer" id="timer">00:00</span>
+              <span class="hint" id="hint">点击麦克风开始录音</span>
+            </div>
+            <div class="live-line hidden" id="live-line" aria-live="off"></div>
+            <div class="mode-row" id="mode-row" role="group" aria-label="转写模式">
+              <button type="button" class="mode-chip" data-mode="offline" aria-pressed="true">
+                <span class="mode-name">非流式</span>
+                <span class="mode-desc">更准 · 带标点</span>
+              </button>
+              <button type="button" class="mode-chip" data-mode="streaming" aria-pressed="false">
+                <span class="mode-name">流式</span>
+                <span class="mode-desc">边说边出 · 仅中文</span>
+              </button>
+            </div>
+            <div class="stream-setup hidden" id="stream-setup">
+              <p class="stream-setup-text" id="stream-setup-text">流式模型（中文，约 161 MB）还没下载</p>
+              <div class="progress hidden" id="stream-progress">
+                <div class="progress-track"><div class="progress-fill" id="stream-progress-fill"></div></div>
+                <div class="progress-meta">
+                  <span id="stream-progress-text">准备中…</span>
+                  <span id="stream-progress-pct">0%</span>
+                </div>
+              </div>
+              <div class="row">
+                <button type="button" class="btn small primary" id="stream-download">下载流式模型</button>
+                <button type="button" class="btn small ghost hidden" id="stream-cancel">取消</button>
+              </div>
+            </div>
+            <div class="lang-row" id="lang-row" role="group" aria-label="识别语言"></div>
+            <p class="kbd-hint">空格 开始 / 结束 · Esc 取消 · 也可以把音频文件拖进窗口</p>
+            <button type="button" class="link" id="pick-file-btn">转写音频 / 视频文件…</button>
+          </section>
 
-      <section class="card history">
-        <div class="card-head">
-          <h2>历史记录</h2>
-          <button class="btn small ghost" id="clear-history-btn">清空</button>
-        </div>
-        <ul class="history-list" id="history-list"></ul>
-        <p class="empty-hint" id="history-empty">还没有记录，录一段试试。</p>
-      </section>
+          <section class="card result">
+            <div class="card-head">
+              <h2>转写结果</h2>
+              <div class="card-actions">
+                <button class="btn small" id="copy-btn">复制</button>
+                <button class="btn small" id="save-btn">保存</button>
+                <button class="btn small ghost" id="clear-btn">清空</button>
+              </div>
+            </div>
+            <textarea id="text" spellcheck="false" placeholder="转写结果会出现在这里，可以直接编辑"></textarea>
+            <div class="meta" id="meta"><span>等待录音</span></div>
+          </section>
+        </section>
+
+        <section class="view hidden" data-view-panel="history">
+          <section class="card history">
+            <div class="card-head">
+              <h2>历史记录</h2>
+              <button class="btn small ghost" id="clear-history-btn">清空</button>
+            </div>
+            <ul class="history-list" id="history-list"></ul>
+            <p class="empty-hint" id="history-empty">还没有记录，录一段试试。</p>
+          </section>
+        </section>
+
+        <section class="view hidden" data-view-panel="settings">
+          <section class="card settings-page">
+            <section>
+              <h3>语音模型</h3>
+              <p class="mono small" id="settings-model"></p>
+              <div class="row">
+                <button type="button" class="btn small" id="settings-download">下载 / 更新模型</button>
+                <button type="button" class="btn small" id="settings-pick-model">选择目录…</button>
+                <button type="button" class="btn small ghost hidden" id="settings-clear-model">使用应用内模型</button>
+              </div>
+            </section>
+            <section>
+              <h3>保存目录</h3>
+              <p class="mono small" id="settings-output"></p>
+              <div class="row">
+                <button type="button" class="btn small" id="settings-pick-output">选择目录…</button>
+                <button type="button" class="btn small ghost" id="settings-open-output">打开文件夹</button>
+              </div>
+            </section>
+            <section>
+              <h3>识别</h3>
+              <label class="switch-row">
+                <input type="checkbox" id="itn-toggle" />
+                <span>数字与标点（ITN）</span>
+              </label>
+            </section>
+            <section>
+              <h3>流式标点</h3>
+              <p class="mono small" id="punct-status"></p>
+              <div class="row">
+                <label class="switch-row">
+                  <input type="checkbox" id="punct-toggle" />
+                  <span>流式结果自动加标点</span>
+                </label>
+                <button type="button" class="btn small" id="punct-download">下载标点模型</button>
+              </div>
+            </section>
+            <footer class="settings-foot">
+              <span class="muted small" id="settings-version"></span>
+            </footer>
+          </section>
+        </section>
+      </div>
     </main>
   </div>
 
   <div class="drop-overlay hidden" id="drop-overlay"><div>松开开始转写音频</div></div>
-
-  <dialog id="settings" class="settings">
-    <form method="dialog" class="settings-inner">
-      <div class="settings-head">
-        <h2>设置</h2>
-        <button class="icon-btn" value="close" aria-label="关闭">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        </button>
-      </div>
-      <section>
-        <h3>语音模型</h3>
-        <p class="mono small" id="settings-model"></p>
-        <div class="row">
-          <button type="button" class="btn small" id="settings-download">下载 / 更新模型</button>
-          <button type="button" class="btn small" id="settings-pick-model">选择目录…</button>
-          <button type="button" class="btn small ghost hidden" id="settings-clear-model">使用应用内模型</button>
-        </div>
-      </section>
-      <section>
-        <h3>保存目录</h3>
-        <p class="mono small" id="settings-output"></p>
-        <div class="row">
-          <button type="button" class="btn small" id="settings-pick-output">选择目录…</button>
-          <button type="button" class="btn small ghost" id="settings-open-output">打开文件夹</button>
-        </div>
-      </section>
-      <section>
-        <h3>识别</h3>
-        <label class="switch-row">
-          <input type="checkbox" id="itn-toggle" />
-          <span>数字与标点（ITN）</span>
-        </label>
-      </section>
-      <section>
-        <h3>流式标点</h3>
-        <p class="mono small" id="punct-status"></p>
-        <div class="row">
-          <label class="switch-row">
-            <input type="checkbox" id="punct-toggle" />
-            <span>流式结果自动加标点</span>
-          </label>
-          <button type="button" class="btn small" id="punct-download">下载标点模型</button>
-        </div>
-      </section>
-      <footer class="row settings-foot">
-        <span class="muted small" id="settings-version"></span>
-        <button class="btn" value="close">完成</button>
-      </footer>
-    </form>
-  </dialog>
-
   <div class="toast hidden" id="toast" role="status"></div>
   <input type="file" id="file-input" accept="audio/*,video/*" hidden />
 

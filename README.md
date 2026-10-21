@@ -4,11 +4,13 @@
 
 参考了 DSH 的语音输入实现（`client-ui-voice-input` + `speech-to-text-sensevoice`）：同样用 Silero VAD 切句 + sherpa-onnx 跑 SenseVoice，同样在前端重采样成 16 kHz 单声道 PCM16。
 
+界面是「左侧导航 + 右侧主区」：转写、历史、设置各一页。
+
 ![主界面](docs/screenshots/ready.png)
 
-| 录音 | 结果 | 深色 |
+| 录音 | 历史 | 设置 |
 | --- | --- | --- |
-| ![录音](docs/screenshots/recording.png) | ![结果](docs/screenshots/result.png) | ![深色](docs/screenshots/dark.png) |
+| ![录音](docs/screenshots/recording.png) | ![历史](docs/screenshots/history.png) | ![设置](docs/screenshots/settings.png) |
 
 首次运行（下载模型 / 复用已有模型，截图见 `docs/screenshots/first-run.png`）：
 
@@ -74,8 +76,8 @@ npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
 
 ```
 src/                     前端（原生 JS，无构建）
-  index.html             界面骨架
-  app.js                 录音/转写/历史/设置
+  index.html             应用外壳（侧边栏 + 三个视图）
+  app.js                 视图切换、录音/转写/历史/设置
   style.css              深浅色主题样式
 src-tauri/
   src/lib.rs             Tauri 命令、状态、保存

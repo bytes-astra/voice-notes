@@ -35,6 +35,7 @@ const state = {
   downloading: false,
   downloadingStreaming: false,
   downloadingPunct: false,
+  view: 'transcribe',
   toastTimer: 0,
 }
 
@@ -76,7 +77,6 @@ const els = {
   historyList: $('history-list'),
   historyEmpty: $('history-empty'),
   clearHistoryBtn: $('clear-history-btn'),
-  settings: $('settings'),
   settingsModel: $('settings-model'),
   settingsOutput: $('settings-output'),
   settingsVersion: $('settings-version'),
@@ -93,6 +93,45 @@ const els = {
   dropOverlay: $('drop-overlay'),
   fileInput: $('file-input'),
   pickFileBtn: $('pick-file-btn'),
+  viewTitle: $('view-title'),
+  viewSub: $('view-sub'),
+  headHint: $('head-hint'),
+  modelMode: $('model-mode'),
+  historyCount: $('history-count'),
+  newBtn: $('new-btn'),
+  navItems: document.querySelectorAll('.nav-item'),
+}
+
+const VIEW_TITLES = { transcribe: '转写', history: '历史', settings: '设置' }
+
+function switchView(view) {
+  if (!VIEW_TITLES[view]) return
+  if (state.phase === 'recording' && view !== 'transcribe') {
+    toast('先结束当前录音')
+    return
+  }
+  state.view = view
+  els.app.dataset.view = view
+  for (const panel of document.querySelectorAll('[data-view-panel]')) {
+    panel.classList.toggle('hidden', panel.dataset.viewPanel !== view)
+  }
+  for (const item of els.navItems) {
+    item.setAttribute('aria-current', item.dataset.view === view ? 'page' : 'false')
+  }
+  els.viewTitle.textContent = VIEW_TITLES[view]
+  updateViewSub()
+}
+
+function updateViewSub() {
+  if (!state.status) return
+  const lang = { auto: '自动', zh: '中文', en: 'English', yue: '粤语', ja: '日本語', ko: '한국어' }[state.status.language] || '自动'
+  if (state.view === 'transcribe') {
+    els.viewSub.textContent = state.status.mode === 'streaming' ? `流式 · ${lang}` : `非流式 · ${lang}`
+  } else if (state.view === 'history') {
+    els.viewSub.textContent = `${state.history.length} 条记录`
+  } else {
+    els.viewSub.textContent = `VoiceNotes ${state.status.appVersion || ''}`
+  }
 }
 
 /* ── 基础工具 ─────────────────────────────────────────── */
@@ -320,6 +359,7 @@ function addHistory(transcript, text) {
 }
 
 function renderHistory() {
+  els.historyCount.textContent = String(state.history.length)
   els.historyList.innerHTML = ''
   els.historyEmpty.classList.toggle('hidden', state.history.length > 0)
   for (const item of state.history) {
@@ -498,6 +538,8 @@ function renderStatus() {
     ? '标点模型已就绪（CT-Transformer zh-en）'
     : `标点模型未下载（约 ${fmtBytes(status.punctTotalBytes || 0)}），仅流式模式使用`
   els.punctDownload.classList.toggle('hidden', status.punctReady)
+  els.modelMode.textContent = streamingMode ? '流式 · 中文' : '非流式 · SenseVoice'
+  updateViewSub()
 
   for (const button of els.langRow.children) {
     button.setAttribute('aria-pressed', String(button.dataset.lang === status.language))
@@ -771,13 +813,6 @@ async function transcribeFile(file) {
   }
 }
 
-/* ── 设置对话框 ───────────────────────────────────────── */
-
-async function openSettings() {
-  renderStatus()
-  els.settings.showModal()
-}
-
 async function pickOutputDir() {
   const dir = await openDialog({ directory: true, multiple: false, title: '选择保存目录' })
   if (!dir) return
@@ -838,14 +873,27 @@ function bindUI() {
   })
   els.pickModelBtn.addEventListener('click', () => void pickModelDir())
 
-  $('settings-btn').addEventListener('click', () => void openSettings())
+  for (const item of els.navItems) {
+    item.addEventListener('click', () => switchView(item.dataset.view))
+  }
+  els.newBtn.addEventListener('click', () => {
+    if (state.phase !== 'idle') {
+      toast('先结束当前录音')
+      return
+    }
+    switchView('transcribe')
+    els.text.value = ''
+    els.meta.innerHTML = '<span>等待录音</span>'
+    els.timer.textContent = '00:00'
+    els.text.focus()
+  })
   $('theme-btn').addEventListener('click', toggleTheme)
   els.settingsDownload.addEventListener('click', () => {
-    els.settings.close()
+    switchView('transcribe')
     void downloadModel()
   })
   els.settingsPickModel.addEventListener('click', () => {
-    els.settings.close()
+    switchView('transcribe')
     void pickModelDir()
   })
   els.settingsClearModel.addEventListener('click', async () => {
@@ -912,13 +960,17 @@ function bindUI() {
       void cancelRecording()
       return
     }
+    if (event.key === 'Escape' && state.view !== 'transcribe') {
+      switchView('transcribe')
+      return
+    }
     if (typing) return
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') {
       event.preventDefault()
       els.fileInput.click()
       return
     }
-    if (event.code === 'Space' && !els.settings.open) {
+    if (event.code === 'Space' && state.view === 'transcribe') {
       event.preventDefault()
       if (state.phase === 'recording') void stopRecording()
       else if (state.phase === 'idle') void startRecording()
@@ -1060,6 +1112,7 @@ async function init() {
   bindUI()
   await listenEvents()
   await refreshStatus()
+  switchView('transcribe')
   if (state.status?.modelReady) void warmUp()
   if (state.status?.mode === 'streaming' && state.status.streamingReady) {
     void invoke('warm_up_streaming').catch(() => {})
