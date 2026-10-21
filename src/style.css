@@ -101,6 +101,7 @@ textarea, input, .mono { user-select: text; }
 /* ── 顶栏 ─────────────────────────────────────────────── */
 
 .topbar {
+  cursor: default;
   display: flex;
   align-items: center;
   justify-content: space-between;

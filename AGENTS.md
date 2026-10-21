@@ -53,5 +53,5 @@ cargo test --test streaming_smoke -- --nocapture  # 流式真模型转写（VOIC
 
 - 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 拉预编译静态库。GitHub 不通时用 `SHERPA_ONNX_ARCHIVE_DIR=/path/to/dir`（目录里放 `sherpa-onnx-v1.13.8-<os>-<arch>-static-lib.tar.bz2`）。
 - macOS 未签名构建的麦克风权限可能需要在「系统设置 → 隐私与安全性 → 麦克风」手动勾选；已签名的正式包才会弹标准授权框。
-- 拖动窗口靠 `data-tauri-drag-region`；macOS 顶栏给红绿灯留了 84px（`body.macos`），改布局别把左侧内容压到窗口按钮下面。
+- 拖动窗口靠 `data-tauri-drag-region="deep"`（顶栏整条可拖，按钮自动排除）+ **`core:window:allow-start-dragging` 权限**——这个权限不在 `core:default` 里，删了窗口就拖不动。macOS 顶栏给红绿灯留了 84px（`body.macos`），改布局别把左侧内容压到窗口按钮下面。
 - 端到端冒烟结果：非流式 5.6s 中文 ≈ 200ms（RTF 0.04）；流式同段音频首字约 1 个分片、整段 0.5s 内出完，无标点。
