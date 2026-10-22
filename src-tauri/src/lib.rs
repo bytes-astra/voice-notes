@@ -79,7 +79,7 @@ pub struct Status {
     streaming_total_bytes: u64,
     punct: bool,
     punct_ready: bool,
-    hybrid: bool,
+    warn_on_bad: bool,
     input_device: Option<String>,
     punct_bytes: u64,
     punct_total_bytes: u64,
@@ -202,7 +202,7 @@ fn status_of(app: &AppHandle, settings: &Settings) -> Status {
         streaming_total_bytes: models::streaming_total_bytes(),
         punct: settings.punct,
         punct_ready: models::resolve_punctuation(app).is_some(),
-        hybrid: settings.hybrid,
+        warn_on_bad: settings.warn_on_bad,
         input_device: settings.input_device.clone(),
         punct_bytes: models::punctuation_install_dir(app)
             .ok()
@@ -599,13 +599,13 @@ fn set_input_device(
 }
 
 #[tauri::command]
-fn set_hybrid(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Status, String> {
+fn set_warn_on_bad(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Status, String> {
     {
         let mut guard = state
             .settings
             .lock()
             .map_err(|_| "设置状态异常".to_string())?;
-        guard.hybrid = enabled;
+        guard.warn_on_bad = enabled;
     }
     persist(&app, &state)?;
     Ok(status_of(&app, &state.settings()))
@@ -735,7 +735,8 @@ async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Tr
             .rx
             .recv_timeout(Duration::from_secs(20))
             .map_err(|_| "流式识别收尾超时".to_string())?;
-        return Ok(correct_streaming(&app, &state, streaming, samples, rate).await);
+        let _ = (rate, samples);
+        return Ok(mark_quality(&state, streaming));
     }
 
     let rate = recorder.sample_rate();
@@ -745,7 +746,17 @@ async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Tr
         return Err("录音太短，至少说 0.2 秒".into());
     }
 
-    transcribe_samples(&app, &state, samples, None).await
+    let transcript = transcribe_samples(&app, &state, samples, None).await?;
+    Ok(mark_quality(&state, transcript))
+}
+
+/// 识别结果明显异常时打一个标记：只提醒用户，不纠正已经识别出来的文本。
+fn mark_quality(state: &AppState, mut transcript: Transcript) -> Transcript {
+    let settings = state.settings();
+    if settings.warn_on_bad && hybrid::is_degenerate(&transcript.text, transcript.duration_seconds) {
+        transcript.quality_warning = Some("degenerate".into());
+    }
+    transcript
 }
 
 #[tauri::command]
@@ -764,43 +775,6 @@ async fn transcribe_wav(
         .filter(|l| settings::LANGUAGES.contains(&l.as_str()))
         .filter(|l| l != "auto");
     transcribe_samples(&app, &state, samples, language).await
-}
-
-/// 流式结束后用非流式 SenseVoice 校正最终文本。
-///
-/// 校正失败（模型没下、音频太短、推理出错）时保留流式结果，不打断流程。
-async fn correct_streaming(
-    app: &AppHandle,
-    state: &AppState,
-    streaming: Transcript,
-    samples: Vec<f32>,
-    rate: u32,
-) -> Transcript {
-    let settings = state.settings();
-    if !settings.hybrid {
-        return streaming;
-    }
-    // 流式结果正常就不必再跑一遍非流式：实测修好收尾后流式更准，也省掉一次推理。
-    if !hybrid::is_degenerate(&streaming.text, streaming.duration_seconds) {
-        return streaming;
-    }
-    let model_ready = models::resolve(app, settings.model_dir.as_deref()).is_some();
-    let samples = audio::resample_to_16k(samples, rate);
-    if !hybrid::should_correct(settings.hybrid, model_ready, samples.len()) {
-        return streaming;
-    }
-    let Ok(corrected) = transcribe_samples(app, state, samples, None).await else {
-        return streaming;
-    };
-    let corrected = if settings.punct {
-        match ensure_punctuation(app, state).await {
-            Ok(punctuator) => hybrid::punctuate(corrected, &punctuator),
-            Err(_) => corrected,
-        }
-    } else {
-        corrected
-    };
-    hybrid::finalize(streaming, Some(corrected))
 }
 
 async fn transcribe_samples(
@@ -1000,7 +974,7 @@ pub fn run() {
             warm_up_streaming,
             set_mode,
             set_punct,
-            set_hybrid,
+            set_warn_on_bad,
             list_input_devices,
             warm_up_mic,
             set_input_device,

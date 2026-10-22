@@ -1,6 +1,6 @@
 /* 结果区：转写结果 + 实时中间结果 */
 
-import { els, fmtDuration, state, t } from './core.js'
+import { els, fmtDuration, state, t, toast } from './core.js'
 import { addHistory } from './history.js'
 
 export function showTranscript(transcript) {
@@ -29,6 +29,7 @@ export function showTranscript(transcript) {
     els.meta.appendChild(span)
   }
   addHistory(transcript, text)
+  if (transcript.qualityWarning) toast(t('result.qualityWarn'), 'error')
 }
 
 export function showPartial(partial) {

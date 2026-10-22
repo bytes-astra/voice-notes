@@ -41,6 +41,8 @@ pub struct Transcript {
     pub language: String,
     /// 最终文本是否来自非流式校正（流式模式结束后用 SenseVoice 复核过）。
     pub corrected: bool,
+    /// 识别结果明显异常时的提示标记（token，不是文案；前端自己翻译）。
+    pub quality_warning: Option<String>,
 }
 
 pub struct Engine {
@@ -152,6 +154,7 @@ impl Engine {
             elapsed_ms: started.elapsed().as_millis() as u64,
             language: self.language.clone(),
             corrected: false,
+            quality_warning: None,
         }
     }
 }
@@ -251,6 +254,7 @@ mod tests {
             elapsed_ms: 200,
             language: "zh".into(),
             corrected: false,
+            quality_warning: None,
         };
         let value = serde_json::to_value(&transcript).unwrap();
         assert_eq!(value["durationSeconds"], serde_json::json!(1.5));
@@ -485,6 +489,7 @@ impl StreamingSession {
             elapsed_ms: self.started.elapsed().as_millis() as u64,
             language: "zh-en".into(),
             corrected: false,
+            quality_warning: None,
         }
     }
 }

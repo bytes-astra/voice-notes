@@ -157,14 +157,14 @@ export function bindUI() {
     }
   })
 
-  els.hybridToggle.addEventListener('change', async () => {
-    const wants = els.hybridToggle.checked
+  els.warnToggle.addEventListener('change', async () => {
+    const wants = els.warnToggle.checked
     try {
-      state.status = await invoke('set_hybrid', { enabled: wants })
+      state.status = await invoke('set_warn_on_bad', { enabled: wants })
       renderStatus()
-      toast(wants ? t('settings.hybridOn') : t('settings.hybridOff'))
+      toast(wants ? t('settings.warnOn') : t('settings.warnOff'))
     } catch (error) {
-      els.hybridToggle.checked = !wants
+      els.warnToggle.checked = !wants
       toast(fmtError(error), 'error')
     }
   })
