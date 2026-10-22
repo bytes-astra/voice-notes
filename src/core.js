@@ -71,7 +71,6 @@ export const els = {
   timer: $('timer'),
   hint: $('hint'),
   liveLine: $('live-line'),
-  listening: $('listening'),
   modeRow: $('mode-row'),
   streamSetup: $('stream-setup'),
   streamSetupText: $('stream-setup-text'),

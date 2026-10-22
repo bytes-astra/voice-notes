@@ -46,7 +46,6 @@
       'setup.cached': '已缓存的模型：{done} / {total}',
 
       'record.idle': '点击麦克风开始录音',
-      'record.listening': '正在听…（说完一句就会出字）',
       'record.section': '转写区',
       'record.preparing': '正在准备麦克风…（首次会弹系统授权框）',
       'record.recording': '正在录音，点方块或空格结束',

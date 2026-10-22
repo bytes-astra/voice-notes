@@ -41,7 +41,6 @@ window.I18N_LOCALES['en'] = {
   'setup.cached': 'Cached model: {done} / {total}',
 
   'record.idle': 'Click the microphone to start recording',
-  'record.listening': 'Listening… (text appears after each sentence)',
   'record.section': 'Transcription area',
   'record.preparing': 'Opening the microphone… (a system prompt appears the first time)',
   'record.recording': 'Recording — click the square or press Space to stop',

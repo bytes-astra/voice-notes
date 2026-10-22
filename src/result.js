@@ -35,15 +35,6 @@ export function appendSegment(text) {
   const piece = (text || '').trim()
   if (!piece) return
   els.text.value = joinText(els.text.value, piece)
-  updateListening()
-}
-
-/// 「正在听…」指示：录音中但还没出字时显示。
-///
-/// 整段模式要等 VAD 断句（最长 30 秒）才出第一句，没有这个指示用户会以为卡住了。
-export function updateListening() {
-  const show = state.phase === 'recording' && !els.text.value.trim()
-  els.listening.classList.toggle('hidden', !show)
 }
 
 export function showPartial(partial) {

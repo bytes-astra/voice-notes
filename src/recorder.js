@@ -3,7 +3,7 @@
 import { $, BARS, IDLE_WAVE, els, fmtClock, fmtError, idleHint, state, t, toast } from './core.js'
 import { invoke } from './tauri.js'
 import { renderMode } from './status.js'
-import { showTranscript, updateListening } from './result.js'
+import { showTranscript } from './result.js'
 
 const HINTS = {
   requesting: 'record.preparing',
@@ -29,7 +29,6 @@ export function setPhase(phase) {
     els.liveLine.textContent = ''
   }
   if (phase === 'idle') resetWave()
-  updateListening()
   renderMode()
 }
 
