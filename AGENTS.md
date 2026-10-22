@@ -102,7 +102,7 @@ node scripts/fetch-quality-corpus.mjs 12   # 真人中文电话录音 + 转写�
 bash scripts/gen-tts-corpus.sh             # TTS 20 句 + 数字句 + 长句 + 噪声变体
 ```
 探针会自动扫描 `src-tauri/tests/fixtures/quality/*.wav`：有同名 `.txt` 就算 CER，没有就只打印识别结果。
-当前基线（zh + ITN 整段）：真人 5.85% / 真人+噪声 5.56% / TTS 26.47% / 长句 20.00%。
+当前基线（zh + ITN 整段，已含 pre-roll 修复）：真人 5.85% / 真人+噪声 2.78% / TTS 15.97%（修复前 26.47%）/ 长句 15.00%。
 **别拿 TTS 的绝对 CER 当质量结论**——它主要暴露「VAD 切字头」这类相对差异。
 
 ## Windows
@@ -122,4 +122,5 @@ bash scripts/gen-tts-corpus.sh             # TTS 20 句 + 数字句 + 长句 + �
 - **改 UI 要在浏览器里验**：用 Playwright + 一个假 `window.__TAURI__`（mock `invoke`）把 `src/` 跑起来，检查「没有未翻译的 key」「切换语言/模式后文案都跟着变」「控制台无报错」。截图同理——**要等页面渲染完再截**，否则会截到半成品（语言芯片、下拉框都还没画出来）。
 - **harness 的静态服务器用 Node 起，别用 `python -m http.server`**：python 那个会偶发 `ERR_CONNECTION_RESET`（app.js / i18n.js 加载失败），表现是 `state is not defined` 或页面半渲染，很容易误判成代码问题。截图脚本里加一行 `page.on('requestfailed', ...)` 就能立刻看出是服务器抖了。
 
+- **VAD 会切掉开头第一个字**：音频开头直接是语音（没有前导静音，比如 TTS、剪过的文件）时，sherpa VAD 的内部 padding 只有 ≈314ms，首字会被切（「今天下午」→「天下午」）。`asr.rs` 的 `should_pre_roll` 只在「第一段 + 起点 <0.6s + 段前 RMS > 段 RMS×0.3」时把起点回扩 0.4s。**不要改成无门控回扩**——实测会把开头噪声当语音（真人样本多出「您好」）。
 - 端到端冒烟结果：非流式 5.6s 中文 ≈ 200ms（RTF 0.04）；流式同段音频首字约 1 个分片、整段 0.5s 内出完，无标点。

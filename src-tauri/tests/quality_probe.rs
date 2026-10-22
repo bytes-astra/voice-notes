@@ -670,3 +670,35 @@ fn probe_corpus_preroll_buffer() {
         }
     }
 }
+
+/// 录制路径：把「开头就是语音」的样本喂进 OfflineSession，确认首字没被切
+#[test]
+fn probe_offline_session_first_word() {
+    use std::sync::Arc;
+    let Some(dir) = model_dir() else {
+        eprintln!("跳过：未设置 VOICE_NOTES_MODEL_DIR");
+        return;
+    };
+    let paths = paths(&dir);
+    let engine = Arc::new(Engine::new(&paths, "zh", true).expect("加载"));
+    let vad = engine.vad_config().expect("vad");
+    for name in ["tts-01", "tts-05", "tts-09"] {
+        let file = format!("tests/fixtures/quality/{name}.wav");
+        let Ok(Some(wave)) = std::fs::metadata(&file).map(|_| sherpa_onnx::Wave::read(&file)) else {
+            continue;
+        };
+        let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone());
+        let mut events = Vec::new();
+        for chunk in wave.samples().chunks(3_200) {
+            events.extend(session.push(chunk));
+        }
+        events.extend(session.finish());
+        let text: String = events
+            .iter()
+            .map(|e| match e {
+                voice_notes_lib::asr::OfflineEvent::Segment(s) => s.text.as_str(),
+            })
+            .collect();
+        println!("[录制路径] {name}: {}", text.replace('\n', " "));
+    }
+}

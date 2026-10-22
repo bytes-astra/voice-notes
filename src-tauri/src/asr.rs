@@ -20,6 +20,14 @@ const MAX_SEGMENT_SECONDS: f32 = 30.0;
 const STREAM_CHUNK: usize = 3_200;
 /// 收尾时补的静音长度（300ms）：让解码器把句尾最后一个字冲出来。
 const TAIL_SILENCE_SAMPLES: usize = 4_800;
+/// 段起点落在音频开头附近时，段前往回扩的最大距离（0.4s）。
+///
+/// sherpa 的 VAD 内部 padding 只有 ≈314ms（`2×window + min_speech`）；起音偏软时
+/// VAD 会把开头当成静音，padding 追不回来，第一个字就被切掉了。实测 TTS / 剪辑过的
+/// 文件（开头直接是语音）每条都会丢首字。
+const PRE_ROLL_SAMPLES: usize = 6_400;
+/// 只有段起点早于这个位置才考虑回扩（0.6s）；更靠后的段前面有真实音频，padding 够用。
+const PRE_ROLL_MAX_START: usize = 9_600;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +35,26 @@ pub struct Segment {
     pub text: String,
     pub start: f32,
     pub end: f32,
+}
+
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+/// 第一段是否值得把起点回扩：起点在开头附近，且段前音频有语音级能量。
+///
+/// 纯静音/底噪不回扩 —— 否则会把开头的噪声当语音塞进结果（实测真人样本
+/// real-05 会多出「您好」）。
+fn should_pre_roll(start: usize, pre: &[f32], segment: &[f32]) -> bool {
+    if start == 0 || start > PRE_ROLL_MAX_START {
+        return false;
+    }
+    let pre_rms = rms(pre);
+    let seg_rms = rms(segment);
+    pre_rms > 0.005 && pre_rms > seg_rms * 0.3
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -111,15 +139,24 @@ impl Engine {
 
         if let Some(vad_config) = &self.vad {
             if let Some(detector) =
-                VoiceActivityDetector::create(vad_config, MAX_SEGMENT_SECONDS + 2.0)
+                VoiceActivityDetector::create(vad_config, 60.0)
             {
                 detector.reset();
+                let mut first = true;
                 for chunk in samples.chunks(VAD_WINDOW) {
                     detector.accept_waveform(chunk);
                     while let Some(segment) = detector.front() {
-                        let text = decode(&self.recognizer, segment.samples());
-                        let start = segment.start() as f32 / SAMPLE_RATE as f32;
-                        let end = start + segment.samples().len() as f32 / SAMPLE_RATE as f32;
+                        let raw = segment.samples();
+                        let start_samples = segment.start() as usize;
+                        let mut from = start_samples;
+                        if first && should_pre_roll(start_samples, &samples[..start_samples.min(samples.len())], raw) {
+                            from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
+                        }
+                        first = false;
+                        let audio = &samples[from..(start_samples + raw.len()).min(samples.len())];
+                        let text = decode(&self.recognizer, audio);
+                        let start = from as f32 / SAMPLE_RATE as f32;
+                        let end = start + audio.len() as f32 / SAMPLE_RATE as f32;
                         if !text.is_empty() {
                             segments.push(Segment { text, start, end });
                         }
@@ -128,9 +165,17 @@ impl Engine {
                 }
                 detector.flush();
                 while let Some(segment) = detector.front() {
-                    let text = decode(&self.recognizer, segment.samples());
-                    let start = segment.start() as f32 / SAMPLE_RATE as f32;
-                    let end = start + segment.samples().len() as f32 / SAMPLE_RATE as f32;
+                    let raw = segment.samples();
+                    let start_samples = segment.start() as usize;
+                    let mut from = start_samples;
+                    if first && should_pre_roll(start_samples, &samples[..start_samples.min(samples.len())], raw) {
+                        from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
+                    }
+                    first = false;
+                    let audio = &samples[from..(start_samples + raw.len()).min(samples.len())];
+                    let text = decode(&self.recognizer, audio);
+                    let start = from as f32 / SAMPLE_RATE as f32;
+                    let end = start + audio.len() as f32 / SAMPLE_RATE as f32;
                     if !text.is_empty() {
                         segments.push(Segment { text, start, end });
                     }
@@ -465,6 +510,10 @@ pub struct OfflineSession {
     /// 已经喂进来的采样总数（用来算时间轴）
     fed_samples: usize,
     segments: Vec<Segment>,
+    /// 会话开头的音频（最多 0.6s）：第一段被 VAD 切掉字头时用它回扩。
+    head: Vec<f32>,
+    /// 是否已经处理过第一段
+    drained_first: bool,
     /// 纯推理耗时累计（毫秒）
     elapsed_ms: u64,
 }
@@ -489,6 +538,8 @@ impl OfflineSession {
             vad_pending: Vec::new(),
             fed_samples: 0,
             segments: Vec::new(),
+            head: Vec::new(),
+            drained_first: false,
             elapsed_ms: 0,
         }
     }
@@ -496,6 +547,10 @@ impl OfflineSession {
     /// 喂入 16 kHz 单声道采样，返回这一轮识别出来的句子。
     pub fn push(&mut self, samples: &[f32]) -> Vec<OfflineEvent> {
         let mut events = Vec::new();
+        if !self.drained_first && self.head.len() < PRE_ROLL_MAX_START {
+            let take = (PRE_ROLL_MAX_START - self.head.len()).min(samples.len());
+            self.head.extend_from_slice(&samples[..take]);
+        }
         self.vad_pending.extend_from_slice(samples);
         self.fed_samples += samples.len();
         while self.vad_pending.len() >= VAD_WINDOW {
@@ -521,8 +576,23 @@ impl OfflineSession {
     /// 把 VAD 已经切好的句子取出来识别。
     fn drain(&mut self, events: &mut Vec<OfflineEvent>) {
         while let Some(segment) = self.detector.front() {
-            let samples = segment.samples().to_vec();
-            let start = segment.start() as f32 / SAMPLE_RATE as f32;
+            let raw = segment.samples().to_vec();
+            let start_samples = segment.start() as usize;
+            let mut from = start_samples;
+            if !self.drained_first
+                && should_pre_roll(start_samples, &self.head[..start_samples.min(self.head.len())], &raw)
+            {
+                from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
+            }
+            self.drained_first = true;
+            let samples: Vec<f32> = if from < start_samples && start_samples <= self.head.len() {
+                let mut merged = self.head[from..start_samples].to_vec();
+                merged.extend_from_slice(&raw);
+                merged
+            } else {
+                raw
+            };
+            let start = from as f32 / SAMPLE_RATE as f32;
             let end = start + samples.len() as f32 / SAMPLE_RATE as f32;
             self.detector.pop();
 
@@ -796,5 +866,24 @@ mod merge_tests {
         let texts = vec!["好的".to_string(), "好的继续".to_string()];
         let merged = merge_transcripts(&texts);
         assert_eq!(merged, "好的好的继续");
+    }
+}
+
+#[cfg(test)]
+mod pre_roll_tests {
+    use super::*;
+
+    #[test]
+    fn pre_roll_only_for_speech_like_prefix() {
+        let speech = vec![0.1f32; 32_000];
+        let segment = vec![0.1f32; 16_000];
+        // 0.2s 处起句，段前是语音级能量 → 回扩
+        assert!(should_pre_roll(3_200, &speech, &segment));
+        // 段前是静音/底噪 → 不回扩（否则会把噪声塞进结果）
+        assert!(!should_pre_roll(3_200, &vec![0.001f32; 32_000], &segment));
+        // 从 0 开始没有可回扩的音频
+        assert!(!should_pre_roll(0, &speech, &segment));
+        // 2s 处起句：前面有真实音频，sherpa 的 padding 够用
+        assert!(!should_pre_roll(32_000, &speech, &segment));
     }
 }
