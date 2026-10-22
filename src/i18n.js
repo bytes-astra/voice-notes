@@ -161,7 +161,7 @@
       'settings.hotwordsExampleFilled': '已填入示例，记得点保存',
       'settings.modelPath': '{source} · {dir}',
       'settings.modelNotReady': '未就绪 · 需要下载 {size}',
-      'settings.version': 'VoiceNotes {version} · SenseVoiceSmall INT8',
+      'settings.version': 'VoiceNotes {version}',
       'settings.switchedAppModel': '已切换为应用内模型目录',
       'settings.switchedAppModelNeedDownload': '已切换为应用内模型目录，需要先下载模型',
 

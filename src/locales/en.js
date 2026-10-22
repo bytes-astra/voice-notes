@@ -160,7 +160,7 @@ window.I18N_LOCALES['en'] = {
   'settings.hotwordsExampleFilled': 'Example filled — remember to save',
   'settings.modelPath': '{source} · {dir}',
   'settings.modelNotReady': 'Not ready · needs {size}',
-  'settings.version': 'VoiceNotes {version} · SenseVoiceSmall INT8',
+  'settings.version': 'VoiceNotes {version}',
   'settings.switchedAppModel': 'Switched to the app model folder',
   'settings.switchedAppModelNeedDownload': 'Switched to the app model folder — download the model first',
 
