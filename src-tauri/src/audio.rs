@@ -62,14 +62,6 @@ impl SampleQueue {
         }
     }
 
-    /// 不设上限：整段模式在改成「边录边识别」之前要把整条录音留在内存里。
-    /// TODO(B4)：整段模式改成边录边识别后，这个变体就能删掉。
-    pub fn unbounded() -> Self {
-        Self {
-            samples: Arc::new(Mutex::new(Vec::new())),
-            limit: None,
-        }
-    }
 
     pub fn push(&self, samples: &[f32]) {
         let Ok(mut guard) = self.samples.lock() else { return };
@@ -269,18 +261,13 @@ pub fn probe_input(device: Option<&str>) -> Result<(), String> {
 }
 
 /// 打开默认输入设备开始采集；音频只留在内存里，停止后由调用方转写。
-/// `bounded` = true 时未消费的采样有上限（流式模式用，内存恒定）；
-/// false 时整条录音都留在缓冲里（整段模式在改成边录边识别之前）。
-pub fn start(app: AppHandle, device: Option<&str>, bounded: bool) -> Result<Recorder, String> {
-    start_with(Some(app), device, bounded)
+/// 采集缓冲是有界的：未消费的采样超过上限就丢最旧的（内存恒定）。
+pub fn start(app: AppHandle, device: Option<&str>) -> Result<Recorder, String> {
+    start_with(Some(app), device)
 }
 
 /// 与 [`start`] 相同，但不发 UI 事件（测试/无界面场景用）。
-pub fn start_with(
-    app: Option<AppHandle>,
-    device: Option<&str>,
-    bounded: bool,
-) -> Result<Recorder, String> {
+pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Recorder, String> {
     let device = device.map(|name| name.to_string());
     let (tx, rx) = mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(u32, SampleQueue), String>>();
@@ -297,7 +284,6 @@ pub fn start_with(
                 thread_levels.clone(),
                 thread_error.clone(),
                 device.as_deref(),
-                bounded,
             ) {
                 Ok((stream, rate, queue)) => {
                     let _ = ready_tx.send(Ok((rate, queue)));
@@ -369,7 +355,6 @@ fn build_stream(
     levels: LevelRing,
     error: Arc<Mutex<Option<String>>>,
     wanted: Option<&str>,
-    bounded: bool,
 ) -> Result<(cpal::Stream, u32, SampleQueue), String> {
     let host = cpal::default_host();
     let available: Vec<String> = list_input_devices()
@@ -396,11 +381,7 @@ fn build_stream(
     let channels = supported.channels() as usize;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.config();
-    let queue = if bounded {
-        SampleQueue::new(sample_rate)
-    } else {
-        SampleQueue::unbounded()
-    };
+    let queue = SampleQueue::new(sample_rate);
 
     let on_error = |app: Option<AppHandle>, slot: Arc<Mutex<Option<String>>>| {
         move |err: cpal::StreamError| {
@@ -560,7 +541,7 @@ mod tests {
             eprintln!("跳过：未设置 VOICE_NOTES_RECORD_TEST");
             return;
         }
-        let recorder = start_with(None, None, true).expect("打开麦克风");
+        let recorder = start_with(None, None).expect("打开麦克风");
         let rate = recorder.sample_rate();
         std::thread::sleep(std::time::Duration::from_secs(2));
         let samples = recorder.stop().expect("停止录音");

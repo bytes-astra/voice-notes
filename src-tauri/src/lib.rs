@@ -5,7 +5,6 @@ pub mod decode;
 pub mod audio;
 pub mod models;
 pub mod settings;
-pub mod wav;
 
 use std::fs;
 use std::path::PathBuf;
@@ -796,7 +795,7 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
         } else {
             None
         };
-        let recorder = audio::start(app.clone(), settings.input_device.as_deref(), true)?;
+        let recorder = audio::start(app.clone(), settings.input_device.as_deref())?;
         let queue = recorder.queue();
         let rate = recorder.sample_rate();
         let stop = Arc::new(AtomicBool::new(false));
@@ -828,7 +827,7 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
     // 整段模式：边录边按句识别（音频消费掉即释放，内存不随录音时长增长）
     load_engine(&app, &state).await?;
     let engine = shared_engine(&state)?;
-    let recorder = audio::start(app.clone(), settings.input_device.as_deref(), true)?;
+    let recorder = audio::start(app.clone(), settings.input_device.as_deref())?;
     let queue = recorder.queue();
     let rate = recorder.sample_rate();
     let stop = Arc::new(AtomicBool::new(false));
@@ -916,57 +915,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     Ok(transcript)
 }
 
-#[tauri::command]
-async fn transcribe_wav(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    audio_base64: String,
-    language: Option<String>,
-) -> Result<Transcript, String> {
-    let bytes = wav::decode_base64(&audio_base64)?;
-    let samples = wav::wav_to_samples(&bytes)?;
-    if samples.len() < wav::TARGET_RATE as usize / 5 {
-        return Err("音频太短，无法转写".into());
-    }
-    let language = language
-        .filter(|l| settings::LANGUAGES.contains(&l.as_str()))
-        .filter(|l| l != "auto");
-    transcribe_samples(&app, &state, samples, language).await
-}
 
-async fn transcribe_samples(
-    app: &AppHandle,
-    state: &AppState,
-    samples: Vec<f32>,
-    language_override: Option<String>,
-) -> Result<Transcript, String> {
-    let settings = state.settings();
-    let paths = models::resolve(app, settings.model_dir.as_deref())
-        .ok_or_else(|| "模型未就绪，请先下载语音模型".to_string())?;
-    let engine = state.engine.clone();
-    let language = language_override.unwrap_or(settings.language);
-    let itn = settings.itn;
-
-    tauri::async_runtime::spawn_blocking(move || -> Result<Transcript, String> {
-        let engine = {
-            let mut guard = engine.lock().map_err(|_| "引擎状态异常".to_string())?;
-            let stale = guard
-                .as_ref()
-                .map(|e| e.language != language || e.itn != itn)
-                .unwrap_or(true);
-            if stale {
-                *guard = Some(Arc::new(Engine::new(&paths, &language, itn)?));
-            }
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| "引擎未初始化".to_string())?
-        };
-        Ok(engine.transcribe(&samples))
-    })
-    .await
-    .map_err(|e| format!("转写失败: {e}"))?
-}
 
 
 /// 转写一个音频 / 视频文件。
@@ -1214,7 +1163,6 @@ pub fn run() {
             start_recording,
             stop_recording,
             cancel_recording,
-            transcribe_wav,
             transcribe_file,
             download_model,
             download_streaming_model,
