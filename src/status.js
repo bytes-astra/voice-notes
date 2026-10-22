@@ -76,8 +76,6 @@ export function renderStatus() {
     ? t('settings.punctReady')
     : t('settings.punctMissing', { size: fmtBytes(status.punctTotalBytes || 0) })
   els.punctDownload.classList.toggle('hidden', status.punctReady)
-  els.warnToggle.checked = !!status.warnOnBad
-  els.warnStatus.textContent = t('settings.warnReady')
   els.modelMode.textContent = streamingMode ? t('model.name.streaming') : t('model.name.offline')
 
   for (const button of els.langRow.children) {

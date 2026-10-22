@@ -2,7 +2,6 @@
 
 pub mod asr;
 pub mod audio;
-pub mod hybrid;
 pub mod models;
 pub mod settings;
 pub mod wav;
@@ -79,7 +78,6 @@ pub struct Status {
     streaming_total_bytes: u64,
     punct: bool,
     punct_ready: bool,
-    warn_on_bad: bool,
     input_device: Option<String>,
     punct_bytes: u64,
     punct_total_bytes: u64,
@@ -202,7 +200,6 @@ fn status_of(app: &AppHandle, settings: &Settings) -> Status {
         streaming_total_bytes: models::streaming_total_bytes(),
         punct: settings.punct,
         punct_ready: models::resolve_punctuation(app).is_some(),
-        warn_on_bad: settings.warn_on_bad,
         input_device: settings.input_device.clone(),
         punct_bytes: models::punctuation_install_dir(app)
             .ok()
@@ -598,18 +595,6 @@ fn set_input_device(
     Ok(status_of(&app, &state.settings()))
 }
 
-#[tauri::command]
-fn set_warn_on_bad(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Status, String> {
-    {
-        let mut guard = state
-            .settings
-            .lock()
-            .map_err(|_| "设置状态异常".to_string())?;
-        guard.warn_on_bad = enabled;
-    }
-    persist(&app, &state)?;
-    Ok(status_of(&app, &state.settings()))
-}
 
 #[tauri::command]
 async fn download_punctuation_model(
@@ -736,7 +721,7 @@ async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Tr
             .recv_timeout(Duration::from_secs(20))
             .map_err(|_| "流式识别收尾超时".to_string())?;
         let _ = (rate, samples);
-        return Ok(mark_quality(&state, streaming));
+        return Ok(streaming);
     }
 
     let rate = recorder.sample_rate();
@@ -746,17 +731,7 @@ async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Tr
         return Err("录音太短，至少说 0.2 秒".into());
     }
 
-    let transcript = transcribe_samples(&app, &state, samples, None).await?;
-    Ok(mark_quality(&state, transcript))
-}
-
-/// 识别结果明显异常时打一个标记：只提醒用户，不纠正已经识别出来的文本。
-fn mark_quality(state: &AppState, mut transcript: Transcript) -> Transcript {
-    let settings = state.settings();
-    if settings.warn_on_bad && hybrid::is_degenerate(&transcript.text, transcript.duration_seconds) {
-        transcript.quality_warning = Some("degenerate".into());
-    }
-    transcript
+    transcribe_samples(&app, &state, samples, None).await
 }
 
 #[tauri::command]
@@ -974,7 +949,6 @@ pub fn run() {
             warm_up_streaming,
             set_mode,
             set_punct,
-            set_warn_on_bad,
             list_input_devices,
             warm_up_mic,
             set_input_device,

@@ -99,8 +99,6 @@ export const els = {
   settingsOpenOutput: $('settings-open-output'),
   itnToggle: $('itn-toggle'),
   punctToggle: $('punct-toggle'),
-  warnToggle: $('warn-toggle'),
-  warnStatus: $('warn-status'),
   punctStatus: $('punct-status'),
   punctDownload: $('punct-download'),
   toast: $('toast'),

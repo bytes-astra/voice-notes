@@ -144,13 +144,6 @@
       'settings.outputChanged': '保存目录已更新',
       'settings.recognition': '识别',
       'settings.itn': '数字与标点（ITN）',
-      'settings.warn': '异常提醒',
-      'settings.warnToggle': '识别结果明显异常时提醒我',
-      'settings.warnReady':
-        '结果明显异常时（重复字、空结果、字数和时长对不上）提醒你一次；不会自动改写已经识别出来的内容',
-      'settings.warnOn': '结果异常时会提醒你',
-      'settings.warnOff': '已关闭异常提醒',
-      'result.qualityWarn': '识别结果可能有问题（内容异常），建议切到整段模式重录一次',
       'settings.punct': '流式标点',
       'settings.punctToggle': '流式结果自动加标点',
       'settings.punctReady': '标点模型已就绪（CT-Transformer zh-en），流式结果会自动加标点',

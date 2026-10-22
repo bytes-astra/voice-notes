@@ -30,7 +30,6 @@ npm run build          # 打包 → src-tauri/target/release/bundle/
 ```
 lib.rs       Tauri 命令、AppState、保存文件、下载编排
 asr.rs       SenseVoice 识别 + Silero VAD 分句 + 流式 Zipformer（StreamingSession）
-hybrid.rs    流式结果与整段复核的合并策略 + 标点补全
 audio.rs     cpal 采集、电平事件、16 kHz 重采样
 models.rs    模型目录解析 / 下载（HF → hf-mirror）/ sha256 校验
 settings.rs  设置 JSON 持久化
@@ -46,8 +45,8 @@ wav.rs       PCM16 WAV 解析（前端载荷）
 - 流式模型是独立的一组 assets（`STREAM_*`）：`streaming-zipformer-zh-int8-2025-06-30` + `silero_vad.onnx`，只覆盖中文；语言选粤/日/韩时前端会自动切回非流式。
 - 标点模型（`PUNCT`，CT-Transformer zh-en，281 MB）独立放在 `models/punct/`，默认关闭；开启后 `StreamEmitter` 在每句定稿时调用 `PunctuationEngine::apply`，实时中间结果（partial）不加标点。模型缺失/加载失败时静默降级，不阻断录音。
 - **流式收尾必须补 300ms 静音**（`asr.rs` 的 `TAIL_SILENCE_SAMPLES`）：解码器需要尾部上下文才会吐出最后一个字，不补就会丢句尾（“产品评审会”→“产品评审”）。补的静音不计入音频时长。
-- **不要用 SenseVoice 无脑覆盖流式结果**：实测（5 条中文样本）修收尾后流式 99%、SenseVoice 91%，SenseVoice 会把“明天”听成“今天”。校正只在流式结果明显异常（空/重复字/字数与时长对不上）时才接管，见 `hybrid::is_degenerate`。
-- **SenseVoice 开 ITN 时自己就输出标点**（关掉 ITN 才是纯文本）。所以标点模型只能补在**没有标点**的句子上，否则会叠成「。。」——`hybrid::punctuate` 会跳过已带标点的句子。
+- **不要用 SenseVoice 覆盖流式结果**（这个功能已经删掉了，别再加回来）：实测（5 条中文样本）修收尾后流式 99%、SenseVoice 91%，SenseVoice 会把“明天”听成“今天”。而且复核要求保留全部音频，和「录音不限时长、内存恒定」直接冲突。
+- **SenseVoice 开 ITN 时自己就输出标点**（关掉 ITN 才是纯文本）。标点模型（CT-Transformer）现在只用于**流式模式**给句子补标点；整段模式靠 SenseVoice 自带的 ITN 标点，不要再给整段结果再套一遍标点模型，否则会叠成「。。」。
 - 流式链路带 **VAD 门控**：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字），起音前保留 0.4s 预录避免切字头。
 - 模型固定版本（HF commit + sha256 在 `models.rs` 的 `MODEL/TOKENS/VAD` 常量里）。换模型必须同时改 bytes/sha256，否则下载校验会失败。
 - **麦克风权限在界面渲染完之后申请**：macOS 是在**第一次碰输入设备**时才弹权限框的，而「列出输入设备」就会触发。所以流程是：启动 → 界面画完（约 0.9s）→ 调 `list_input_devices` → 系统弹授权框。列设备这一步同时把设备列表填好了，下拉框打开即用。
@@ -63,7 +62,6 @@ cd src-tauri
 cargo test --lib                      # 纯逻辑 + 麦克风枚举
 cargo test --test asr_smoke -- --nocapture   # 非流式真模型转写（没模型会跳过）
 cargo test --test streaming_smoke -- --nocapture  # 流式真模型转写（VOICE_NOTES_STREAMING_MODEL_DIR）
-cargo test --test hybrid -- --nocapture   # 复核策略 + 标点（VOICE_NOTES_PUNCT_MODEL，可选）
 ```
 
 `asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR` 指向包含 `model.int8.onnx` / `tokens.txt` 的目录，未设置时自动跳过。

@@ -20,8 +20,6 @@ pub struct Settings {
     pub itn: bool,
     /// 流式结果是否用标点模型补标点
     pub punct: bool,
-    /// 识别结果明显异常时是否提醒用户（不再自动纠正）
-    pub warn_on_bad: bool,
     /// 使用的输入设备名（None = 系统默认）
     pub input_device: Option<String>,
     pub output_dir: Option<String>,
@@ -35,7 +33,6 @@ impl Default for Settings {
             mode: "offline".into(),
             itn: true,
             punct: false,
-            warn_on_bad: true,
             input_device: None,
             output_dir: None,
             model_dir: None,

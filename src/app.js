@@ -157,18 +157,6 @@ export function bindUI() {
     }
   })
 
-  els.warnToggle.addEventListener('change', async () => {
-    const wants = els.warnToggle.checked
-    try {
-      state.status = await invoke('set_warn_on_bad', { enabled: wants })
-      renderStatus()
-      toast(wants ? t('settings.warnOn') : t('settings.warnOff'))
-    } catch (error) {
-      els.warnToggle.checked = !wants
-      toast(fmtError(error), 'error')
-    }
-  })
-
   els.itnToggle.addEventListener('change', async () => {
     try {
       state.status = await invoke('set_itn', { enabled: els.itnToggle.checked })

@@ -31,7 +31,6 @@
 - **VAD 自动分句**：长录音按语音段切开逐段识别，静音段被跳过，结果按中英文习惯拼接。
 - **中 / 英 / 粤 / 日 / 韩 / 自动检测** 语言选择，ITN（数字、标点）可开关。
 - **可选输入设备**：多麦、外接声卡、回环设备都能选，不会再录到「不是你想录的那个声音」。
-- **结果异常自动复核**：流式结果明显异常（空结果、重复字、字数和音频时长对不上）时，用整段模型复核一次。
 - **标点可选**：装上标点模型（CT-Transformer）后，流式结果按句自动补标点；不装也能用。
 - **文件转写**：把音频/视频拖进窗口，或按 `⌘O` / `Ctrl+O` 选文件；浏览器解码后重采样再送模型（mp3、m4a、wav、webm… 取决于系统解码器）。
 - **界面语言**：中文 / English，设置里可切；文案集中在字典文件里。
@@ -83,7 +82,7 @@ npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML 引�
 | 流式（Zipformer + 收尾补静音） | **99%** |
 | 整段（SenseVoice + ITN） | 91%（“明天”听成“今天”） |
 
-所以最终文本默认用**流式**的结果；只有在流式明显异常（空结果、重复字、字数跟音频时长对不上）时，才自动用 SenseVoice 复核一次（设置里可关）。
+所以最终文本默认用**流式**的结果，不再用整段模型二次复核 —— 实测流式并不比整段差，而复核要求保留全部音频，和「录音不限时长、内存恒定」的目标冲突。
 
 两个容易踩的坑，代码里都处理了：
 
@@ -137,7 +136,6 @@ src-tauri/
   src/models.rs          模型定位/下载/校验
   src/settings.rs        设置持久化
   src/wav.rs             PCM16 WAV 解析
-  src/hybrid.rs          流式结果与整段复核的合并策略
 scripts/make-icon.py     生成图标源图
 ```
 
@@ -148,14 +146,13 @@ cd src-tauri
 cargo test --lib                  # 逻辑、WAV 解析、设备选择、重采样
 cargo test --test asr_smoke       # 真模型转写 tests/fixtures/zh.wav（缺模型自动跳过）
 cargo test --test streaming_smoke # 流式识别、句尾冲刷、设备挑选
-cargo test --test hybrid          # 复核策略 + 标点（缺模型自动跳过）
 
 # 需要真实网络的用例（默认跳过）
 VOICE_NOTES_DOWNLOAD_TEST=1 cargo test --lib downloads_vad -- --nocapture
 VOICE_NOTES_RECORD_TEST=1 cargo test --lib records_microphone -- --nocapture
 ```
 
-`asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR`，`streaming_smoke` 需要 `VOICE_NOTES_STREAMING_MODEL_DIR`（流式四个文件：`encoder.int8.onnx`/`decoder.int8.onnx`/`joiner.int8.onnx`/`tokens.txt`），`hybrid` 额外可选 `VOICE_NOTES_PUNCT_MODEL`，未设置时自动跳过。
+`asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR`，`streaming_smoke` 需要 `VOICE_NOTES_STREAMING_MODEL_DIR`（流式四个文件：`encoder.int8.onnx`/`decoder.int8.onnx`/`joiner.int8.onnx`/`tokens.txt`），未设置时自动跳过。
 
 实测（Apple Silicon）：5.6 秒中文音频转写耗时约 200 ms，实时率约 0.04×。
 

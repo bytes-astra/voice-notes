@@ -139,13 +139,6 @@ window.I18N_LOCALES['en'] = {
   'settings.outputChanged': 'Save folder updated',
   'settings.recognition': 'Recognition',
   'settings.itn': 'Numbers and punctuation (ITN)',
-  'settings.warn': 'Odd result alert',
-  'settings.warnToggle': 'Tell me when the result looks wrong',
-  'settings.warnReady':
-    'You get one alert when the result is obviously broken (repeated characters, empty, too few words for the audio length); the recognised text is never rewritten',
-  'settings.warnOn': 'You will be warned when a result looks wrong',
-  'settings.warnOff': 'Odd result alerts are off',
-  'result.qualityWarn': 'The result may be wrong (it looks degenerate) — try recording again in one-shot mode',
   'settings.punct': 'Streaming punctuation',
   'settings.punctToggle': 'Add punctuation to streaming results',
   'settings.punctReady':
