@@ -58,6 +58,7 @@ settings.rs  设置 JSON 持久化
 - **整段模式不再有「录完再转」**：整条一次识别的路径（`transcribe_samples`）连同 `transcribe_wav` 命令、`wav.rs` 模块一起删掉了 —— 前端上传 base64 那条链没人用了。录音走 `run_offline` 线程逐句识别，文件走 `transcribe_file`（后端 symphonia 解码）。
 - **不要用 SenseVoice 覆盖流式结果**（这个功能已经删掉了，别再加回来）：实测（5 条中文样本）修收尾后流式 99%、SenseVoice 91%，SenseVoice 会把“明天”听成“今天”。而且复核要求保留全部音频，和「录音不限时长、内存恒定」直接冲突。
 - **SenseVoice 开 ITN 时自己就输出标点**（关掉 ITN 才是纯文本）。标点模型（CT-Transformer）现在只用于**流式模式**给句子补标点；整段模式靠 SenseVoice 自带的 ITN 标点，不要再给整段结果再套一遍标点模型，否则会叠成「。。」。
+- **流式术语表（热词）**：`settings.hotwords`（最多 100 条、单条 32 字，`settings::clean_hotwords` 清洗）。非空时 `StreamingEngine` 用 `modified_beam_search` + `config.hotwords_buf`（短音频约慢 6%）；为空保持 greedy。**只能用在流式**：SenseVoice 上给热词或 beam 会 `_Exit(-1)` 杀进程（已复现）。改词表会清空流式引擎，下次录音重载 161 MB。设置页有「填入示例」（`assets/hotwords.txt`）。
 - 流式链路带 **VAD 门控**：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字），起音前保留 0.4s 预录避免切字头。
 - 模型固定版本（HF commit + sha256 在 `models.rs` 的 `MODEL/TOKENS/VAD` 常量里）。换模型必须同时改 bytes/sha256，否则下载校验会失败。
 - **模型下载走镜像优先**（`[MIRROR, HF]`）：国内直连 huggingface.co 经常连不上，镜像失败再回退官方源。别改回 HF 优先。
