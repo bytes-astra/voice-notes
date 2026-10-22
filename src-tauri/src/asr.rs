@@ -92,6 +92,14 @@ impl Engine {
         })
     }
 
+    /// 对一段已经切好的句子直接解码（**不再跑 VAD**）。
+    ///
+    /// 边录边识别的路径下 VAD 在外层切句，这里再切一次会改变句子内部的边界，
+    /// 所以单独提供一个「直接解码」的入口。
+    pub fn recognize(&self, samples: &[f32]) -> String {
+        decode(&self.recognizer, samples)
+    }
+
     /// 转写 16 kHz 单声道样本；VAD 可用时按语音段切分，否则按 30s 窗口兜底。
     pub fn transcribe(&self, samples: &[f32]) -> Transcript {
         let started = Instant::now();

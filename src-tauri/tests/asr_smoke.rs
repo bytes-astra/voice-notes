@@ -70,3 +70,22 @@ fn joins_sensevoice_segments() {
         "今天天气不错我们出去走走吧"
     );
 }
+
+/// recognize 与 transcribe 对同一段音频给出一致的文本（证明去掉内部 VAD 没改变解码）
+#[test]
+fn recognize_matches_transcribe_on_one_sentence() {
+    let Some(paths) = model_paths() else {
+        eprintln!("跳过：找不到 SenseVoice 模型");
+        return;
+    };
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    let engine = Engine::new(&paths, "zh", true).expect("加载模型");
+
+    let direct = engine.recognize(wave.samples());
+    let batch = engine.transcribe(wave.samples());
+
+    println!("recognize：{direct}");
+    println!("transcribe：{}", batch.text);
+    assert!(!direct.trim().is_empty());
+    assert_eq!(direct.trim(), batch.text.trim());
+}
