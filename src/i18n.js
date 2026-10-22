@@ -136,7 +136,7 @@
       'settings.localeZh': '简体中文',
       'settings.localeEn': 'English',
       'settings.model': '模型目录',
-      'settings.modelDownload': '下载 / 更新模型',
+      'settings.modelDownload': '下载模型',
       'settings.chooseDir': '选择目录…',
       'settings.useAppModel': '使用应用内模型',
       'settings.output': '保存目录',

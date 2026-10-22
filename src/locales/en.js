@@ -133,7 +133,7 @@ window.I18N_LOCALES['en'] = {
   'settings.localeZh': '简体中文',
   'settings.localeEn': 'English',
   'settings.model': 'Model directory',
-  'settings.modelDownload': 'Download / update model',
+  'settings.modelDownload': 'Download model',
   'settings.chooseDir': 'Choose folder…',
   'settings.useAppModel': 'Use the app model folder',
   'settings.output': 'Save folder',
