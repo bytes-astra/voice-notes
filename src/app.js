@@ -160,6 +160,33 @@ export function bindUI() {
     }
   })
 
+  els.hotwordsSave.addEventListener('click', async () => {
+    const hotwords = els.hotwordsInput.value
+      .split('\n')
+      .map((word) => word.trim())
+      .filter(Boolean)
+    try {
+      state.status = await invoke('set_hotwords', { hotwords })
+      renderStatus()
+      toast(
+        hotwords.length
+          ? t('settings.hotwordsSaved', { count: hotwords.length })
+          : t('settings.hotwordsCleared'),
+      )
+    } catch (error) {
+      toast(fmtError(error), 'error')
+    }
+  })
+
+  els.hotwordsExample.addEventListener('click', async () => {
+    try {
+      els.hotwordsInput.value = (await invoke('default_hotwords')).join('\n')
+      toast(t('settings.hotwordsExampleFilled'))
+    } catch (error) {
+      toast(fmtError(error), 'error')
+    }
+  })
+
   els.itnToggle.addEventListener('change', async () => {
     try {
       state.status = await invoke('set_itn', { enabled: els.itnToggle.checked })

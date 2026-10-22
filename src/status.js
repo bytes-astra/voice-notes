@@ -76,6 +76,10 @@ export function renderStatus() {
   els.punctStatus.textContent = status.punctReady
     ? t('settings.punctReady')
     : t('settings.punctMissing', { size: fmtBytes(status.punctTotalBytes || 0) })
+  // 回填术语表；用户正在编辑时不要覆盖输入
+  if (document.activeElement !== els.hotwordsInput) {
+    els.hotwordsInput.value = (status.hotwords || []).join('\n')
+  }
   els.modelMode.textContent = streamingMode ? t('model.name.streaming') : t('model.name.offline')
 
   for (const button of els.langRow.children) {
