@@ -423,7 +423,9 @@ impl StreamingEngine {
         config.enable_endpoint = true;
         config.rule1_min_trailing_silence = 2.4;
         config.rule2_min_trailing_silence = 1.2;
-        config.rule3_min_utterance_length = 20.0;
+        // rule3 是「超过这个长度强制断句」：20 秒会把连续说话硬切一刀（实测 24.5s
+        // 连续语音在 20.368s 触发）。真正的断句由 VAD 门控负责，这里只留兜底。
+        config.rule3_min_utterance_length = 60.0;
 
         let recognizer = OnlineRecognizer::create(&config)
             .ok_or_else(|| "无法加载流式模型（文件可能损坏，建议重新下载）".to_string())?;
