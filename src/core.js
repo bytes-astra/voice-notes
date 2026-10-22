@@ -149,6 +149,31 @@ export function toast(message, type = 'info') {
   }, type === 'error' ? 4200 : 2400)
 }
 
+/// 判断是不是 CJK 字符（和后端 asr::is_cjk 同一套范围）。
+function isCjk(ch) {
+  const code = ch.codePointAt(0);
+  return (
+    (code >= 0x3000 && code <= 0x303f) ||
+    (code >= 0x3040 && code <= 0x30ff) ||
+    (code >= 0x3400 && code <= 0x4dbf) ||
+    (code >= 0x4e00 && code <= 0x9fff) ||
+    (code >= 0xac00 && code <= 0xd7af) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xff00 && code <= 0xffef)
+  )
+}
+
+/// 拼接两段文本：中日韩之间直接连，其余用空格。
+///
+/// 规则必须和后端 asr::join_segments 一致 —— 实时出字是逐句追加的，
+/// 前端拼出来的全文要和最终结果一模一样。
+export function joinText(left, right) {
+  if (!left) return right
+  if (!right) return left
+  const needSpace = !isCjk(left[left.length - 1]) || !isCjk(right[0])
+  return needSpace ? `${left} ${right}` : `${left}${right}`
+}
+
 /// 空闲时的提示语：整段/流式统一，模式差异由「整段 / 流式」芯片说明。
 export function idleHint() {
   return t('record.idle')

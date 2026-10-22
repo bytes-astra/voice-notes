@@ -9,6 +9,7 @@ pub mod wav;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -30,10 +31,11 @@ struct StreamSession {
 pub struct AppState {
     settings: Mutex<Settings>,
     recorder: Mutex<Option<Recorder>>,
-    engine: Arc<Mutex<Option<Engine>>>,
+    engine: Arc<Mutex<Option<Arc<Engine>>>>,
     streaming_engine: Arc<Mutex<Option<Arc<StreamingEngine>>>>,
     punct_engine: Arc<Mutex<Option<Arc<PunctuationEngine>>>>,
     stream: Mutex<Option<StreamSession>>,
+    offline_session: Mutex<Option<OfflineRun>>,
     cancel_download: Arc<AtomicBool>,
     downloading: Arc<AtomicBool>,
 }
@@ -47,6 +49,7 @@ impl AppState {
             streaming_engine: Arc::new(Mutex::new(None)),
             punct_engine: Arc::new(Mutex::new(None)),
             stream: Mutex::new(None),
+            offline_session: Mutex::new(None),
             cancel_download: Arc::new(AtomicBool::new(false)),
             downloading: Arc::new(AtomicBool::new(false)),
         }
@@ -99,18 +102,9 @@ struct EngineState {
     message: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StreamPayload {
-    partial: String,
-    committed: String,
-}
-
 /// 把流式事件转成 UI 事件，并维护已定稿文本。
 struct StreamEmitter {
     app: AppHandle,
-    parts: Vec<String>,
-    committed: String,
 }
 
 impl StreamEmitter {
@@ -118,28 +112,40 @@ impl StreamEmitter {
         for event in events {
             match event {
                 StreamEvent::Partial(text) => {
-                    let _ = self.app.emit(
-                        "stream:partial",
-                        StreamPayload {
-                            partial: text,
-                            committed: self.committed.clone(),
-                        },
-                    );
+                    let _ = self.app.emit("stream:partial", PartialPayload { partial: text });
                 }
                 StreamEvent::Segment(segment) => {
-                    self.parts.push(segment.text.clone());
-                    self.committed = asr::join_segments(self.parts.iter().map(|s| s.as_str()));
                     let _ = self.app.emit(
                         "stream:segment",
-                        StreamPayload {
-                            partial: String::new(),
-                            committed: self.committed.clone(),
+                        SegmentPayload {
+                            segment: segment.text,
+                            start: segment.start,
+                            end: segment.end,
                         },
                     );
                 }
             }
         }
     }
+}
+
+/// 一句识别好的文本（增量载荷：只带新句子，不带累计全文）。
+///
+/// 累计全文在长时间会话下是 O(n²) 的传输与重绘：1000 句要传 50 万字符、
+/// textarea 也要重写 1000 次。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SegmentPayload {
+    segment: String,
+    start: f32,
+    end: f32,
+}
+
+/// 流式的中间结果（未成句的部分）。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PartialPayload {
+    partial: String,
 }
 
 #[derive(Serialize)]
@@ -319,7 +325,7 @@ async fn load_engine(app: &AppHandle, state: &AppState) -> Result<(), String> {
             .map(|e| e.language != language || e.itn != itn)
             .unwrap_or(true);
         if stale {
-            *guard = Some(Engine::new(&paths, &language, itn)?);
+            *guard = Some(Arc::new(Engine::new(&paths, &language, itn)?));
         }
         Ok(())
     })
@@ -401,6 +407,101 @@ fn take_new(queue: &audio::SampleQueue) -> audio::NewAudio {
     queue.take_new()
 }
 
+/// 整段模式的识别线程。
+struct OfflineRun {
+    stop: Arc<AtomicBool>,
+    rx: mpsc::Receiver<Transcript>,
+}
+
+/// 整段模式：边录音边按句识别。
+///
+/// 采集线程把新采样放进队列，这里取走、重采样到 16k、喂给 VAD 切句，
+/// 切出一句就立刻送 SenseVoice 识别并把结果推给界面。
+/// 识别完的音频立刻丢掉，只留文本 —— 内存不随录音时长增长。
+fn run_offline(
+    app: &AppHandle,
+    engine: Arc<Engine>,
+    queue: audio::SampleQueue,
+    rate: u32,
+    stop: Arc<AtomicBool>,
+) -> Transcript {
+    let resampler = if rate as i32 == asr::SAMPLE_RATE {
+        None
+    } else {
+        sherpa_onnx::LinearResampler::create(rate as i32, asr::SAMPLE_RATE)
+    };
+    let mut session = match engine.vad_config() {
+        Some(vad) => Some(asr::OfflineSession::new(engine.clone(), vad)),
+        None => None,
+    };
+    let mut parts: Vec<String> = Vec::new();
+
+    let emit_segment = |parts: &mut Vec<String>, segment: &asr::Segment| {
+        parts.push(segment.text.clone());
+        let _ = app.emit(
+            "stream:segment",
+            SegmentPayload {
+                segment: segment.text.clone(),
+                start: segment.start,
+                end: segment.end,
+            },
+        );
+    };
+
+    loop {
+        let new_audio = queue.take_new();
+        if new_audio.dropped > 0 {
+            // 识别跟不上：丢掉了一段音频，要在结果里留下可见的缺口
+            let marker = audio::gap_marker(new_audio.dropped, rate);
+            parts.push(marker.clone());
+            let _ = app.emit("audio:error", "识别跟不上，部分音频未转写");
+        }
+        if !new_audio.samples.is_empty() {
+            let samples = match &resampler {
+                Some(resampler) => resampler.resample(&new_audio.samples, false),
+                None => new_audio.samples,
+            };
+            if let Some(session) = session.as_mut() {
+                for event in session.push(&samples) {
+                    let asr::OfflineEvent::Segment(segment) = event;
+                    emit_segment(&mut parts, &segment);
+                }
+            }
+        }
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(60));
+    }
+
+    // 收尾：把 VAD 里还没成句的剩余音频冲出来
+    if let Some(session) = session.as_mut() {
+        for event in session.finish() {
+            let asr::OfflineEvent::Segment(segment) = event;
+            emit_segment(&mut parts, &segment);
+        }
+    }
+
+    let (text, segments, elapsed_ms, duration_seconds) = match &session {
+        Some(session) => (
+            asr::join_segments(session.segments().iter().map(|s| s.text.as_str())),
+            session.segments().to_vec(),
+            session.elapsed_ms(),
+            session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
+        ),
+        None => (String::new(), Vec::new(), 0, 0.0),
+    };
+
+    Transcript {
+        text,
+        segments,
+        duration_seconds,
+        elapsed_ms,
+        language: engine.language.clone(),
+        corrected: false,
+    }
+}
+
 /// 边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
 fn run_streaming(
     app: &AppHandle,
@@ -410,11 +511,7 @@ fn run_streaming(
     rate: u32,
     stop: Arc<AtomicBool>,
 ) -> Transcript {
-    let mut emitter = StreamEmitter {
-        app: app.clone(),
-        parts: Vec::new(),
-        committed: String::new(),
-    };
+    let mut emitter = StreamEmitter { app: app.clone() };
     run_streaming_core(engine, punctuator, queue, rate, stop, |events| {
         emitter.apply(events)
     })
@@ -677,17 +774,36 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
     if models::resolve(&app, settings.model_dir.as_deref()).is_none() {
         return Err("模型未就绪，请先下载语音模型".into());
     }
-    // TODO(B4)：整段模式改成边录边识别后，这里就不再需要把整条录音留在内存里
-    let recorder = audio::start(app, settings.input_device.as_deref(), false)?;
+    // 整段模式：边录边按句识别（音频消费掉即释放，内存不随录音时长增长）
+    load_engine(&app, &state).await?;
+    let engine = shared_engine(&state)?;
+    let recorder = audio::start(app.clone(), settings.input_device.as_deref(), true)?;
+    let queue = recorder.queue();
+    let rate = recorder.sample_rate();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread_app = app.clone();
+    let thread_stop = stop.clone();
+    std::thread::Builder::new()
+        .name("offline-asr".into())
+        .spawn(move || {
+            let transcript = run_offline(&thread_app, engine, queue, rate, thread_stop);
+            let _ = tx.send(transcript);
+        })
+        .map_err(|e| format!("无法启动整段识别线程: {e}"))?;
     *state
         .recorder
         .lock()
         .map_err(|_| "录音状态异常".to_string())? = Some(recorder);
+    *state
+        .offline_session
+        .lock()
+        .map_err(|_| "录音状态异常".to_string())? = Some(OfflineRun { stop, rx });
     Ok(())
 }
 
 #[tauri::command]
-async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Transcript, String> {
+async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<Transcript, String> {
     let recorder = {
         let mut slot = state
             .recorder
@@ -715,17 +831,28 @@ async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Tr
         return Ok(streaming);
     }
 
-    let rate = recorder.sample_rate();
-    let samples = recorder.stop()?;
-    if samples.is_empty() {
-        return Err("没有录到声音".into());
-    }
-    let samples = audio::resample_to_16k(samples, rate);
-    if samples.len() < wav::TARGET_RATE as usize / 5 {
+    // 整段模式：识别线程一直在跑，这里停采集、让它收尾
+    let offline = state
+        .offline_session
+        .lock()
+        .map_err(|_| "录音状态异常".to_string())?
+        .take();
+    let _ = recorder.stop()?;
+    let Some(offline) = offline else {
+        return Err("识别线程已退出".into());
+    };
+    offline.stop.store(true, Ordering::SeqCst);
+    let transcript = offline
+        .rx
+        .recv_timeout(Duration::from_secs(30))
+        .map_err(|_| "整段识别收尾超时".to_string())?;
+    if transcript.duration_seconds < 0.2 {
         return Err("录音太短，至少说 0.2 秒".into());
     }
-
-    transcribe_samples(&app, &state, samples, None).await
+    if transcript.text.trim().is_empty() {
+        return Err("没有识别到内容，换个安静点的环境再试试".into());
+    }
+    Ok(transcript)
 }
 
 #[tauri::command]
@@ -760,21 +887,33 @@ async fn transcribe_samples(
     let itn = settings.itn;
 
     tauri::async_runtime::spawn_blocking(move || -> Result<Transcript, String> {
-        let mut guard = engine.lock().map_err(|_| "引擎状态异常".to_string())?;
-        let stale = guard
-            .as_ref()
-            .map(|e| e.language != language || e.itn != itn)
-            .unwrap_or(true);
-        if stale {
-            *guard = Some(Engine::new(&paths, &language, itn)?);
-        }
-        Ok(guard
-            .as_ref()
-            .ok_or_else(|| "引擎未初始化".to_string())?
-            .transcribe(&samples))
+        let engine = {
+            let mut guard = engine.lock().map_err(|_| "引擎状态异常".to_string())?;
+            let stale = guard
+                .as_ref()
+                .map(|e| e.language != language || e.itn != itn)
+                .unwrap_or(true);
+            if stale {
+                *guard = Some(Arc::new(Engine::new(&paths, &language, itn)?));
+            }
+            guard
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| "引擎未初始化".to_string())?
+        };
+        Ok(engine.transcribe(&samples))
     })
     .await
     .map_err(|e| format!("转写失败: {e}"))?
+}
+
+/// 从缓存里拿一个可共享的整段引擎（录音线程和文件转写共用同一份模型）。
+fn shared_engine(state: &AppState) -> Result<Arc<Engine>, String> {
+    let guard = state.engine.lock().map_err(|_| "引擎状态异常".to_string())?;
+    guard
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "引擎未初始化".to_string())
 }
 
 #[tauri::command]

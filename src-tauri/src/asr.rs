@@ -92,6 +92,11 @@ impl Engine {
         })
     }
 
+    /// VAD 配置：整段模式「边录边识别」要用同一套参数（同样的断句行为）。
+    pub fn vad_config(&self) -> Option<VadModelConfig> {
+        self.vad.clone()
+    }
+
     /// 对一段已经切好的句子直接解码（**不再跑 VAD**）。
     ///
     /// 边录边识别的路径下 VAD 在外层切句，这里再切一次会改变句子内部的边界，

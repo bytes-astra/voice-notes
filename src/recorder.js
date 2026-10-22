@@ -99,10 +99,9 @@ export async function startRecording() {
     await invoke('start_recording')
     state.startedAt = performance.now()
     els.timer.textContent = '00:00'
-    if (state.status?.mode === 'streaming') {
-      els.text.value = ''
-      els.meta.innerHTML = '<span>' + t('record.live') + '</span>'
-    }
+    // 两种模式都是边录边出字：先把结果区清空
+    els.text.value = ''
+    els.meta.innerHTML = '<span>' + t('record.live') + '</span>'
     startTimer()
     setPhase('recording')
   } catch (error) {

@@ -4,7 +4,7 @@ import { els, fmtBytes, fmtClock, fmtError, state, t, toast } from './core.js'
 import { listen } from './tauri.js'
 import { modelBadgeText, renderStatus, setProgress, setStreamProgress } from './status.js'
 import { cancelRecording, pushLevel } from './recorder.js'
-import { showPartial } from './result.js'
+import { appendSegment, showPartial } from './result.js'
 
 export async function listenEvents() {
   await listen('audio:level', (event) => {
@@ -45,17 +45,15 @@ export async function listenEvents() {
     if (progress.phase === 'error' && progress.message) toast(progress.message, 'error')
   })
 
+  // 事件是增量载荷：只带新句子，前端自己追加（累计全文在长时间会话下是 O(n²)）
   await listen('stream:partial', (event) => {
     const payload = event.payload || {}
-    if (typeof payload.committed === 'string' && els.text.value !== payload.committed) {
-      els.text.value = payload.committed
-    }
     showPartial(payload.partial)
   })
 
   await listen('stream:segment', (event) => {
     const payload = event.payload || {}
-    if (typeof payload.committed === 'string') els.text.value = payload.committed
+    appendSegment(payload.segment)
     showPartial('')
   })
 
