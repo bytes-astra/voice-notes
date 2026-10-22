@@ -8,6 +8,8 @@
 > **Phase B** 在拆好的模块上实现「不限时长、内存恒定」的长内容支持。
 > 顺序不能反 —— 见文末「为什么先拆后做」。
 
+**状态**：Phase A 已完成（分支 `feature/frontend-modules`，9 个提交）；Phase B 待实施。
+
 **关联文档**
 - 设计：`docs/superpowers/specs/2026-10-22-long-content-design.md`
 - Phase B 的详细任务分解：`docs/superpowers/plans/2026-10-22-long-content.md`（本方案在其基础上补上「改动落在哪个模块」）
@@ -188,7 +190,12 @@ tauri.js           theme.js      export.js    (无依赖)
 3. `result.js` 不 import `files.js`（所以 `files.transcribeFile` 调 `showTranscript` 是 files → result 单向）
 4. `history.js` 不 import `result.js`（`addHistory` 由 result 调用，是 result → history 单向）
 
-### 2.5 Phase A 的任务清单
+### 2.5 Phase A 的任务清单（✅ 已完成）
+
+> 实施结果：`src/app.js` 从 1275 行降到 297 行，拆出 10 个模块。
+> 拆分过程中发现并修掉两个真 bug（见 A7），新增两个 Playwright 回归脚本
+> （`check_i18n_fix.js` 15 项 + `check_modules.js` 13 项）。
+
 
 每个任务 = **只搬函数 + 改 import，不改任何逻辑**。搬完必须页面行为完全一致。
 
