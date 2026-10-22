@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 pub const LANGUAGES: [&str; 6] = ["auto", "zh", "en", "yue", "ja", "ko"];
+/// 术语表上限：条数太多会明显增加热词误插与解码耗时。
+pub const MAX_HOTWORDS: usize = 100;
+pub const MAX_HOTWORD_CHARS: usize = 32;
 pub const MODES: [&str; 2] = ["offline", "streaming"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -22,6 +25,8 @@ pub struct Settings {
     pub punct: bool,
     /// 使用的输入设备名（None = 系统默认）
     pub input_device: Option<String>,
+    /// 流式模式的热词（术语表）：只在 streaming 模式生效，空 = 不启用
+    pub hotwords: Vec<String>,
     pub output_dir: Option<String>,
     pub model_dir: Option<String>,
 }
@@ -34,6 +39,7 @@ impl Default for Settings {
             itn: true,
             punct: true,
             input_device: None,
+            hotwords: Vec::new(),
             output_dir: None,
             model_dir: None,
         }
@@ -48,6 +54,7 @@ impl Settings {
         if !MODES.contains(&self.mode.as_str()) {
             self.mode = "offline".into();
         }
+        self.hotwords = clean_hotwords(self.hotwords);
         self
     }
 }
@@ -85,4 +92,50 @@ pub fn default_output_dir(app: &AppHandle) -> PathBuf {
         .document_dir()
         .map(|dir| dir.join("语音转文字"))
         .unwrap_or_else(|_| PathBuf::from(".").join("语音转文字"))
+}
+
+
+/// 清洗术语表：去空白/空行/重复，单条 ≤ 32 字，最多 100 条。
+///
+/// 上限是实测出来的：热词加分会让模型把没说的词硬塞进结果，词表越长越容易误插。
+pub fn clean_hotwords(hotwords: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in hotwords {
+        let word = word.trim();
+        if word.is_empty() || word.chars().count() > MAX_HOTWORD_CHARS {
+            continue;
+        }
+        if out.iter().any(|existing| existing == word) {
+            continue;
+        }
+        out.push(word.to_string());
+        if out.len() >= MAX_HOTWORDS {
+            break;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod hotword_tests {
+    use super::*;
+
+    #[test]
+    fn cleans_hotwords() {
+        let cleaned = clean_hotwords(vec![
+            " 产品评审会 ".into(),
+            "".into(),
+            "   ".into(),
+            "产品评审会".into(),
+            "玄戒芯片".into(),
+            "x".repeat(MAX_HOTWORD_CHARS + 1),
+        ]);
+        assert_eq!(cleaned, vec!["产品评审会", "玄戒芯片"]);
+    }
+
+    #[test]
+    fn caps_hotword_count() {
+        let many: Vec<String> = (0..MAX_HOTWORDS + 20).map(|i| format!("词{i}")).collect();
+        assert_eq!(clean_hotwords(many).len(), MAX_HOTWORDS);
+    }
 }

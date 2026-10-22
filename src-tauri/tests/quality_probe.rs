@@ -702,3 +702,43 @@ fn probe_offline_session_first_word() {
         println!("[录制路径] {name}: {}", text.replace('\n', " "));
     }
 }
+
+/// 生产路径（StreamingEngine）验证：术语表真的进了识别器
+#[test]
+fn probe_streaming_engine_hotwords() {
+    use voice_notes_lib::asr::StreamingEngine;
+    use voice_notes_lib::models::StreamingPaths;
+    let Some(dir) = stream_dir() else {
+        eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+        return;
+    };
+    let paths = StreamingPaths {
+        dir: dir.display().to_string(),
+        encoder: dir.join("encoder.int8.onnx").display().to_string(),
+        decoder: dir.join("decoder.onnx").display().to_string(),
+        joiner: dir.join("joiner.int8.onnx").display().to_string(),
+        tokens: dir.join("tokens.txt").display().to_string(),
+        vad: dir.join("silero_vad.onnx").is_file().then(|| dir.join("silero_vad.onnx").display().to_string()),
+    };
+    for sample in ["tests/fixtures/quality/tts-17.wav", "tests/fixtures/zh-tail2.wav"] {
+    let wave = sherpa_onnx::Wave::read(sample).expect("音频");
+    for (label, words) in [("无术语表", vec![]), ("术语表", vec!["再确认一下".to_string()])] {
+        let engine = StreamingEngine::new(&paths, &words).expect("加载流式引擎");
+        let stream = engine.new_stream();
+        for chunk in wave.samples().chunks(3_200) {
+            stream.accept_waveform(16_000, chunk);
+            while engine.recognizer.is_ready(&stream) {
+                engine.recognizer.decode(&stream);
+            }
+        }
+        stream.input_finished();
+        while engine.recognizer.is_ready(&stream) {
+            engine.recognizer.decode(&stream);
+        }
+        println!(
+            "[流式引擎 {label}] {sample}: {}",
+            engine.recognizer.get_result(&stream).map(|r| r.text).unwrap_or_default()
+        );
+    }
+    }
+}

@@ -85,6 +85,7 @@ pub struct Status {
     streaming_total_bytes: u64,
     punct: bool,
     punct_ready: bool,
+    hotwords: Vec<String>,
     input_device: Option<String>,
     punct_bytes: u64,
     punct_total_bytes: u64,
@@ -211,6 +212,7 @@ fn status_of(app: &AppHandle, settings: &Settings) -> Status {
         streaming_total_bytes: models::streaming_total_bytes() + models::PUNCT.bytes,
         punct: settings.punct,
         punct_ready: models::resolve_punctuation(app).is_some(),
+        hotwords: settings.hotwords.clone(),
         input_device: settings.input_device.clone(),
         punct_bytes: models::punctuation_install_dir(app)
             .ok()
@@ -369,6 +371,7 @@ async fn ensure_streaming_engine(
     }
     let paths = models::resolve_streaming(app)
         .ok_or_else(|| "流式模型未就绪，请先下载流式模型".to_string())?;
+    let hotwords = state.settings().hotwords;
     let _ = app.emit(
         "streaming:state",
         EngineState {
@@ -384,7 +387,7 @@ async fn ensure_streaming_engine(
             if let Some(engine) = guard.as_ref() {
                 return Ok(engine.clone());
             }
-            let engine = Arc::new(StreamingEngine::new(&paths)?);
+            let engine = Arc::new(StreamingEngine::new(&paths, &hotwords)?);
             *guard = Some(engine.clone());
             Ok(engine)
         })
@@ -733,6 +736,45 @@ async fn set_mode(
     })
     .await;
     Ok(status_of(&app, &state.settings()))
+}
+
+/// 保存流式术语表。
+///
+/// 解码方式（greedy / beam）是在创建识别器时定死的，词表变了必须把流式引擎清掉，
+/// 下次录音按新词表重建（与切换模式同样的代价：重新加载 161 MB 模型）。
+#[tauri::command]
+async fn set_hotwords(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    hotwords: Vec<String>,
+) -> Result<Status, String> {
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| "设置状态异常".to_string())?;
+        guard.hotwords = settings::clean_hotwords(hotwords);
+    }
+    persist(&app, &state)?;
+    let streaming = state.streaming_engine.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        if let Ok(mut slot) = streaming.lock() {
+            *slot = None;
+        }
+    })
+    .await;
+    Ok(status_of(&app, &state.settings()))
+}
+
+/// 示例术语表（内置，供设置页「填入示例」按钮用）。
+#[tauri::command]
+fn default_hotwords() -> Vec<String> {
+    include_str!("../assets/hotwords.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 #[tauri::command]
@@ -1278,6 +1320,8 @@ pub fn run() {
             warm_up_streaming,
             set_mode,
             set_punct,
+            set_hotwords,
+            default_hotwords,
             list_input_devices,
             warm_up_mic,
             set_input_device,
@@ -1357,7 +1401,7 @@ mod tests {
                 .find(|path| path.is_file())
                 .map(|path| path.display().to_string()),
         };
-        let engine = Arc::new(StreamingEngine::new(&paths).expect("加载流式模型"));
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
         let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
 
         // 模拟 48 kHz 设备：每个 16 kHz 样本重复三次。
@@ -1421,7 +1465,7 @@ mod tests {
                 .find(|path| path.is_file())
                 .map(|path| path.display().to_string()),
         };
-        let engine = Arc::new(StreamingEngine::new(&paths).expect("加载流式模型"));
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
         let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
         let mut upsampled = Vec::with_capacity(wave.samples().len() * 3);
         for sample in wave.samples() {
@@ -1566,7 +1610,7 @@ mod tests {
             tokens: dir.join("tokens.txt").display().to_string(),
             vad: None,
         };
-        let engine = Arc::new(StreamingEngine::new(&paths).expect("加载流式模型"));
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
         let punctuator = Arc::new(PunctuationEngine::new(&punct_model).expect("加载标点模型"));
         let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
         let mut session = StreamingSession::new(engine, Some(punctuator));

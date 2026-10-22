@@ -408,8 +408,13 @@ use sherpa_onnx::{
 use crate::models::StreamingPaths;
 
 impl StreamingEngine {
-    /// 加载流式 Zipformer（中英双语，greedy search + 端点检测）。
-    pub fn new(paths: &StreamingPaths) -> Result<Self, String> {
+    /// 加载流式 Zipformer（中英双语，+ 可选的术语表热词）。
+    ///
+    /// 热词要求 `modified_beam_search`（greedy 不支持 context graph），没配词表时
+    /// 保持 greedy，避免给不用热词的人平白加解码延迟。
+    pub fn new(paths: &StreamingPaths, hotwords: &[String]) -> Result<Self, String> {
+        let words = hotwords.join("\n");
+        let use_hotwords = !words.trim().is_empty();
         let mut config = OnlineRecognizerConfig::default();
         config.model_config.transducer = OnlineTransducerModelConfig {
             encoder: Some(paths.encoder.clone()),
@@ -419,7 +424,20 @@ impl StreamingEngine {
         config.model_config.tokens = Some(paths.tokens.clone());
         config.model_config.num_threads = threads();
         config.model_config.provider = Some("cpu".into());
-        config.decoding_method = Some("greedy_search".into());
+        config.decoding_method = Some(
+            if use_hotwords {
+                "modified_beam_search"
+            } else {
+                "greedy_search"
+            }
+            .into(),
+        );
+        if use_hotwords {
+            // 用 config 级 hotwords_buf：per-stream 的 create_stream_with_hotwords 在本机
+            // 实测对 cjkchar 模型不生效（文本不变），buf 方式可以。
+            config.hotwords_buf = Some(words.as_bytes().to_vec());
+            config.hotwords_score = 1.5;
+        }
         config.enable_endpoint = true;
         config.rule1_min_trailing_silence = 2.4;
         config.rule2_min_trailing_silence = 1.2;
@@ -444,7 +462,11 @@ impl StreamingEngine {
             debug: false,
             ..Default::default()
         });
-        Ok(Self { recognizer, vad })
+        Ok(Self {
+            recognizer,
+            vad,
+            hotwords: use_hotwords.then_some(words),
+        })
     }
 
     /// 静音门控用的 VAD 配置（模型缺失时为 None，退化为全量喂入）。
@@ -490,6 +512,8 @@ impl PunctuationEngine {
 pub struct StreamingEngine {
     pub recognizer: OnlineRecognizer,
     vad: Option<VadModelConfig>,
+    /// 非空表示当前识别器是 beam search + 热词
+    hotwords: Option<String>,
 }
 
 

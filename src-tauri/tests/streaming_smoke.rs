@@ -39,7 +39,7 @@ fn streams_chinese_fixture() {
         return;
     };
 
-    let engine = Arc::new(StreamingEngine::new(&paths).expect("加载流式模型"));
+    let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
     let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
     let samples = wave.samples();
 
@@ -93,7 +93,7 @@ fn flushes_trailing_words_on_finish() {
         ("tests/fixtures/zh-tail.wav", "评审会"),
         ("tests/fixtures/zh-tail2.wav", "确认一下"),
     ] {
-        let engine = Arc::new(StreamingEngine::new(&paths).expect("加载流式模型"));
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
         let wave = sherpa_onnx::Wave::read(fixture).expect("读取测试音频");
 
         let mut session = StreamingSession::new(engine, None);
