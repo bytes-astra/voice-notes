@@ -115,10 +115,20 @@ Windows 包使用 `downloadBootstrapper` 安装 WebView2；应用内下载的模
 ```
 src/                     前端（原生 JS，无构建）
   index.html             应用外壳（侧边栏 + 三个视图）
-  app.js                 视图切换、录音/转写/历史/设置
+  app.js                 入口：init / bindUI / switchView / applyLocale
+  core.js                全局状态、DOM 引用、常量、格式化、toast、t
+  tauri.js               Tauri 插件的唯一解构处
+  status.js              模型状态、识别模式、语言、输入设备、模型下载
+  recorder.js            录音流程：阶段、波形、计时、开始/停止/取消
+  files.js               文件转写、输出目录
+  result.js              结果区渲染（转写结果、实时中间结果）
+  history.js             历史记录读写与渲染
+  events.js              后端事件 → 前端动作（事件名只在这里出现）
+  export.js              复制 / 保存文本
+  theme.js               深浅色主题、窗口底色、按钮图标
   style.css              深浅色主题样式
-  i18n.js                文案字典 + t() + data-i18n 填充
-  select.js              自绘下拉框（原生 select 样式不可控）
+  i18n.js                文案字典 + t() + data-i18n 填充（经典脚本）
+  select.js              自绘下拉框（原生 select 样式不可控，经典脚本）
   locales/en.js          英文字典（加语言 = 加一个字典文件）
 src-tauri/
   src/lib.rs             Tauri 命令、状态、保存

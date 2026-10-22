@@ -10,15 +10,18 @@ npm run dev            # 开发模式
 npm run build          # 打包 → src-tauri/target/release/bundle/
 ```
 
-- 前端是**原生 JS**：`src/index.html` + `app.js` + `style.css` + `i18n.js` + `select.js` + `locales/*.js`，没有打包器、没有框架、没有 TypeScript。不要为 UI 引入构建步骤。
+- 前端是**原生 JS + ES Modules**：`src/index.html` + `app.js`（入口）+ `core.js` / `tauri.js` / `status.js` / `recorder.js` / `files.js` / `result.js` / `history.js` / `events.js` / `export.js` / `theme.js` + `style.css` + `i18n.js` + `select.js` + `locales/*.js`，没有打包器、没有框架、没有 TypeScript。不要为 UI 引入构建步骤。
+- **模块依赖方向（不能反，也不能成环）**：`core.js` / `tauri.js` 在最底层 → `theme.js` / `export.js` → `history.js` → `result.js` → `status.js` → `recorder.js` → `files.js` / `events.js` → `app.js`（入口）。`core.js` 和 `tauri.js` 不 import 任何业务模块；`status.js` 不 import `recorder.js`（所以 `idleHint()` 放在 core）；`result.js` 不 import `files.js`；`history.js` 不 import `result.js`。
+- **`i18n.js` / `select.js` 保持经典脚本**（挂 `window.I18N` / `window.UISelect`），`index.html` 里必须排在 `<script type="module" src="app.js">` 之前。**别把它们当模块 import** —— 会被重新执行一遍、覆盖掉 `window.I18N`，表现为「切语言后部分文案不跟着变」。
+- **`state` / `els` 只在 `core.js` 创建一次**，其他模块一律 `import` 引用（ES Module 的 live binding 是同一个对象，不会拷贝）。
 - **下拉框用自绘组件 `src/select.js`**（`UISelect.create(el, {onChange})`）：原生 `<select>` 在 macOS/Windows 样式不可控。弹层挂在 body 上用 fixed 定位，避免被滚动容器裁掉。
 - **所有界面文案走 `src/i18n.js` 的字典**：JS 里用 `t('key', {变量})`，HTML 里给元素加 `data-i18n="key"`（还有 `data-i18n-title/-placeholder/-aria`），启动时 `I18N.apply()` 填充。加语言 = 加一个字典，不要在代码里写死中文。后端也别返回中文展示文案（模型来源返回 `app_data` / `custom` 这样的 token）。
-- **字典文案必须在渲染时取，不能在模块顶层就取**：`const LANGS = [['auto', t('lang.auto')]]` 这种写法在切语言时不会跟着变（已经踩过两次：语言芯片、阶段提示 HINTS）。正确写法是存 key，渲染时 `t(key)`。
+- **字典文案必须在渲染时取，不能在模块顶层就取**：`const LANGS = [['auto', t('lang.auto')]]` 这种写法在切语言时不会跟着变（已经踩过三次：语言芯片、阶段提示 HINTS、视图标题）。正确写法是存 key，渲染时 `t(key)`（视图标题现在是 `VIEW_KEYS` + `viewTitle()`）。
 - **`aria-label` 也要走 i18n**（`data-i18n-aria="key"`），别在 HTML 里写死中文：写死的那份在英文界面下会漏出来（麦克风按钮踩过）。**随状态变的中文标签**（麦克风「开始录音 / 结束录音」）要用单独的渲染函数（如 `renderMicLabel()`），并在 `applyLocale()` 里重新调一次——`I18N.apply()` 只认 HTML 上的静态 `data-i18n-aria`，不会跟着阶段变。
 - **改文案后跑 `npm run check:i18n`**：检查各语言字典 key 是否对齐、`index.html` 引用的 key 是否存在（漏 key 会直接把 key 名显示在界面上）。
 - **同一个控件的文案不要按模式变**：麦克风下方的空闲提示语两种模式统一写「点击麦克风开始录音」，模式差异由「整段 / 流式」芯片的副标题说明。按钮动作永远是录音，提示语却写成「实时转写」会让人以为点的是转写已有文件。
 
-- 前端通过 `window.__TAURI__.*` 调插件（`withGlobalTauri: true`），调用面在 `src/app.js` 顶部集中解构。
+- 前端通过 `window.__TAURI__.*` 调插件（`withGlobalTauri: true`），调用面在 `src/tauri.js` 集中解构，其他模块从那里 import。
 - 权限声明在 `src-tauri/capabilities/default.json`；新增插件命令时要同步加权限，否则运行时直接拒绝。
 - 麦克风用途说明在 `src-tauri/Info.plist`（`NSMicrophoneUsageDescription`），通过 `bundle.macOS.infoPlist` 合并进 .app。
 
@@ -37,7 +40,7 @@ wav.rs       PCM16 WAV 解析（前端载荷）
 - **命令参数名用 camelCase**（Tauri 2 默认），例如 `audioBase64`、`fileName`。
 - 推理是同步阻塞的，一律放进 `tauri::async_runtime::spawn_blocking`，不要阻塞 async 命令的执行器。
 - 引擎按 `(language, itn)` 缓存；语言或 ITN 变化时重建。想加“切换语言不重载”，需要走 C API 的 `setConfig`，Rust 绑定没暴露。
-- 事件：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`。改事件名要同步 `src/app.js` 的 `listenEvents()`。
+- 事件：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`。改事件名要同步 `src/events.js` 的 `listenEvents()`（事件名只在那一个文件里出现）。
 - **两种模式**：`settings.mode = offline | streaming`（界面上叫「整段 / 流式」，两个都是语音模型，区别在识别方式）。整段走 SenseVoice（VAD 分句）；流式走 Zipformer transducer，`start_recording` 先 `ensure_streaming_engine` 再起采集，`run_streaming_core` 每 60ms 从录音缓冲按游标取新采样、重采样后喂给 `StreamingSession`。
 - **流式必须按 200ms（3200 样本）分片、且只在 `is_ready()` 为真时 `decode()`**，否则 sherpa-onnx 特征缓冲会越界直接 abort（`features.cc GetFrames`）。这是踩过的坑，别改成小分片或无条件 decode。
 - 流式模型是独立的一组 assets（`STREAM_*`）：`streaming-zipformer-zh-int8-2025-06-30` + `silero_vad.onnx`，只覆盖中文；语言选粤/日/韩时前端会自动切回非流式。
