@@ -1108,3 +1108,12 @@ body.macos .sidebar-top { height: 78px; padding-bottom: 4px; }
   color: var(--accent);
   font-weight: 500;
 }
+
+/* 「正在听…」指示：录音中但还没出字时显示 */
+.listening {
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 6px 0 2px;
+  animation: pulse 1.6s ease-in-out infinite;
+}

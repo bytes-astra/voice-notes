@@ -104,6 +104,7 @@
               <span class="hint" id="hint" data-i18n="record.idle">点击麦克风开始录音</span>
             </div>
             <div class="live-line hidden" id="live-line" aria-live="off"></div>
+            <div class="listening hidden" id="listening" data-i18n="record.listening">正在听…</div>
             <div class="mode-row" id="mode-row" role="group" data-i18n-aria="mode.group">
               <button type="button" class="mode-chip" data-mode="offline" aria-pressed="true">
                 <span class="mode-name" data-i18n="mode.offline">整段</span>
@@ -216,7 +217,6 @@
 
   <div class="drop-overlay hidden" id="drop-overlay"><div data-i18n="drop.hint">松开开始转写音频</div></div>
   <div class="toast hidden" id="toast" role="status"></div>
-  <input type="file" id="file-input" accept="audio/*,video/*" hidden />
 
   <script src="locales/en.js"></script>
   <script src="select.js"></script>

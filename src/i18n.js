@@ -46,6 +46,7 @@
       'setup.cached': '已缓存的模型：{done} / {total}',
 
       'record.idle': '点击麦克风开始录音',
+      'record.listening': '正在听…（说完一句就会出字）',
       'record.section': '转写区',
       'record.preparing': '正在准备麦克风…（首次会弹系统授权框）',
       'record.recording': '正在录音，点方块或空格结束',
@@ -114,8 +115,9 @@
       'result.noSave': '没有可保存的文字',
       'result.saved': '已保存：{path}',
       'result.readStatusFailed': '读取状态失败：{error}',
-      'result.fileDecode': '正在解码 {name}…',
-      'result.fileTranscribe': '正在转写 {name}…',
+      'result.fileDecoding': '正在解码 {name}…',
+      'result.fileProgress': '正在转写…（已识别 {count} 句）',
+      'result.fileFilter': '音频 / 视频文件',
       'result.fileDone': '已转写 {name}',
       'result.fileFailed': '无法转写这个文件：{error}',
       'result.fileNeedModel': '整段模型还没下载，先下载模型再转写文件',
@@ -146,8 +148,10 @@
       'settings.itn': '数字与标点（ITN）',
       'settings.punct': '流式标点',
       'settings.punctToggle': '流式结果自动加标点',
-      'settings.punctReady': '标点模型已就绪（CT-Transformer zh-en），流式结果会自动加标点',
-      'settings.punctMissing': '标点模型未下载（约 {size}），装上后流式结果会自动加标点',
+      'settings.punctReady':
+        '标点模型已就绪（CT-Transformer zh-en），流式结果会自动加标点。整段模式不用它 —— SenseVoice 自带标点，叠上会变成「。。」',
+      'settings.punctMissing':
+        '标点模型未下载（约 {size}），装上后流式结果会自动加标点（整段模式不需要）',
       'settings.punctDownload': '下载标点模型',
       'settings.punctNeedDownload': '先下载标点模型（约 281 MB）',
       'settings.punctEnabled': '标点模型已就绪，已开启自动标点',

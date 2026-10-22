@@ -10,7 +10,6 @@ export const LOCALE_KEY = 'voicenotes.locale'
 export const BARS = 48
 // 空闲时的静态波形剪影，避免整片区空着
 export const IDLE_WAVE = [4, 6, 9, 13, 18, 24, 19, 14, 10, 7, 5, 8, 12, 17, 23, 28, 22, 16, 11, 7, 5, 6, 10, 15, 21, 26, 20, 15, 10, 7, 6, 9, 14, 19, 24, 18, 13, 9, 6, 5, 7, 11, 16, 21, 17, 12, 8, 5]
-export const MAX_SECONDS = 600
 export const MIB = 1024 * 1024
 
 export const STREAM_LANGS = ['auto', 'zh']
@@ -50,6 +49,9 @@ export const state = {
   view: 'transcribe',
   lastTranscript: null,
   toastTimer: 0,
+  /// 正在转写文件（用于显示「第 N 句」进度）
+  transcribingFile: false,
+  fileSegments: 0,
 }
 
 export const els = {
@@ -69,6 +71,7 @@ export const els = {
   timer: $('timer'),
   hint: $('hint'),
   liveLine: $('live-line'),
+  listening: $('listening'),
   modeRow: $('mode-row'),
   streamSetup: $('stream-setup'),
   streamSetupText: $('stream-setup-text'),

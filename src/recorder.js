@@ -1,9 +1,9 @@
 /* 录音流程：阶段、波形、计时、开始 / 停止 / 取消 */
 
-import { $, BARS, IDLE_WAVE, MAX_SECONDS, els, fmtClock, fmtError, idleHint, state, t, toast } from './core.js'
+import { $, BARS, IDLE_WAVE, els, fmtClock, fmtError, idleHint, state, t, toast } from './core.js'
 import { invoke } from './tauri.js'
 import { renderMode } from './status.js'
-import { showTranscript } from './result.js'
+import { showTranscript, updateListening } from './result.js'
 
 const HINTS = {
   requesting: 'record.preparing',
@@ -29,6 +29,7 @@ export function setPhase(phase) {
     els.liveLine.textContent = ''
   }
   if (phase === 'idle') resetWave()
+  updateListening()
   renderMode()
 }
 
@@ -63,7 +64,6 @@ export function startTimer() {
   state.timer = setInterval(() => {
     const elapsed = (performance.now() - state.startedAt) / 1000
     els.timer.textContent = fmtClock(elapsed)
-    if (elapsed >= MAX_SECONDS && state.phase === 'recording') void stopRecording()
   }, 100)
 }
 

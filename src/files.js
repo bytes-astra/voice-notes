@@ -1,46 +1,27 @@
-/* 文件转写（浏览器解码 + 重采样）与输出目录设置 */
+/* 文件转写（后端解码 + 逐句出字）与输出目录设置 */
 
-import { MAX_SECONDS, els, fmtError, state, t, toast } from './core.js'
+import { els, fmtError, state, t, toast } from './core.js'
 import { invoke, openDialog, openPath } from './tauri.js'
 import { showTranscript } from './result.js'
 import { renderStatus } from './status.js'
 import { setPhase } from './recorder.js'
 
-export function encodeWave(samples) {
-  const bytes = new Uint8Array(44 + samples.length * 2)
-  const view = new DataView(bytes.buffer)
-  const text = (at, value) => {
-    for (let i = 0; i < value.length; i++) bytes[at + i] = value.charCodeAt(i)
-  }
-  text(0, 'RIFF')
-  view.setUint32(4, bytes.length - 8, true)
-  text(8, 'WAVE')
-  text(12, 'fmt ')
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true)
-  view.setUint16(22, 1, true)
-  view.setUint32(24, 16000, true)
-  view.setUint32(28, 32000, true)
-  view.setUint16(32, 2, true)
-  view.setUint16(34, 16, true)
-  text(36, 'data')
-  view.setUint32(40, samples.length * 2, true)
-  for (let i = 0; i < samples.length; i++) {
-    const value = Math.max(-1, Math.min(1, samples[i]))
-    view.setInt16(44 + i * 2, Math.round(value * (value < 0 ? 32768 : 32767)), true)
-  }
-  return bytes
+/// 支持的文件格式（symphonia 解码；视频轨会被忽略）。
+const FILE_EXTENSIONS = [
+  'mp3', 'wav', 'flac', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'mp4', 'mov', 'm4v', 'webm', 'wma',
+]
+
+/// 从路径里取文件名（只用来显示）。
+function fileName(path) {
+  const parts = String(path || '').split(/[\\/]/)
+  return parts[parts.length - 1] || path
 }
 
-export function audioBase64(bytes) {
-  let text = ''
-  for (let i = 0; i < bytes.length; i += 8192) {
-    text += String.fromCharCode(...bytes.subarray(i, i + 8192))
-  }
-  return btoa(text)
-}
-
-export async function transcribeFile(file) {
+/// 转写一个音频 / 视频文件（路径由文件对话框或拖拽得到）。
+///
+/// 解码在 Rust 那边做（symphonia），逐块喂给识别会话：内存恒定，
+/// 1 小时的文件也不会整条进内存，而且 mp4/mov 在 Windows 上也能转。
+export async function transcribeFilePath(path) {
   if (!state.status?.modelReady) {
     toast(t('result.fileNeedModel'), 'error')
     return
@@ -51,34 +32,33 @@ export async function transcribeFile(file) {
   }
   if (state.phase !== 'idle') return
   setPhase('transcribing')
-  els.hint.textContent = t('result.fileDecode', { name: file.name })
-  let context
+  const name = fileName(path)
+  els.hint.textContent = t('result.fileDecoding', { name })
+  state.fileSegments = 0
+  state.transcribingFile = true
   try {
-    context = new AudioContext()
-    const buffer = await context.decodeAudioData(await file.arrayBuffer())
-    const seconds = Math.min(buffer.duration, MAX_SECONDS)
-    const frames = Math.max(1, Math.floor(seconds * 16000))
-    const offline = new OfflineAudioContext(1, frames, 16000)
-    const source = offline.createBufferSource()
-    source.buffer = buffer
-    source.connect(offline.destination)
-    source.start()
-    const rendered = await offline.startRendering()
-    els.hint.textContent = t('result.fileTranscribe', { name: file.name })
-    const audio = audioBase64(encodeWave(rendered.getChannelData(0)))
-    const transcript = await invoke('transcribe_wav', {
-      audioBase64: audio,
-      language: state.status.language,
-    })
+    const transcript = await invoke('transcribe_file', { path })
     showTranscript(transcript)
-    toast(transcript.text ? t('result.fileDone', { name: file.name }) : t('result.none'))
+    toast(transcript.text ? t('result.fileDone', { name }) : t('result.none'))
   } catch (error) {
-    console.error(error)
     toast(t('result.fileFailed', { error: fmtError(error) }), 'error')
   } finally {
-    if (context) await context.close().catch(() => {})
+    state.transcribingFile = false
+    state.fileSegments = 0
     setPhase('idle')
   }
+}
+
+/// 弹出文件选择框，然后转写选中的文件。
+export async function pickAndTranscribeFile() {
+  const picked = await openDialog({
+    multiple: false,
+    directory: false,
+    title: t('result.pickFile'),
+    filters: [{ name: t('result.fileFilter'), extensions: FILE_EXTENSIONS }],
+  })
+  const path = Array.isArray(picked) ? picked[0] : picked
+  if (path) await transcribeFilePath(path)
 }
 
 export async function pickOutputDir() {

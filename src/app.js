@@ -15,7 +15,7 @@ import {
 import {
   buildWave, cancelRecording, renderMicLabel, startRecording, stopRecording,
 } from './recorder.js'
-import { openOutputDir, pickOutputDir, transcribeFile } from './files.js'
+import { openOutputDir, pickAndTranscribeFile, pickOutputDir, transcribeFilePath } from './files.js'
 import { listenEvents } from './events.js'
 import { copyText, saveText } from './export.js'
 import { renderThemeIcon, syncWindowBackground, toggleTheme } from './theme.js'
@@ -197,12 +197,7 @@ export function bindUI() {
     savedDevice,
   )
   setSelects(deviceSelect, localeSelect)
-  els.pickFileBtn?.addEventListener('click', () => els.fileInput.click())
-  els.fileInput.addEventListener('change', () => {
-    const file = els.fileInput.files?.[0]
-    els.fileInput.value = ''
-    if (file) void transcribeFile(file)
-  })
+  els.pickFileBtn?.addEventListener('click', () => void pickAndTranscribeFile())
 
   document.addEventListener('keydown', (event) => {
     const typing = ['INPUT', 'TEXTAREA'].includes(event.target.tagName) || event.target.isContentEditable
@@ -218,7 +213,7 @@ export function bindUI() {
     if (typing) return
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') {
       event.preventDefault()
-      els.fileInput.click()
+      void pickAndTranscribeFile()
       return
     }
     if (event.code === 'Space' && state.view === 'transcribe') {
@@ -228,27 +223,27 @@ export function bindUI() {
     }
   })
 
-  let dragDepth = 0
-  const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files')
-  window.addEventListener('dragenter', (event) => {
-    if (!hasFiles(event)) return
-    event.preventDefault()
-    dragDepth += 1
-    els.dropOverlay.classList.remove('hidden')
-  })
-  window.addEventListener('dragover', (event) => {
-    if (hasFiles(event)) event.preventDefault()
-  })
-  window.addEventListener('dragleave', () => {
-    dragDepth = Math.max(0, dragDepth - 1)
-    if (dragDepth === 0) els.dropOverlay.classList.add('hidden')
-  })
-  window.addEventListener('drop', (event) => {
-    event.preventDefault()
-    dragDepth = 0
-    els.dropOverlay.classList.add('hidden')
-    const file = event.dataTransfer?.files?.[0]
-    if (file) void transcribeFile(file)
+  bindFileDrop()
+}
+
+/// 拖拽文件到窗口。
+///
+/// 用 Tauri 的拖放事件而不是 HTML5 的 drop：Tauri v2 默认拦截系统拖放
+/// （`dragDropEnabled`），HTML5 的 drag/drop 事件在真实应用里根本不会触发。
+function bindFileDrop() {
+  const webview = window.__TAURI__?.webview?.getCurrentWebview?.()
+  if (!webview?.onDragDropEvent) return
+  webview.onDragDropEvent((event) => {
+    const payload = event.payload || {}
+    if (payload.type === 'over') {
+      els.dropOverlay.classList.remove('hidden')
+    } else if (payload.type === 'leave') {
+      els.dropOverlay.classList.add('hidden')
+    } else if (payload.type === 'drop') {
+      els.dropOverlay.classList.add('hidden')
+      const path = payload.paths?.[0]
+      if (path) void transcribeFilePath(path)
+    }
   })
 }
 

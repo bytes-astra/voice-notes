@@ -55,6 +55,10 @@ export async function listenEvents() {
     const payload = event.payload || {}
     appendSegment(payload.segment)
     showPartial('')
+    if (state.transcribingFile) {
+      state.fileSegments += 1
+      els.hint.textContent = t('result.fileProgress', { count: state.fileSegments })
+    }
   })
 
   await listen('streaming:state', (event) => {
