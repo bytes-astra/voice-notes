@@ -1,112 +1,18 @@
-/* VoiceNotes 前端：录音、转写、历史、设置（无构建、无框架） */
+/* VoiceNotes 前端入口：初始化、事件绑定、全局协调（各功能在独立模块里） */
 
-const { invoke } = window.__TAURI__.core
-const { listen } = window.__TAURI__.event
-const { open: openDialog } = window.__TAURI__.dialog
-const { writeText } = window.__TAURI__.clipboardManager
-const { openPath } = window.__TAURI__.opener
-const { t } = window.I18N
-
-const LANGS = ['auto', 'zh', 'en', 'yue', 'ja', 'ko']
-const HISTORY_KEY = 'voicenotes.history.v1'
-const THEME_KEY = 'voicenotes.theme'
-const LOCALE_KEY = 'voicenotes.locale'
-const BARS = 48
-// 空闲时的静态波形剪影，避免整片区空着
-const IDLE_WAVE = [4, 6, 9, 13, 18, 24, 19, 14, 10, 7, 5, 8, 12, 17, 23, 28, 22, 16, 11, 7, 5, 6, 10, 15, 21, 26, 20, 15, 10, 7, 6, 9, 14, 19, 24, 18, 13, 9, 6, 5, 7, 11, 16, 21, 17, 12, 8, 5]
-const MAX_SECONDS = 600
-const MIB = 1024 * 1024
-
-const $ = (id) => document.getElementById(id)
+import {
+  $, BARS, I18N, IDLE_WAVE, LANGS, LOCALE_KEY, MAX_SECONDS, STREAM_LANGS, THEME_KEY,
+  els, fmtBytes, fmtClock, fmtDuration, fmtError, idleHint, state, t, toast,
+} from './core.js'
+import { invoke, listen, openDialog, openPath, writeText } from './tauri.js'
+import { saveHistory } from './history.js'
 
 let deviceSelect = null
 let localeSelect = null
 
-const state = {
-  status: null,
-  phase: 'idle',
-  levels: new Array(BARS).fill(0),
-  startedAt: 0,
-  timer: 0,
-  history: loadHistory(),
-  engine: 'idle',
-  downloading: false,
-  downloadingStreaming: false,
-  downloadingPunct: false,
-  view: 'transcribe',
-  lastTranscript: null,
-  toastTimer: 0,
-}
-
-const STREAM_ASSETS = new Set(['encoder.int8.onnx', 'decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt'])
-const STREAM_LANGS = ['auto', 'zh']
-
-const els = {
-  app: document.querySelector('.app'),
-  badge: $('model-badge'),
-  dot: $('engine-dot'),
-  setup: $('setup'),
-  setupProgress: $('setup-progress'),
-  setupFill: $('setup-progress-fill'),
-  setupText: $('setup-progress-text'),
-  setupPct: $('setup-progress-pct'),
-  downloadBtn: $('download-btn'),
-  pickModelBtn: $('pick-model-btn'),
-  cancelDownloadBtn: $('cancel-download-btn'),
-  wave: $('wave'),
-  mic: $('mic-btn'),
-  timer: $('timer'),
-  hint: $('hint'),
-  liveLine: $('live-line'),
-  modeRow: $('mode-row'),
-  streamSetup: $('stream-setup'),
-  streamSetupText: $('stream-setup-text'),
-  streamProgress: $('stream-progress'),
-  streamProgressFill: $('stream-progress-fill'),
-  streamProgressText: $('stream-progress-text'),
-  streamProgressPct: $('stream-progress-pct'),
-  streamDownload: $('stream-download'),
-  streamCancel: $('stream-cancel'),
-  langRow: $('lang-row'),
-  deviceSelect: $('device-select'),
-  localeSelect: $('locale-select'),
-  text: $('text'),
-  meta: $('meta'),
-  copyBtn: $('copy-btn'),
-  saveBtn: $('save-btn'),
-  clearBtn: $('clear-btn'),
-  historyList: $('history-list'),
-  historyEmpty: $('history-empty'),
-  clearHistoryBtn: $('clear-history-btn'),
-  settingsModel: $('settings-model'),
-  settingsOutput: $('settings-output'),
-  settingsVersion: $('settings-version'),
-  settingsDownload: $('settings-download'),
-  settingsPickModel: $('settings-pick-model'),
-  settingsClearModel: $('settings-clear-model'),
-  settingsPickOutput: $('settings-pick-output'),
-  settingsOpenOutput: $('settings-open-output'),
-  itnToggle: $('itn-toggle'),
-  punctToggle: $('punct-toggle'),
-  hybridToggle: $('hybrid-toggle'),
-  hybridStatus: $('hybrid-status'),
-  punctStatus: $('punct-status'),
-  punctDownload: $('punct-download'),
-  toast: $('toast'),
-  dropOverlay: $('drop-overlay'),
-  fileInput: $('file-input'),
-  pickFileBtn: $('pick-file-btn'),
-  viewTitle: $('view-title'),
-  headHint: $('head-hint'),
-  modelMode: $('model-mode'),
-  historyCount: $('history-count'),
-  newBtn: $('new-btn'),
-  navItems: document.querySelectorAll('.nav-item'),
-}
-
 const VIEW_TITLES = { transcribe: t('view.transcribe'), history: t('view.history'), settings: t('view.settings') }
 
-function switchView(view) {
+export function switchView(view) {
   if (!VIEW_TITLES[view]) return
   if (state.phase === 'recording' && view !== 'transcribe') {
     toast(t('toast.recordingBusy'))
@@ -124,65 +30,11 @@ function switchView(view) {
 }
 
 /// 模型徽标文案：流式与整段用同一套说法，避免两处提示对不上。
-function modelBadgeText(phase) {
+export function modelBadgeText(phase) {
   const name = state.status?.mode === 'streaming' ? t('model.label.streaming') : t('model.label.offline')
   if (phase === 'error') return t('model.badge.error', { name })
   if (phase === 'loading') return t('model.badge.loading', { name })
   return t('model.badge.ready', { name })
-}
-
-/* ── 基础工具 ─────────────────────────────────────────── */
-
-function fmtError(error) {
-  const text = typeof error === 'string' ? error : error?.message || String(error)
-  return text.replace(/^Error:\s*/, '')
-}
-
-function fmtBytes(bytes) {
-  if (!bytes) return '0 MB'
-  return `${(bytes / MIB).toFixed(bytes < 100 * MIB ? 1 : 0)} MB`
-}
-
-function fmtClock(seconds) {
-  const total = Math.max(0, Math.floor(seconds))
-  const mm = String(Math.floor(total / 60)).padStart(2, '0')
-  const ss = String(total % 60).padStart(2, '0')
-  return `${mm}:${ss}`
-}
-
-function fmtDuration(seconds) {
-  if (seconds < 60) return t('duration.seconds', { seconds: seconds.toFixed(1) })
-  return t('duration.minutes', { minutes: Math.floor(seconds / 60), seconds: Math.round(seconds % 60) })
-}
-
-function loadHistory() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(HISTORY_KEY))
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((item) => item && typeof item.text === 'string')
-  } catch {
-    return []
-  }
-}
-
-function saveHistory() {
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history.slice(0, 100)))
-  } catch {
-    /* 存储满时忽略 */
-  }
-}
-
-function toast(message, type = 'info') {
-  clearTimeout(state.toastTimer)
-  els.toast.textContent = message
-  els.toast.classList.toggle('error', type === 'error')
-  els.toast.classList.remove('hidden')
-  requestAnimationFrame(() => els.toast.classList.add('show'))
-  state.toastTimer = setTimeout(() => {
-    els.toast.classList.remove('show')
-    setTimeout(() => els.toast.classList.add('hidden'), 200)
-  }, type === 'error' ? 4200 : 2400)
 }
 
 /* ── 录音界面 ─────────────────────────────────────────── */
@@ -193,15 +45,11 @@ const HINTS = {
   transcribing: 'record.transcribing',
 }
 
-function idleHint() {
-  return t('record.idle')
-}
-
-function renderMicLabel() {
+export function renderMicLabel() {
   els.mic.setAttribute('aria-label', state.phase === 'recording' ? t('record.micStop') : t('record.micStart'))
 }
 
-function setPhase(phase) {
+export function setPhase(phase) {
   state.phase = phase
   els.app.dataset.phase = phase
   renderMicLabel()
@@ -218,11 +66,11 @@ function setPhase(phase) {
   renderMode()
 }
 
-function buildWave() {
+export function buildWave() {
   for (let i = 0; i < BARS; i++) els.wave.appendChild(document.createElement('span'))
 }
 
-function renderWave() {
+export function renderWave() {
   const bars = els.wave.children
   const recording = state.phase === 'recording'
   for (let i = 0; i < bars.length; i++) {
@@ -233,18 +81,18 @@ function renderWave() {
   }
 }
 
-function resetWave() {
+export function resetWave() {
   state.levels.fill(0)
   renderWave()
 }
 
-function pushLevel(level) {
+export function pushLevel(level) {
   state.levels.push(Number(level) || 0)
   state.levels.shift()
   renderWave()
 }
 
-function startTimer() {
+export function startTimer() {
   stopTimer()
   state.timer = setInterval(() => {
     const elapsed = (performance.now() - state.startedAt) / 1000
@@ -253,12 +101,12 @@ function startTimer() {
   }, 100)
 }
 
-function stopTimer() {
+export function stopTimer() {
   if (state.timer) clearInterval(state.timer)
   state.timer = 0
 }
 
-async function startRecording() {
+export async function startRecording() {
   const streaming = state.status?.mode === 'streaming'
   if (streaming && !state.status.streamingReady) {
     toast(t('model.streamingMissing'), 'error')
@@ -297,7 +145,7 @@ async function startRecording() {
   }
 }
 
-async function stopRecording() {
+export async function stopRecording() {
   if (state.phase !== 'recording') return
   const elapsed = (performance.now() - state.startedAt) / 1000
   stopTimer()
@@ -315,7 +163,7 @@ async function stopRecording() {
   }
 }
 
-async function cancelRecording() {
+export async function cancelRecording() {
   if (state.phase !== 'recording' && state.phase !== 'requesting') return
   stopTimer()
   try {
@@ -327,7 +175,7 @@ async function cancelRecording() {
   setPhase('idle')
 }
 
-function showTranscript(transcript) {
+export function showTranscript(transcript) {
   state.lastTranscript = transcript
   const text = (transcript.text || '').trim()
   els.text.value = text
@@ -357,7 +205,7 @@ function showTranscript(transcript) {
 
 /* ── 历史记录 ─────────────────────────────────────────── */
 
-function addHistory(transcript, text) {
+export function addHistory(transcript, text) {
   state.history.unshift({
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     text,
@@ -371,7 +219,7 @@ function addHistory(transcript, text) {
   renderHistory()
 }
 
-function renderHistory() {
+export function renderHistory() {
   els.historyCount.textContent = String(state.history.length)
   els.historyList.innerHTML = ''
   els.historyEmpty.classList.toggle('hidden', state.history.length > 0)
@@ -427,7 +275,7 @@ function renderHistory() {
   }
 }
 
-function iconAction(label, icon, onClick) {
+export function iconAction(label, icon, onClick) {
   const button = document.createElement('button')
   button.type = 'button'
   button.className = 'icon-btn sm'
@@ -438,21 +286,21 @@ function iconAction(label, icon, onClick) {
   return button
 }
 
-function copyIcon() {
+export function copyIcon() {
   return '<svg viewBox="0 0 24 24" width="15" height="15"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M15 5.5A2.5 2.5 0 0 0 12.5 3H6.5A2.5 2.5 0 0 0 4 5.5v6A2.5 2.5 0 0 0 6.5 14" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>'
 }
 
-function saveIcon() {
+export function saveIcon() {
   return '<svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 4v10m0 0 3.5-3.5M12 14l-3.5-3.5M5 16v3h14v-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 }
 
-function trashIcon() {
+export function trashIcon() {
   return '<svg viewBox="0 0 24 24" width="15" height="15"><path d="M5 7h14M10 7V5h4v2m-7 0 .8 12h8.4L17 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 }
 
 /* ── 复制 / 保存 ──────────────────────────────────────── */
 
-async function copyText(text) {
+export async function copyText(text) {
   if (!text || !text.trim()) {
     toast(t('result.noCopy'))
     return
@@ -470,7 +318,7 @@ async function copyText(text) {
   }
 }
 
-function buildFileName(text) {
+export function buildFileName(text) {
   const head = text.replace(/\s+/g, ' ').trim().slice(0, 18).replace(/[\\/:*?"<>|]/g, '')
   const now = new Date()
   const pad = (n) => String(n).padStart(2, '0')
@@ -478,7 +326,7 @@ function buildFileName(text) {
   return t('history.filename', { head: head || t('view.transcribe'), stamp })
 }
 
-async function saveText(text) {
+export async function saveText(text) {
   if (!text || !text.trim()) {
     toast(t('result.noSave'))
     return
@@ -493,7 +341,7 @@ async function saveText(text) {
 
 /* ── 状态 / 模型 ──────────────────────────────────────── */
 
-async function refreshStatus() {
+export async function refreshStatus() {
   try {
     state.status = await invoke('status')
     renderStatus()
@@ -502,7 +350,7 @@ async function refreshStatus() {
   }
 }
 
-function renderStatus() {
+export function renderStatus() {
   const status = state.status
   if (!status) return
   const streamingMode = status.mode === 'streaming'
@@ -561,7 +409,7 @@ function renderStatus() {
   renderMode()
 }
 
-function renderMode() {
+export function renderMode() {
   const mode = state.status?.mode || 'offline'
   for (const chip of els.modeRow.children) {
     chip.setAttribute('aria-pressed', String(chip.dataset.mode === mode))
@@ -581,7 +429,7 @@ function renderMode() {
   }
 }
 
-async function setMode(mode) {
+export async function setMode(mode) {
   if (state.phase !== 'idle' || state.status?.mode === mode) return
   try {
     state.status = await invoke('set_mode', { mode })
@@ -604,13 +452,13 @@ async function setMode(mode) {
   }
 }
 
-function setStreamProgress(done, total) {
+export function setStreamProgress(done, total) {
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0
   els.streamProgressFill.style.width = `${pct}%`
   els.streamProgressPct.textContent = `${pct}%`
 }
 
-async function downloadStreamingModel() {
+export async function downloadStreamingModel() {
   if (state.downloadingStreaming) return
   state.downloadingStreaming = true
   els.streamDownload.disabled = true
@@ -632,7 +480,7 @@ async function downloadStreamingModel() {
   }
 }
 
-function showPartial(partial) {
+export function showPartial(partial) {
   if (state.phase !== 'recording') return
   const text = (partial || '').trim()
   if (!text) {
@@ -644,7 +492,7 @@ function showPartial(partial) {
   els.liveLine.classList.remove('hidden')
 }
 
-function renderLang() {
+export function renderLang() {
   els.langRow.innerHTML = ''
   for (const code of LANGS) {
     const button = document.createElement('button')
@@ -661,7 +509,7 @@ function renderLang() {
 /// 已列出的输入设备（列设备会触发 macOS 权限弹窗，所以只在用户打开下拉框时才去列）
 let deviceCache = []
 
-function deviceItems() {
+export function deviceItems() {
   const items = [{ value: '', label: t('record.deviceDefault') }]
   for (const device of deviceCache) {
     items.push({
@@ -672,7 +520,7 @@ function deviceItems() {
   return items
 }
 
-async function loadDevices() {
+export async function loadDevices() {
   if (!deviceSelect) return
   let devices = []
   try {
@@ -687,7 +535,7 @@ async function loadDevices() {
 }
 
 /// 界面语言下拉。
-function localeItems() {
+export function localeItems() {
   return [
     { value: 'system', label: t('settings.localeSystem') },
     { value: 'zh-CN', label: t('settings.localeZh') },
@@ -696,7 +544,7 @@ function localeItems() {
 }
 
 /// 切换界面语言：存到 localStorage，然后重绘所有动态文案。
-function applyLocale(preference) {
+export function applyLocale(preference) {
   const stored = preference || localStorage.getItem(LOCALE_KEY) || 'system'
   I18N.setLocale(stored)
   if (preference) localStorage.setItem(LOCALE_KEY, preference)
@@ -710,7 +558,7 @@ function applyLocale(preference) {
   if (state.lastTranscript) showTranscript(state.lastTranscript)
 }
 
-async function setLanguage(language) {
+export async function setLanguage(language) {
   try {
     if (state.status?.mode === 'streaming' && !STREAM_LANGS.includes(language)) {
       toast(t('mode.switchedBack'))
@@ -723,7 +571,7 @@ async function setLanguage(language) {
   }
 }
 
-async function warmUp() {
+export async function warmUp() {
   if (!state.status?.modelReady) return
   try {
     await invoke('warm_up')
@@ -732,13 +580,13 @@ async function warmUp() {
   }
 }
 
-function setProgress(done, total) {
+export function setProgress(done, total) {
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0
   els.setupFill.style.width = `${pct}%`
   els.setupPct.textContent = `${pct}%`
 }
 
-async function downloadModel() {
+export async function downloadModel() {
   if (state.downloading) return
   state.downloading = true
   els.downloadBtn.disabled = true
@@ -766,7 +614,7 @@ async function downloadModel() {
   }
 }
 
-async function pickModelDir() {
+export async function pickModelDir() {
   const dir = await openDialog({ directory: true, multiple: false, title: t('setup.chooseDir') })
   if (!dir) return
   try {
@@ -785,7 +633,7 @@ async function pickModelDir() {
 
 /* ── 文件转写（浏览器解码 + 重采样） ──────────────────── */
 
-function encodeWave(samples) {
+export function encodeWave(samples) {
   const bytes = new Uint8Array(44 + samples.length * 2)
   const view = new DataView(bytes.buffer)
   const text = (at, value) => {
@@ -811,7 +659,7 @@ function encodeWave(samples) {
   return bytes
 }
 
-function audioBase64(bytes) {
+export function audioBase64(bytes) {
   let text = ''
   for (let i = 0; i < bytes.length; i += 8192) {
     text += String.fromCharCode(...bytes.subarray(i, i + 8192))
@@ -819,7 +667,7 @@ function audioBase64(bytes) {
   return btoa(text)
 }
 
-async function downloadPunctuationModel() {
+export async function downloadPunctuationModel() {
   if (state.downloadingPunct) return
   state.downloadingPunct = true
   els.punctDownload.disabled = true
@@ -838,7 +686,7 @@ async function downloadPunctuationModel() {
   }
 }
 
-async function transcribeFile(file) {
+export async function transcribeFile(file) {
   if (!state.status?.modelReady) {
     toast(t('result.fileNeedModel'), 'error')
     return
@@ -879,7 +727,7 @@ async function transcribeFile(file) {
   }
 }
 
-async function pickOutputDir() {
+export async function pickOutputDir() {
   const dir = await openDialog({ directory: true, multiple: false, title: t('settings.chooseOutputTitle') })
   if (!dir) return
   try {
@@ -891,7 +739,7 @@ async function pickOutputDir() {
   }
 }
 
-async function openOutputDir() {
+export async function openOutputDir() {
   const dir = state.status?.outputDir
   if (!dir) return
   try {
@@ -903,7 +751,7 @@ async function openOutputDir() {
 
 /* ── 事件绑定 ─────────────────────────────────────────── */
 
-function bindUI() {
+export function bindUI() {
   els.mic.addEventListener('click', () => {
     if (state.phase === 'recording') void stopRecording()
     else if (state.phase === 'idle') void startRecording()
@@ -1108,13 +956,13 @@ const WINDOW_BG = {
   dark: { r: 11, g: 13, b: 16, a: 1 },
 }
 
-function currentTheme() {
+export function currentTheme() {
   const stored = document.documentElement.dataset.theme
   if (stored === 'dark' || stored === 'light') return stored
   return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
-function syncWindowBackground() {
+export function syncWindowBackground() {
   try {
     const win = window.__TAURI__?.window?.getCurrentWindow?.()
     win?.setBackgroundColor?.(WINDOW_BG[currentTheme()])
@@ -1130,7 +978,7 @@ const THEME_ICONS = {
   dark: '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a6.6 6.6 0 0 0 10.8 10.8z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
 }
 
-function renderThemeIcon() {
+export function renderThemeIcon() {
   const button = $('theme-btn')
   if (!button) return
   const dark = currentTheme() === 'dark'
@@ -1140,7 +988,7 @@ function renderThemeIcon() {
   button.title = label
 }
 
-function toggleTheme() {
+export function toggleTheme() {
   const next = currentTheme() === 'dark' ? 'light' : 'dark'
   document.documentElement.dataset.theme = next
   localStorage.setItem(THEME_KEY, next)
@@ -1150,7 +998,7 @@ function toggleTheme() {
 
 /* ── 启动 ─────────────────────────────────────────────── */
 
-async function listenEvents() {
+export async function listenEvents() {
   await listen('audio:level', (event) => {
     const payload = event.payload || {}
     pushLevel(payload.level || 0)
