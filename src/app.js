@@ -2,7 +2,7 @@
 
 import {
   $, BARS, I18N, IDLE_WAVE, LANGS, LOCALE_KEY, MAX_SECONDS, STREAM_LANGS, THEME_KEY,
-  els, fmtBytes, fmtClock, fmtDuration, fmtError, idleHint, state, t, toast,
+  els, fmtBytes, fmtClock, fmtError, idleHint, state, t, toast,
 } from './core.js'
 import { invoke, listen, openDialog, openPath } from './tauri.js'
 import { renderHistory, saveHistory } from './history.js'
