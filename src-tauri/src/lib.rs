@@ -205,7 +205,8 @@ fn status_of(app: &AppHandle, settings: &Settings) -> Status {
         streaming_ready: streaming.is_some(),
         streaming_dir: streaming.map(|p| p.dir),
         streaming_bytes,
-        streaming_total_bytes: models::streaming_total_bytes(),
+        // 流式下载 = 流式模型 + 标点模型
+        streaming_total_bytes: models::streaming_total_bytes() + models::PUNCT.bytes,
         punct: settings.punct,
         punct_ready: models::resolve_punctuation(app).is_some(),
         input_device: settings.input_device.clone(),
@@ -736,26 +737,6 @@ fn set_input_device(
 
 
 #[tauri::command]
-async fn download_punctuation_model(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<Status, String> {
-    if state.downloading.swap(true, Ordering::SeqCst) {
-        return Err("正在下载中".into());
-    }
-    state.cancel_download.store(false, Ordering::SeqCst);
-    let dir = models::punctuation_install_dir(&app)?;
-    let sink = EventSink(app.clone());
-    let result = models::download_punctuation(&dir, state.cancel_download.clone(), &sink).await;
-    state.downloading.store(false, Ordering::SeqCst);
-    result?;
-    if state.settings().punct {
-        let _ = ensure_punctuation(&app, &state).await;
-    }
-    Ok(status_of(&app, &state.settings()))
-}
-
-#[tauri::command]
 async fn download_streaming_model(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -765,8 +746,11 @@ async fn download_streaming_model(
     }
     state.cancel_download.store(false, Ordering::SeqCst);
     let dir = models::streaming_install_dir(&app)?;
+    // 标点模型和流式模型一起下载
+    let punct_dir = models::punctuation_install_dir(&app)?;
     let sink = EventSink(app.clone());
-    let result = models::download_streaming(&dir, state.cancel_download.clone(), &sink).await;
+    let result =
+        models::download_streaming(&dir, &punct_dir, state.cancel_download.clone(), &sink).await;
     state.downloading.store(false, Ordering::SeqCst);
     result?;
     let _ = ensure_streaming_engine(&app, &state).await;
@@ -1166,7 +1150,6 @@ pub fn run() {
             transcribe_file,
             download_model,
             download_streaming_model,
-            download_punctuation_model,
             cancel_download,
             save_text,
         ])

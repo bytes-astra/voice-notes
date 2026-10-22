@@ -8,7 +8,7 @@ import { invoke } from './tauri.js'
 import { renderHistory, saveHistory } from './history.js'
 import { showTranscript } from './result.js'
 import {
-  downloadModel, downloadPunctuationModel, downloadStreamingModel, loadDevices,
+  downloadModel, downloadStreamingModel, loadDevices,
   localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
   setMode, setSelects, warmUp,
 } from './status.js'
@@ -139,7 +139,6 @@ export function bindUI() {
   })
   els.settingsPickOutput.addEventListener('click', () => void pickOutputDir())
   els.settingsOpenOutput.addEventListener('click', () => void openOutputDir())
-  els.punctDownload.addEventListener('click', () => void downloadPunctuationModel())
   els.punctToggle.addEventListener('change', async () => {
     const wants = els.punctToggle.checked
     if (wants && !state.status?.punctReady) {

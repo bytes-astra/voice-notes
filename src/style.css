@@ -225,6 +225,13 @@ main { display: flex; flex-direction: column; gap: 16px; }
 
 .setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
+/* 下载面板：首次运行的整段模型、流式模型、标点模型都用这一个样式。
+   .download-panel 里的标题是 h2（和首次使用那块一致），设置页里降一级。 */
+.download-panel { width: 100%; margin-top: 14px; }
+.settings-section .download-panel { margin-top: 12px; }
+.download-panel h2 { font-size: 15px; }
+.download-panel .muted { margin: 0 0 12px; font-size: 12.5px; }
+
 .link {
   order: 10;
   margin-top: 10px;

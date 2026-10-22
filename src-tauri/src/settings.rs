@@ -32,7 +32,7 @@ impl Default for Settings {
             language: "auto".into(),
             mode: "offline".into(),
             itn: true,
-            punct: false,
+            punct: true,
             input_device: None,
             output_dir: None,
             model_dir: None,

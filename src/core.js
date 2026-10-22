@@ -102,7 +102,6 @@ export const els = {
   itnToggle: $('itn-toggle'),
   punctToggle: $('punct-toggle'),
   punctStatus: $('punct-status'),
-  punctDownload: $('punct-download'),
   toast: $('toast'),
   dropOverlay: $('drop-overlay'),
   fileInput: $('file-input'),

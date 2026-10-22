@@ -22,11 +22,6 @@ export async function listenEvents() {
 
   await listen('model:progress', (event) => {
     const progress = event.payload || {}
-    if (state.downloadingPunct) {
-      const pct = progress.total > 0 ? Math.round(((progress.done || 0) / progress.total) * 100) : 0
-      els.punctStatus.textContent = t('progress.punct', { pct, done: fmtBytes(progress.done || 0), total: fmtBytes(progress.total || 0) })
-      return
-    }
     if (state.downloadingStreaming) {
       els.streamProgress.classList.remove('hidden')
       setStreamProgress(progress.done || 0, progress.total || 0)

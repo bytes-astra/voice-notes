@@ -72,7 +72,7 @@
             </div>
             <div class="setup-body">
               <h2 data-i18n="setup.title">首次使用：下载整段模型</h2>
-              <p class="muted" data-i18n="setup.desc">SenseVoiceSmall INT8 约 228&nbsp;MB，只需下载一次，之后完全离线运行。默认从 Hugging Face 下载，失败时自动切到 hf-mirror；也可以直接指向一个已有的本地模型目录。</p>
+              <p class="muted" data-i18n="setup.desc">SenseVoiceSmall INT8 约 228&nbsp;MB，只需下载一次，之后完全离线运行。默认走 hf-mirror 镜像（国内直连 Hugging Face 经常连不上），失败自动回退官方源；也可以直接指向一个已有的本地模型目录。</p>
               <div class="progress hidden" id="setup-progress">
                 <div class="progress-track"><div class="progress-fill" id="setup-progress-fill"></div></div>
                 <div class="progress-meta">
@@ -84,6 +84,27 @@
                 <button class="btn primary" id="download-btn" data-i18n="setup.download">下载整段模型</button>
                 <button class="btn" id="pick-model-btn" data-i18n="setup.useExisting">使用已有模型目录</button>
                 <button class="btn ghost hidden" id="cancel-download-btn" data-i18n="common.cancel">取消下载</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="card setup download-panel hidden" id="stream-setup" aria-live="polite">
+            <div class="setup-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 3v11m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div class="setup-body">
+              <h2 data-i18n="mode.streamingTitle">下载流式模型</h2>
+              <p class="muted" id="stream-setup-text" data-i18n="mode.streamingMissing">流式模型 + 标点模型 · 共约 470 MB，下载后可以实时出字。</p>
+              <div class="progress hidden" id="stream-progress">
+                <div class="progress-track"><div class="progress-fill" id="stream-progress-fill"></div></div>
+                <div class="progress-meta">
+                  <span id="stream-progress-text" data-i18n="setup.preparing">准备中…</span>
+                  <span id="stream-progress-pct">0%</span>
+                </div>
+              </div>
+              <div class="setup-actions">
+                <button type="button" class="btn primary" id="stream-download" data-i18n="mode.streamingDownload">下载流式模型</button>
+                <button type="button" class="btn ghost hidden" id="stream-cancel" data-i18n="common.cancel">取消</button>
               </div>
             </div>
           </section>
@@ -113,20 +134,6 @@
                 <span class="mode-name" data-i18n="mode.streaming">流式</span>
                 <span class="mode-desc" data-i18n="mode.streamingDesc">实时出字 · 仅中文</span>
               </button>
-            </div>
-            <div class="stream-setup hidden" id="stream-setup">
-              <p class="stream-setup-text" id="stream-setup-text" data-i18n="mode.streamingMissing">流式模型（中文，约 161 MB）还没下载</p>
-              <div class="progress hidden" id="stream-progress">
-                <div class="progress-track"><div class="progress-fill" id="stream-progress-fill"></div></div>
-                <div class="progress-meta">
-                  <span id="stream-progress-text" data-i18n="setup.preparing">准备中…</span>
-                  <span id="stream-progress-pct">0%</span>
-                </div>
-              </div>
-              <div class="row">
-                <button type="button" class="btn small primary" id="stream-download" data-i18n="mode.streamingDownload">下载流式模型</button>
-                <button type="button" class="btn small ghost hidden" id="stream-cancel" data-i18n="common.cancel">取消</button>
-              </div>
             </div>
             <div class="lang-row" id="lang-row" role="group" data-i18n-aria="lang.group"></div>
             <div class="device-row">
@@ -202,7 +209,6 @@
                   <input type="checkbox" id="punct-toggle" />
                   <span data-i18n="settings.punctToggle">流式结果自动加标点</span>
                 </label>
-                <button type="button" class="btn small" id="punct-download" data-i18n="settings.punctDownload">下载标点模型</button>
               </div>
             </section>
             <footer class="settings-foot">

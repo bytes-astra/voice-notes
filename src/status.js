@@ -75,7 +75,6 @@ export function renderStatus() {
   els.punctStatus.textContent = status.punctReady
     ? t('settings.punctReady')
     : t('settings.punctMissing', { size: fmtBytes(status.punctTotalBytes || 0) })
-  els.punctDownload.classList.toggle('hidden', status.punctReady)
   els.modelMode.textContent = streamingMode ? t('model.name.streaming') : t('model.name.offline')
 
   for (const button of els.langRow.children) {
@@ -100,7 +99,9 @@ export function renderMode() {
   const needStream = mode === 'streaming' && !state.status?.streamingReady
   els.streamSetup.classList.toggle('hidden', !needStream)
   if (needStream && state.status) {
-    els.streamSetupText.textContent = t('mode.streamingMissing', { size: fmtBytes(state.status.streamingTotalBytes || 0) })
+    els.streamSetupText.textContent = t('mode.streamingMissing', {
+      size: fmtBytes(state.status.streamingTotalBytes || 0),
+    })
   }
 }
 
@@ -218,9 +219,14 @@ export async function downloadStreamingModel() {
   setStreamProgress(0, state.status?.streamingTotalBytes || 0)
   els.streamProgressText.textContent = t('setup.preparing')
   try {
+    // 标点模型和流式模型一起下载，下完自动开启标点
     state.status = await invoke('download_streaming_model')
+    state.status = await invoke('set_punct', { enabled: true })
+    els.streamProgressText.textContent = t('setup.done')
     toast(t('model.badge.streamingReady'))
     renderStatus()
+    // 和整段模型一样：下载完先把引擎加载起来，第一次录音不用等
+    void invoke('warm_up_streaming').catch(() => {})
   } catch (error) {
     toast(fmtError(error), 'error')
     els.streamProgressText.textContent = t('setup.downloadFailed', { error: fmtError(error) })
@@ -256,25 +262,6 @@ export async function downloadModel() {
     els.downloadBtn.disabled = false
     els.pickModelBtn.disabled = false
     els.cancelDownloadBtn.classList.add('hidden')
-  }
-}
-
-export async function downloadPunctuationModel() {
-  if (state.downloadingPunct) return
-  state.downloadingPunct = true
-  els.punctDownload.disabled = true
-  els.punctStatus.textContent = t('setup.preparing')
-  try {
-    state.status = await invoke('download_punctuation_model')
-    state.status = await invoke('set_punct', { enabled: true })
-    toast(t('settings.punctEnabled'))
-    renderStatus()
-  } catch (error) {
-    toast(fmtError(error), 'error')
-    els.punctStatus.textContent = t('setup.downloadFailed', { error: fmtError(error) })
-  } finally {
-    state.downloadingPunct = false
-    els.punctDownload.disabled = false
   }
 }
 

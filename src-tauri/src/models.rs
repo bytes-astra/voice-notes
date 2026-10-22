@@ -130,14 +130,6 @@ pub fn punctuation_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-pub async fn download_punctuation(
-    dest_dir: &Path,
-    cancel: Arc<AtomicBool>,
-    sink: &dyn ProgressSink,
-) -> Result<(), String> {
-    download_asset(&PUNCT, dest_dir, cancel, sink).await
-}
-
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamingPaths {
@@ -191,15 +183,17 @@ pub fn streaming_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// 下载流式模型 **和标点模型**（一起下，用户不用再单独操作一次）。
 pub async fn download_streaming(
     dest_dir: &Path,
+    punct_dir: &Path,
     cancel: Arc<AtomicBool>,
     sink: &dyn ProgressSink,
 ) -> Result<(), String> {
     for asset in STREAM_ASSETS {
         download_asset(asset, dest_dir, cancel.clone(), sink).await?;
     }
-    Ok(())
+    download_asset(&PUNCT, punct_dir, cancel, sink).await
 }
 
 #[derive(Clone, Debug, Serialize)]

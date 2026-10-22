@@ -65,7 +65,9 @@ window.I18N_LOCALES['en'] = {
   'mode.streaming': 'Streaming',
   'mode.streamingDesc': 'Text as you speak · Chinese only',
   'mode.streamingDownload': 'Download streaming model',
-  'mode.streamingMissing': 'Streaming model (Chinese, about {size}) is not downloaded yet',
+  'mode.streamingTitle': 'Download the streaming model',
+  'mode.streamingMissing':
+    'Streaming model + punctuation model · about {size} in total. Download them for live transcription.',
   'mode.streamingOnlyZh': 'Streaming mode only supports Chinese',
   'mode.langSwitched': 'Streaming mode only supports Chinese — switched to auto detect',
   'mode.streamingDownloadFirst': 'Download the streaming model first',
@@ -144,9 +146,7 @@ window.I18N_LOCALES['en'] = {
   'settings.punctReady':
     'Punctuation model ready (CT-Transformer zh-en) — streaming results get punctuation automatically',
   'settings.punctMissing':
-    'Punctuation model not downloaded (about {size}) — streaming results get punctuation once it is installed',
-  'settings.punctDownload': 'Download punctuation model',
-  'settings.punctNeedDownload': 'Download the punctuation model first (about 281 MB)',
+    'Punctuation model not downloaded (about {size}; it comes with the streaming model)',
   'settings.punctEnabled': 'Punctuation model downloaded and switched on',
   'settings.punctAutoOn': 'Streaming results get punctuation automatically',
   'settings.punctAutoOff': 'Auto punctuation disabled',
