@@ -182,6 +182,23 @@ fn decode(recognizer: &OfflineRecognizer, samples: &[f32]) -> String {
         .unwrap_or_default()
 }
 
+/// 把「缺口」标记按时间插进句子列表，并重拼文本。
+///
+/// 识别跟不上时会丢掉一段音频，丢掉的地方必须在结果里留个记号 ——
+/// 静默丢一段音频，用户根本不知道结果缺了一块。
+pub fn insert_gaps(transcript: &mut Transcript, gaps: Vec<Segment>) {
+    if gaps.is_empty() {
+        return;
+    }
+    transcript.segments.extend(gaps);
+    transcript.segments.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    transcript.text = join_segments(transcript.segments.iter().map(|s| s.text.as_str()));
+}
+
 /// 去掉 SenseVoice 的 <|zh|><|NEUTRAL|> 之类控制标记，压平空白。
 fn clean(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -608,5 +625,50 @@ impl StreamingSession {
             elapsed_ms: self.started.elapsed().as_millis() as u64,
             language: "zh-en".into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::*;
+
+    fn seg(text: &str, start: f32) -> Segment {
+        Segment {
+            text: text.into(),
+            start,
+            end: start + 1.0,
+        }
+    }
+
+    #[test]
+    fn inserts_gap_in_time_order() {
+        let mut transcript = Transcript {
+            text: "第一句。第二句。".into(),
+            segments: vec![seg("第一句。", 0.0), seg("第二句。", 2.0)],
+            duration_seconds: 3.0,
+            elapsed_ms: 100,
+            language: "zh".into(),
+        };
+        insert_gaps(
+            &mut transcript,
+            vec![seg("（此处约 3 秒未识别）", 1.0)],
+        );
+        assert_eq!(transcript.segments.len(), 3);
+        assert_eq!(transcript.segments[1].text, "（此处约 3 秒未识别）");
+        assert_eq!(transcript.text, "第一句。（此处约 3 秒未识别）第二句。");
+    }
+
+    #[test]
+    fn no_gaps_leaves_text_untouched() {
+        let mut transcript = Transcript {
+            text: "只有一句。".into(),
+            segments: vec![seg("只有一句。", 0.0)],
+            duration_seconds: 1.0,
+            elapsed_ms: 50,
+            language: "zh".into(),
+        };
+        insert_gaps(&mut transcript, Vec::new());
+        assert_eq!(transcript.text, "只有一句。");
+        assert_eq!(transcript.segments.len(), 1);
     }
 }

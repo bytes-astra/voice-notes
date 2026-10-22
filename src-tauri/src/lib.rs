@@ -19,7 +19,9 @@ use serde::Serialize;
 use sherpa_onnx::LinearResampler;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use asr::{Engine, PunctuationEngine, StreamEvent, StreamingEngine, StreamingSession, Transcript};
+use asr::{
+    Engine, OfflineEvent, PunctuationEngine, StreamEvent, StreamingEngine, StreamingSession, Transcript,
+};
 use audio::Recorder;
 use settings::Settings;
 
@@ -419,13 +421,16 @@ struct OfflineRun {
 /// 采集线程把新采样放进队列，这里取走、重采样到 16k、喂给 VAD 切句，
 /// 切出一句就立刻送 SenseVoice 识别并把结果推给界面。
 /// 识别完的音频立刻丢掉，只留文本 —— 内存不随录音时长增长。
-fn run_offline(
-    app: &AppHandle,
+fn run_offline<F>(
     engine: Arc<Engine>,
     queue: audio::SampleQueue,
     rate: u32,
     stop: Arc<AtomicBool>,
-) -> Transcript {
+    mut emit: F,
+) -> Transcript
+where
+    F: FnMut(OfflineEvent),
+{
     let resampler = if rate as i32 == asr::SAMPLE_RATE {
         None
     } else {
@@ -436,27 +441,24 @@ fn run_offline(
         None => None,
     };
     let mut parts: Vec<String> = Vec::new();
-
-    let emit_segment = |parts: &mut Vec<String>, segment: &asr::Segment| {
-        parts.push(segment.text.clone());
-        let _ = app.emit(
-            "stream:segment",
-            SegmentPayload {
-                segment: segment.text.clone(),
-                start: segment.start,
-                end: segment.end,
-            },
-        );
-    };
+    // 已经喂给识别器的采样数（用来给缺口标记标时间）
+    let mut fed_seconds = 0usize;
 
     loop {
         let new_audio = queue.take_new();
         if new_audio.dropped > 0 {
-            // 识别跟不上：丢掉了一段音频，要在结果里留下可见的缺口
+            // 识别跟不上：丢掉了一段音频，要在结果里留下可见的缺口。
+            // 标记既进最终文本，也作为一句实时发出去（前端追加后才看得到）。
             let marker = audio::gap_marker(new_audio.dropped, rate);
             parts.push(marker.clone());
-            let _ = app.emit("audio:error", "识别跟不上，部分音频未转写");
+            let at = fed_seconds as f32 / asr::SAMPLE_RATE as f32;
+            emit(OfflineEvent::Segment(asr::Segment {
+                text: marker,
+                start: at,
+                end: at,
+            }));
         }
+        fed_seconds += new_audio.samples.len();
         if !new_audio.samples.is_empty() {
             let samples = match &resampler {
                 Some(resampler) => resampler.resample(&new_audio.samples, false),
@@ -464,8 +466,9 @@ fn run_offline(
             };
             if let Some(session) = session.as_mut() {
                 for event in session.push(&samples) {
-                    let asr::OfflineEvent::Segment(segment) = event;
-                    emit_segment(&mut parts, &segment);
+                    let OfflineEvent::Segment(segment) = event;
+                    parts.push(segment.text.clone());
+                    emit(OfflineEvent::Segment(segment));
                 }
             }
         }
@@ -478,19 +481,21 @@ fn run_offline(
     // 收尾：把 VAD 里还没成句的剩余音频冲出来
     if let Some(session) = session.as_mut() {
         for event in session.finish() {
-            let asr::OfflineEvent::Segment(segment) = event;
-            emit_segment(&mut parts, &segment);
+            let OfflineEvent::Segment(segment) = event;
+            parts.push(segment.text.clone());
+            emit(OfflineEvent::Segment(segment));
         }
     }
 
+    // 文本用 parts 拼（含缺口标记）；segments 只放真正的句子
     let (text, segments, elapsed_ms, duration_seconds) = match &session {
         Some(session) => (
-            asr::join_segments(session.segments().iter().map(|s| s.text.as_str())),
+            asr::join_segments(parts.iter().map(|s| s.as_str())),
             session.segments().to_vec(),
             session.elapsed_ms(),
             session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
         ),
-        None => (String::new(), Vec::new(), 0, 0.0),
+        None => (asr::join_segments(parts.iter().map(|s| s.as_str())), Vec::new(), 0, 0.0),
     };
 
     Transcript {
@@ -542,10 +547,30 @@ where
     let preroll_limit = (asr::SAMPLE_RATE as usize) / 5 * 2;
     let mut preroll: Vec<f32> = Vec::new();
     let mut active = false;
+    // 已经喂给识别器的采样数（用来给缺口标记标时间）
+    let mut fed_seconds = 0usize;
+    // 识别跟不上时丢掉的音频，在结果里留个可见的缺口
+    let mut gaps: Vec<asr::Segment> = Vec::new();
     let mut last_voice = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(60));
         let new_audio = take_new(&queue);
+        if new_audio.dropped > 0 {
+            // 识别跟不上：丢掉了一段音频，标记出来，不能静默丢
+            let marker = audio::gap_marker(new_audio.dropped, rate);
+            let at = fed_seconds as f32 / asr::SAMPLE_RATE as f32;
+            gaps.push(asr::Segment {
+                text: marker.clone(),
+                start: at,
+                end: at,
+            });
+            emit(vec![StreamEvent::Segment(asr::Segment {
+                text: marker,
+                start: at,
+                end: at,
+            })]);
+        }
+        fed_seconds += new_audio.samples.len();
         let chunk = new_audio.samples;
         if chunk.is_empty() {
             continue;
@@ -595,7 +620,22 @@ where
     }
 
     // 收尾：把剩余采样和重采样器内部缓冲一起冲出去
-    let chunk = take_new(&queue).samples;
+    let last = take_new(&queue);
+    if last.dropped > 0 {
+        let marker = audio::gap_marker(last.dropped, rate);
+        let at = fed_seconds as f32 / asr::SAMPLE_RATE as f32;
+        gaps.push(asr::Segment {
+            text: marker.clone(),
+            start: at,
+            end: at,
+        });
+        emit(vec![StreamEvent::Segment(asr::Segment {
+            text: marker,
+            start: at,
+            end: at,
+        })]);
+    }
+    let chunk = last.samples;
     let tail = match &resampler {
         Some(resampler) => resampler.resample(&chunk, true),
         None => chunk,
@@ -604,7 +644,18 @@ where
         emit(session.push(&tail));
     }
     emit(session.finish());
-    session.transcript()
+    let mut transcript = session.transcript();
+    if !gaps.is_empty() {
+        // 缺口标记按时间插进句子列表，文本重拼一次
+        transcript.segments.extend(gaps);
+        transcript.segments.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        transcript.text = asr::join_segments(transcript.segments.iter().map(|s| s.text.as_str()));
+    }
+    transcript
 }
 
 #[tauri::command]
@@ -787,7 +838,17 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
     std::thread::Builder::new()
         .name("offline-asr".into())
         .spawn(move || {
-            let transcript = run_offline(&thread_app, engine, queue, rate, thread_stop);
+            let transcript = run_offline(engine, queue, rate, thread_stop, |event| {
+                let OfflineEvent::Segment(segment) = event;
+                let _ = thread_app.emit(
+                    "stream:segment",
+                    SegmentPayload {
+                        segment: segment.text,
+                        start: segment.start,
+                        end: segment.end,
+                    },
+                );
+            });
             let _ = tx.send(transcript);
         })
         .map_err(|e| format!("无法启动整段识别线程: {e}"))?;
@@ -983,6 +1044,15 @@ fn cancel_recording(state: State<AppState>) -> Result<(), String> {
     };
     if let Some(stream) = state.stream.lock().ok().and_then(|mut slot| slot.take()) {
         stream.stop.store(true, Ordering::SeqCst);
+    }
+    // 整段模式的识别线程也要停，否则它会一直空转（队列空了也每 60ms 醒一次）
+    if let Some(offline) = state
+        .offline_session
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+    {
+        offline.stop.store(true, Ordering::SeqCst);
     }
     if let Some(recorder) = recorder {
         recorder.cancel();
@@ -1235,6 +1305,124 @@ mod tests {
         assert!(!transcript.text.is_empty(), "流式结果为空");
         assert!(partials > 0, "没有中间结果");
         assert!(transcript.duration_seconds > 5.0);
+    }
+
+    /// 识别跟不上、丢掉一段音频时，结果里必须留一个可见的缺口标记。
+    ///
+    /// 回归测试：之前流式路径完全忽略了 `dropped`，音频被静默丢弃。
+    #[test]
+    fn streaming_gap_marker_reaches_transcript() {
+        let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
+            .ok()
+            .map(PathBuf::from)
+        else {
+            eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+            return;
+        };
+        let paths = models::StreamingPaths {
+            dir: dir.display().to_string(),
+            encoder: dir.join("encoder.int8.onnx").display().to_string(),
+            decoder: dir.join("decoder.onnx").display().to_string(),
+            joiner: dir.join("joiner.int8.onnx").display().to_string(),
+            tokens: dir.join("tokens.txt").display().to_string(),
+            vad: [dir.join("silero_vad.onnx")]
+                .into_iter()
+                .find(|path| path.is_file())
+                .map(|path| path.display().to_string()),
+        };
+        let engine = Arc::new(StreamingEngine::new(&paths).expect("加载流式模型"));
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+        let mut upsampled = Vec::with_capacity(wave.samples().len() * 3);
+        for sample in wave.samples() {
+            upsampled.push(*sample);
+            upsampled.push(*sample);
+            upsampled.push(*sample);
+        }
+        // 上限调到 1000 个采样：音频远超上限 → 一定会触发丢弃
+        let queue = audio::SampleQueue::with_limit(48_000, Some(1_000));
+        queue.push(&upsampled);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopper = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            stopper.store(true, Ordering::SeqCst);
+        });
+
+        let transcript = run_streaming_core(engine, None, queue, 48_000, stop, |_| {});
+        println!("带缺口的流式结果：{}", transcript.text);
+        assert!(
+            transcript.text.contains("未识别"),
+            "丢掉音频后结果里应该有缺口标记: {}",
+            transcript.text
+        );
+        assert!(
+            transcript.segments.iter().any(|s| s.text.contains("未识别")),
+            "segments 里也该有缺口标记"
+        );
+    }
+
+    /// 整段模式：丢掉音频后，缺口标记必须出现在最终文本里。
+    ///
+    /// 回归测试：之前标记只 push 进了本地 parts，最终文本却从 session.segments()
+    /// 拼，标记被丢掉了。
+    #[test]
+    fn offline_gap_marker_reaches_transcript() {
+        let Some(dir) = std::env::var("VOICE_NOTES_MODEL_DIR")
+            .ok()
+            .map(PathBuf::from)
+        else {
+            eprintln!("跳过：未设置 VOICE_NOTES_MODEL_DIR");
+            return;
+        };
+        let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
+            .into_iter()
+            .find(|path| path.is_file());
+        let (Some(model), tokens) = (model, dir.join("tokens.txt")) else {
+            eprintln!("跳过：找不到 SenseVoice 模型");
+            return;
+        };
+        if !tokens.is_file() {
+            eprintln!("跳过：找不到 tokens.txt");
+            return;
+        }
+        let mut vad_candidates = vec![dir.join("silero_vad.onnx")];
+        if let Some(parent) = dir.parent() {
+            vad_candidates.push(parent.join("silero_vad.onnx"));
+        }
+        let vad_model = vad_candidates.into_iter().find(|path| path.is_file());
+        let Some(vad_model) = vad_model else {
+            eprintln!("跳过：找不到 VAD 模型");
+            return;
+        };
+        let paths = models::ModelPaths {
+            dir: dir.display().to_string(),
+            model: model.display().to_string(),
+            tokens: tokens.display().to_string(),
+            vad: Some(vad_model.display().to_string()),
+            source: "test".into(),
+        };
+        let engine = Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+
+        // 上限调到 1000 个采样：音频远超上限 → 一定会触发丢弃
+        let queue = audio::SampleQueue::with_limit(16_000, Some(1_000));
+        queue.push(wave.samples());
+        let stop = Arc::new(AtomicBool::new(true));
+
+        let mut events = Vec::new();
+        let transcript = run_offline(engine, queue, 16_000, stop, |event| events.push(event));
+        println!("带缺口的整段结果：{}", transcript.text);
+        assert!(
+            transcript.text.contains("未识别"),
+            "丢掉音频后文本里应该有缺口标记: {}",
+            transcript.text
+        );
+        assert!(
+            events.iter().any(|e| match e {
+                OfflineEvent::Segment(s) => s.text.contains("未识别"),
+            }),
+            "也应该实时发一个缺口事件"
+        );
     }
 
     #[test]

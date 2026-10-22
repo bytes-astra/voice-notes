@@ -47,9 +47,18 @@ pub struct NewAudio {
 impl SampleQueue {
     /// 有上限的缓冲：ASR 线程跟不上时丢最旧的（流式模式用）。
     pub fn new(sample_rate: u32) -> Self {
+        Self::with_limit(
+            sample_rate,
+            Some(MAX_PENDING_SECONDS as usize * sample_rate as usize),
+        )
+    }
+
+    /// 指定上限的缓冲（测试用：可以把上限调得很小来触发丢弃）。
+    pub fn with_limit(sample_rate: u32, limit: Option<usize>) -> Self {
+        let _ = sample_rate;
         Self {
             samples: Arc::new(Mutex::new(Vec::new())),
-            limit: Some(MAX_PENDING_SECONDS as usize * sample_rate as usize),
+            limit,
         }
     }
 
@@ -121,7 +130,8 @@ impl LevelRing {
 pub fn gap_marker(dropped_samples: u32, sample_rate: u32) -> String {
     let rate = sample_rate.max(1);
     let seconds = (dropped_samples as f32 / rate as f32).ceil().max(1.0) as u32;
-    format!("……（此处约 {seconds} 秒未识别）……")
+    // 用全角括号开头：U+FF08 属于 CJK 范围，拼句时不会多出空格
+    format!("（此处约 {seconds} 秒未识别）")
 }
 
 pub struct Recorder {
