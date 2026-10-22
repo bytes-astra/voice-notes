@@ -464,8 +464,6 @@ pub struct OfflineSession {
     vad_pending: Vec<f32>,
     /// 已经喂进来的采样总数（用来算时间轴）
     fed_samples: usize,
-    /// 被 VAD 切出并识别成功的句子的样本数
-    recognized_samples: usize,
     segments: Vec<Segment>,
     /// 纯推理耗时累计（毫秒）
     elapsed_ms: u64,
@@ -490,7 +488,6 @@ impl OfflineSession {
             detector,
             vad_pending: Vec::new(),
             fed_samples: 0,
-            recognized_samples: 0,
             segments: Vec::new(),
             elapsed_ms: 0,
         }
@@ -535,7 +532,6 @@ impl OfflineSession {
             if text.trim().is_empty() {
                 continue;
             }
-            self.recognized_samples += samples.len();
             let segment = Segment { text, start, end };
             events.push(OfflineEvent::Segment(segment.clone()));
             self.segments.push(segment);
@@ -578,11 +574,6 @@ impl OfflineSession {
     /// 喂进来的采样总数（判断「录得太短」用；不含 VAD 内部缓冲）
     pub fn recorded_samples(&self) -> usize {
         self.fed_samples
-    }
-
-    /// 被 VAD 切出并识别成功的句子的采样数（判断「没识别到内容」用）
-    pub fn recognized_samples(&self) -> usize {
-        self.recognized_samples
     }
 }
 

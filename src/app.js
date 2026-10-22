@@ -13,7 +13,7 @@ import {
   setMode, setSelects, warmUp,
 } from './status.js'
 import {
-  buildWave, cancelRecording, renderMicLabel, startRecording, stopRecording,
+  buildWave, cancelRecording, renderHint, renderMicLabel, startRecording, stopRecording,
 } from './recorder.js'
 import { openOutputDir, pickAndTranscribeFile, pickOutputDir, transcribeFilePath } from './files.js'
 import { listenEvents } from './events.js'
@@ -57,9 +57,11 @@ export function applyLocale(preference) {
   renderStatus()
   renderThemeIcon()
   renderMicLabel()
+  renderHint()
   refreshSelectItems(stored)
   els.viewTitle.textContent = viewTitle(state.view)
-  if (state.lastTranscript) showTranscript(state.lastTranscript)
+  // 只重绘，不写历史：否则每切一次语言就多一条重复记录。
+  if (state.lastTranscript) showTranscript(state.lastTranscript, { record: false })
 }
 
 /* ── 事件绑定 ─────────────────────────────────────────── */
@@ -73,6 +75,7 @@ export function bindUI() {
   els.copyBtn.addEventListener('click', () => copyText(els.text.value))
   els.saveBtn.addEventListener('click', () => saveText(els.text.value))
   els.clearBtn.addEventListener('click', () => {
+    state.lastTranscript = null
     els.text.value = ''
     els.meta.innerHTML = '<span>' + t('result.waiting') + '</span>'
     els.text.focus()
@@ -109,6 +112,7 @@ export function bindUI() {
       return
     }
     switchView('transcribe')
+    state.lastTranscript = null
     els.text.value = ''
     els.meta.innerHTML = '<span>' + t('result.waiting') + '</span>'
     els.timer.textContent = '00:00'
@@ -199,7 +203,10 @@ export function bindUI() {
   els.pickFileBtn?.addEventListener('click', () => void pickAndTranscribeFile())
 
   document.addEventListener('keydown', (event) => {
-    const typing = ['INPUT', 'TEXTAREA'].includes(event.target.tagName) || event.target.isContentEditable
+    const target = event.target instanceof Element ? event.target : null
+    const typing = !!target && (['INPUT', 'TEXTAREA'].includes(target.tagName) || target.isContentEditable)
+    // 按钮 / 链接 / 下拉项上的按键归控件自己：否则按空格会变成开始录音。
+    const onControl = !!target?.closest?.('button, a, [role="option"]')
     if (event.key === 'Escape' && (state.phase === 'recording' || state.phase === 'requesting')) {
       event.preventDefault()
       void cancelRecording()
@@ -209,7 +216,7 @@ export function bindUI() {
       switchView('transcribe')
       return
     }
-    if (typing) return
+    if (typing || onControl) return
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') {
       event.preventDefault()
       void pickAndTranscribeFile()
@@ -255,9 +262,12 @@ async function init() {
   if (theme) document.documentElement.dataset.theme = theme
   syncWindowBackground()
   renderThemeIcon()
-  // 没手动选过主题时，系统切换深浅色要跟着变
+  // 没手动选过主题时，系统切换深浅色要跟着变（连窗口底色一起）
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (!localStorage.getItem(THEME_KEY)) renderThemeIcon()
+    if (!localStorage.getItem(THEME_KEY)) {
+      renderThemeIcon()
+      syncWindowBackground()
+    }
   })
 
   applyLocale(localStorage.getItem(LOCALE_KEY) || 'system')
@@ -273,9 +283,11 @@ async function init() {
   await listenEvents()
   await refreshStatus()
   switchView('transcribe')
-  if (state.status?.modelReady) void warmUp()
-  if (state.status?.mode === 'streaming' && state.status.streamingReady) {
-    void invoke('warm_up_streaming').catch(() => {})
+  // 只预热当前模式要用的引擎：整段模式常驻 239 MB，流式用户用不到它。
+  if (state.status?.mode === 'streaming') {
+    if (state.status.streamingReady) void invoke('warm_up_streaming').catch(() => {})
+  } else if (state.status?.modelReady) {
+    void warmUp()
   }
 }
 

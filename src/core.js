@@ -45,9 +45,10 @@ export const state = {
   engine: 'idle',
   downloading: false,
   downloadingStreaming: false,
-  downloadingPunct: false,
   view: 'transcribe',
   lastTranscript: null,
+  /// 录音/启动请求的代号：取消时 +1，让还在 await 的启动流程自己放弃。
+  requestId: 0,
   toastTimer: 0,
   /// 正在转写文件（用于显示「第 N 句」进度）
   transcribingFile: false,
@@ -104,10 +105,8 @@ export const els = {
   punctStatus: $('punct-status'),
   toast: $('toast'),
   dropOverlay: $('drop-overlay'),
-  fileInput: $('file-input'),
   pickFileBtn: $('pick-file-btn'),
   viewTitle: $('view-title'),
-  headHint: $('head-hint'),
   modelMode: $('model-mode'),
   historyCount: $('history-count'),
   newBtn: $('new-btn'),

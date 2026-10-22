@@ -24,9 +24,11 @@ use asr::{
 use audio::Recorder;
 use settings::Settings;
 
-/// 一次流式录音会话：停止标志 + 结果通道。
+/// 一次流式录音会话：停止标志 + 丢弃标志 + 结果通道。
 struct StreamSession {
     stop: Arc<AtomicBool>,
+    /// 取消录音：收尾时不再产出文本（结果框里不该冒出被取消的内容）。
+    discard: Arc<AtomicBool>,
     rx: Receiver<Transcript>,
 }
 
@@ -286,9 +288,9 @@ fn set_output_dir(
 }
 
 #[tauri::command]
-fn set_model_dir(
+async fn set_model_dir(
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
     dir: Option<String>,
 ) -> Result<Status, String> {
     {
@@ -299,10 +301,14 @@ fn set_model_dir(
         guard.model_dir = dir.filter(|d| !d.trim().is_empty());
     }
     persist(&app, &state)?;
-    // 模型换了，旧引擎作废。
-    if let Ok(mut engine) = state.engine.lock() {
-        *engine = None;
-    }
+    // 模型换了，旧引擎作废。加载可能正占着锁：清空放阻塞线程里，别卡住同步命令。
+    let engine = state.engine.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        if let Ok(mut slot) = engine.lock() {
+            *slot = None;
+        }
+    })
+    .await;
     Ok(status_of(&app, &state.settings()))
 }
 
@@ -370,13 +376,20 @@ async fn ensure_streaming_engine(
             message: None,
         },
     );
-    let engine = tauri::async_runtime::spawn_blocking(move || StreamingEngine::new(&paths))
+    // 检查和加载放在同一把锁里：预热和点录音并发时只会加载一份 161 MB 模型。
+    let slot = state.streaming_engine.clone();
+    let engine =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Arc<StreamingEngine>, String> {
+            let mut guard = slot.lock().map_err(|_| "流式引擎状态异常".to_string())?;
+            if let Some(engine) = guard.as_ref() {
+                return Ok(engine.clone());
+            }
+            let engine = Arc::new(StreamingEngine::new(&paths)?);
+            *guard = Some(engine.clone());
+            Ok(engine)
+        })
         .await
         .map_err(|e| format!("加载流式模型失败: {e}"))??;
-    let engine = Arc::new(engine);
-    if let Ok(mut slot) = state.streaming_engine.lock() {
-        *slot = Some(engine.clone());
-    }
     let _ = app.emit(
         "streaming:state",
         EngineState {
@@ -395,13 +408,20 @@ async fn ensure_punctuation(
         return Ok(engine);
     }
     let model = models::resolve_punctuation(app).ok_or_else(|| "标点模型未下载".to_string())?;
-    let engine = tauri::async_runtime::spawn_blocking(move || PunctuationEngine::new(&model))
+    // 同上：检查和加载在同一把锁里，避免并发加载两份 294 MB 标点模型。
+    let slot = state.punct_engine.clone();
+    let engine =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Arc<PunctuationEngine>, String> {
+            let mut guard = slot.lock().map_err(|_| "标点引擎状态异常".to_string())?;
+            if let Some(engine) = guard.as_ref() {
+                return Ok(engine.clone());
+            }
+            let engine = Arc::new(PunctuationEngine::new(&model)?);
+            *guard = Some(engine.clone());
+            Ok(engine)
+        })
         .await
         .map_err(|e| format!("加载标点模型失败: {e}"))??;
-    let engine = Arc::new(engine);
-    if let Ok(mut slot) = state.punct_engine.lock() {
-        *slot = Some(engine.clone());
-    }
     Ok(engine)
 }
 
@@ -413,6 +433,8 @@ fn take_new(queue: &audio::SampleQueue) -> audio::NewAudio {
 /// 整段模式的识别线程。
 struct OfflineRun {
     stop: Arc<AtomicBool>,
+    /// 取消录音：收尾时不再识别、不再发文本。
+    discard: Arc<AtomicBool>,
     rx: mpsc::Receiver<Transcript>,
 }
 
@@ -423,9 +445,11 @@ struct OfflineRun {
 /// 识别完的音频立刻丢掉，只留文本 —— 内存不随录音时长增长。
 fn run_offline<F>(
     engine: Arc<Engine>,
+    vad: sherpa_onnx::VadModelConfig,
     queue: audio::SampleQueue,
     rate: u32,
     stop: Arc<AtomicBool>,
+    discard: Arc<AtomicBool>,
     mut emit: F,
 ) -> Transcript
 where
@@ -436,13 +460,11 @@ where
     } else {
         sherpa_onnx::LinearResampler::create(rate as i32, asr::SAMPLE_RATE)
     };
-    let mut session = match engine.vad_config() {
-        Some(vad) => Some(asr::OfflineSession::new(engine.clone(), vad)),
-        None => None,
-    };
+    let mut session = asr::OfflineSession::new(engine.clone(), vad);
     let mut parts: Vec<String> = Vec::new();
-    // 已经喂给识别器的采样数（用来给缺口标记标时间）
-    let mut fed_seconds = 0usize;
+    // 已经喂给识别器的 16 kHz 采样数（给缺口标记标时间；不能用设备采样率）
+    let mut fed_16k = 0usize;
+    let discarded = || discard.load(Ordering::Relaxed);
 
     loop {
         let new_audio = queue.take_new();
@@ -451,35 +473,37 @@ where
             // 标记既进最终文本，也作为一句实时发出去（前端追加后才看得到）。
             let marker = audio::gap_marker(new_audio.dropped, rate);
             parts.push(marker.clone());
-            let at = fed_seconds as f32 / asr::SAMPLE_RATE as f32;
-            emit(OfflineEvent::Segment(asr::Segment {
-                text: marker,
-                start: at,
-                end: at,
-            }));
+            let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
+            if !discarded() {
+                emit(OfflineEvent::Segment(asr::Segment {
+                    text: marker,
+                    start: at,
+                    end: at,
+                }));
+            }
         }
-        fed_seconds += new_audio.samples.len();
         if !new_audio.samples.is_empty() {
             let samples = match &resampler {
                 Some(resampler) => resampler.resample(&new_audio.samples, false),
                 None => new_audio.samples,
             };
-            if let Some(session) = session.as_mut() {
-                for event in session.push(&samples) {
-                    let OfflineEvent::Segment(segment) = event;
-                    parts.push(segment.text.clone());
+            fed_16k += samples.len();
+            for event in session.push(&samples) {
+                let OfflineEvent::Segment(segment) = event;
+                parts.push(segment.text.clone());
+                if !discarded() {
                     emit(OfflineEvent::Segment(segment));
                 }
             }
         }
-        if stop.load(Ordering::Relaxed) {
+        if stop.load(Ordering::Relaxed) || discarded() {
             break;
         }
         std::thread::sleep(Duration::from_millis(60));
     }
 
-    // 收尾：把 VAD 里还没成句的剩余音频冲出来
-    if let Some(session) = session.as_mut() {
+    // 取消录音：不冲 VAD 尾巴、不识别 —— 被取消的内容不该再出现在结果里。
+    if !discarded() {
         for event in session.finish() {
             let OfflineEvent::Segment(segment) = event;
             parts.push(segment.text.clone());
@@ -488,21 +512,11 @@ where
     }
 
     // 文本用 parts 拼（含缺口标记）；segments 只放真正的句子
-    let (text, segments, elapsed_ms, duration_seconds) = match &session {
-        Some(session) => (
-            asr::join_segments(parts.iter().map(|s| s.as_str())),
-            session.segments().to_vec(),
-            session.elapsed_ms(),
-            session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
-        ),
-        None => (asr::join_segments(parts.iter().map(|s| s.as_str())), Vec::new(), 0, 0.0),
-    };
-
     Transcript {
-        text,
-        segments,
-        duration_seconds,
-        elapsed_ms,
+        text: asr::join_segments(parts.iter().map(|s| s.as_str())),
+        segments: session.segments().to_vec(),
+        duration_seconds: session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
+        elapsed_ms: session.elapsed_ms(),
         language: engine.language.clone(),
     }
 }
@@ -515,9 +529,10 @@ fn run_streaming(
     queue: audio::SampleQueue,
     rate: u32,
     stop: Arc<AtomicBool>,
+    discard: Arc<AtomicBool>,
 ) -> Transcript {
     let mut emitter = StreamEmitter { app: app.clone() };
-    run_streaming_core(engine, punctuator, queue, rate, stop, |events| {
+    run_streaming_core(engine, punctuator, queue, rate, stop, discard, |events| {
         emitter.apply(events)
     })
 }
@@ -528,6 +543,7 @@ fn run_streaming_core<F>(
     queue: audio::SampleQueue,
     rate: u32,
     stop: Arc<AtomicBool>,
+    discard: Arc<AtomicBool>,
     mut emit: F,
 ) -> Transcript
 where
@@ -547,30 +563,31 @@ where
     let preroll_limit = (asr::SAMPLE_RATE as usize) / 5 * 2;
     let mut preroll: Vec<f32> = Vec::new();
     let mut active = false;
-    // 已经喂给识别器的采样数（用来给缺口标记标时间）
-    let mut fed_seconds = 0usize;
+    // 已经喂给识别器的 16 kHz 采样数（给缺口标记标时间；不能用设备采样率）
+    let mut fed_16k = 0usize;
     // 识别跟不上时丢掉的音频，在结果里留个可见的缺口
     let mut gaps: Vec<asr::Segment> = Vec::new();
     let mut last_voice = std::time::Instant::now();
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) && !discard.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(60));
         let new_audio = take_new(&queue);
+        let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
         if new_audio.dropped > 0 {
             // 识别跟不上：丢掉了一段音频，标记出来，不能静默丢
             let marker = audio::gap_marker(new_audio.dropped, rate);
-            let at = fed_seconds as f32 / asr::SAMPLE_RATE as f32;
             gaps.push(asr::Segment {
                 text: marker.clone(),
                 start: at,
                 end: at,
             });
-            emit(vec![StreamEvent::Segment(asr::Segment {
-                text: marker,
-                start: at,
-                end: at,
-            })]);
+            if !discard.load(Ordering::Relaxed) {
+                emit(vec![StreamEvent::Segment(asr::Segment {
+                    text: marker,
+                    start: at,
+                    end: at,
+                })]);
+            }
         }
-        fed_seconds += new_audio.samples.len();
         let chunk = new_audio.samples;
         if chunk.is_empty() {
             continue;
@@ -582,9 +599,12 @@ where
         if samples.is_empty() {
             continue;
         }
+        fed_16k += samples.len();
 
         let Some(detector) = vad.as_ref() else {
-            emit(session.push(&samples));
+            if !discard.load(Ordering::Relaxed) {
+                emit(session.push(&samples));
+            }
             continue;
         };
 
@@ -600,16 +620,20 @@ where
         if speaking {
             if !active {
                 active = true;
-                if !preroll.is_empty() {
+                if !preroll.is_empty() && !discard.load(Ordering::Relaxed) {
                     emit(session.push(&std::mem::take(&mut preroll)));
                 }
             }
-            emit(session.push(&samples));
+            if !discard.load(Ordering::Relaxed) {
+                emit(session.push(&samples));
+            }
         } else {
             if active {
                 active = false;
                 // 静音开始：立刻收尾当前句子，避免模型在噪声上继续编。
-                emit(session.force_end());
+                if !discard.load(Ordering::Relaxed) {
+                    emit(session.force_end());
+                }
             }
             preroll.extend_from_slice(&samples);
             let excess = preroll.len().saturating_sub(preroll_limit);
@@ -619,11 +643,22 @@ where
         }
     }
 
+    // 取消录音：不冲尾巴、不出字。
+    if discard.load(Ordering::Relaxed) {
+        return Transcript {
+            text: String::new(),
+            segments: Vec::new(),
+            duration_seconds: 0.0,
+            elapsed_ms: 0,
+            language: "zh-en".into(),
+        };
+    }
+
     // 收尾：把剩余采样和重采样器内部缓冲一起冲出去
     let last = take_new(&queue);
     if last.dropped > 0 {
         let marker = audio::gap_marker(last.dropped, rate);
-        let at = fed_seconds as f32 / asr::SAMPLE_RATE as f32;
+        let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
         gaps.push(asr::Segment {
             text: marker.clone(),
             start: at,
@@ -645,16 +680,7 @@ where
     }
     emit(session.finish());
     let mut transcript = session.transcript();
-    if !gaps.is_empty() {
-        // 缺口标记按时间插进句子列表，文本重拼一次
-        transcript.segments.extend(gaps);
-        transcript.segments.sort_by(|a, b| {
-            a.start
-                .partial_cmp(&b.start)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        transcript.text = asr::join_segments(transcript.segments.iter().map(|s| s.text.as_str()));
-    }
+    asr::insert_gaps(&mut transcript, gaps);
     transcript
 }
 
@@ -669,7 +695,11 @@ async fn warm_up_streaming(app: AppHandle, state: State<'_, AppState>) -> Result
 }
 
 #[tauri::command]
-fn set_mode(app: AppHandle, state: State<AppState>, mode: String) -> Result<Status, String> {
+async fn set_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mode: String,
+) -> Result<Status, String> {
     if !settings::MODES.contains(&mode.as_str()) {
         return Err(format!("不支持的模式: {mode}"));
     }
@@ -678,14 +708,39 @@ fn set_mode(app: AppHandle, state: State<AppState>, mode: String) -> Result<Stat
             .settings
             .lock()
             .map_err(|_| "设置状态异常".to_string())?;
-        guard.mode = mode;
+        guard.mode = mode.clone();
     }
     persist(&app, &state)?;
+    // 只留当前模式要用的引擎：两份模型同时常驻要多占约 400 MB。
+    // 加载可能正占着锁，清空放阻塞线程里，别卡住同步命令。
+    let engine = state.engine.clone();
+    let streaming = state.streaming_engine.clone();
+    let punct = state.punct_engine.clone();
+    let keep_streaming = mode == "streaming";
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        if keep_streaming {
+            if let Ok(mut slot) = engine.lock() {
+                *slot = None;
+            }
+        } else {
+            if let Ok(mut slot) = streaming.lock() {
+                *slot = None;
+            }
+            if let Ok(mut slot) = punct.lock() {
+                *slot = None;
+            }
+        }
+    })
+    .await;
     Ok(status_of(&app, &state.settings()))
 }
 
 #[tauri::command]
-fn set_punct(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Status, String> {
+async fn set_punct(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<Status, String> {
     {
         let mut guard = state
             .settings
@@ -694,9 +749,14 @@ fn set_punct(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<St
         guard.punct = enabled;
     }
     if !enabled {
-        if let Ok(mut slot) = state.punct_engine.lock() {
-            *slot = None;
-        }
+        // 同上：标点模型可能正在加载，别让同步命令卡在锁上。
+        let punct = state.punct_engine.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            if let Ok(mut slot) = punct.lock() {
+                *slot = None;
+            }
+        })
+        .await;
     }
     persist(&app, &state)?;
     Ok(status_of(&app, &state.settings()))
@@ -779,29 +839,58 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
         } else {
             None
         };
-        let recorder = audio::start(app.clone(), settings.input_device.as_deref())?;
+        let recorder = {
+            let audio_app = app.clone();
+            let device = settings.input_device.clone();
+            // 开麦克风会等驱动（最长 10s），放进阻塞线程，别堵 async 执行器。
+            tauri::async_runtime::spawn_blocking(move || audio::start(audio_app, device.as_deref()))
+                .await
+                .map_err(|e| format!("打开麦克风失败: {e}"))??
+        };
         let queue = recorder.queue();
         let rate = recorder.sample_rate();
         let stop = Arc::new(AtomicBool::new(false));
+        let discard = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
         let thread_app = app.clone();
         let thread_stop = stop.clone();
+        let thread_discard = discard.clone();
         std::thread::Builder::new()
             .name("streaming-asr".into())
             .spawn(move || {
-                let transcript =
-                    run_streaming(&thread_app, engine, punctuator, queue, rate, thread_stop);
+                let transcript = run_streaming(
+                    &thread_app,
+                    engine,
+                    punctuator,
+                    queue,
+                    rate,
+                    thread_stop,
+                    thread_discard,
+                );
                 let _ = tx.send(transcript);
             })
             .map_err(|e| format!("无法启动流式识别线程: {e}"))?;
-        *state
-            .recorder
-            .lock()
-            .map_err(|_| "录音状态异常".to_string())? = Some(recorder);
-        *state
-            .stream
-            .lock()
-            .map_err(|_| "流式状态异常".to_string())? = Some(StreamSession { stop, rx });
+        // 检查和写入放在同一把锁里：两次 start 并发时不能各起一个会话，
+        // 否则先注册的那个识别线程永远收不到 stop（线程泄漏）。
+        {
+            let mut slot = state
+                .recorder
+                .lock()
+                .map_err(|_| "录音状态异常".to_string())?;
+            if slot.is_some() {
+                drop(slot);
+                stop.store(true, Ordering::SeqCst);
+                discard.store(true, Ordering::SeqCst);
+                drop(recorder);
+                return Err("已经在录音了".into());
+            }
+            *slot = Some(recorder);
+            let session = StreamSession { stop, discard, rx };
+            *state
+                .stream
+                .lock()
+                .map_err(|_| "流式状态异常".to_string())? = Some(session);
+        }
         return Ok(());
     }
 
@@ -811,38 +900,68 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
     // 整段模式：边录边按句识别（音频消费掉即释放，内存不随录音时长增长）
     load_engine(&app, &state).await?;
     let engine = shared_engine(&state)?;
-    let recorder = audio::start(app.clone(), settings.input_device.as_deref())?;
+    let vad = engine
+        .vad_config()
+        .ok_or_else(|| "模型目录缺少 silero_vad.onnx，无法断句".to_string())?;
+    let recorder = {
+        let audio_app = app.clone();
+        let device = settings.input_device.clone();
+        tauri::async_runtime::spawn_blocking(move || audio::start(audio_app, device.as_deref()))
+            .await
+            .map_err(|e| format!("打开麦克风失败: {e}"))??
+    };
     let queue = recorder.queue();
     let rate = recorder.sample_rate();
     let stop = Arc::new(AtomicBool::new(false));
+    let discard = Arc::new(AtomicBool::new(false));
     let (tx, rx) = std::sync::mpsc::channel();
     let thread_app = app.clone();
     let thread_stop = stop.clone();
+    let thread_discard = discard.clone();
     std::thread::Builder::new()
         .name("offline-asr".into())
         .spawn(move || {
-            let transcript = run_offline(engine, queue, rate, thread_stop, |event| {
-                let OfflineEvent::Segment(segment) = event;
-                let _ = thread_app.emit(
-                    "stream:segment",
-                    SegmentPayload {
-                        segment: segment.text,
-                        start: segment.start,
-                        end: segment.end,
-                    },
-                );
-            });
+            let transcript = run_offline(
+                engine,
+                vad,
+                queue,
+                rate,
+                thread_stop,
+                thread_discard,
+                |event| {
+                    let OfflineEvent::Segment(segment) = event;
+                    let _ = thread_app.emit(
+                        "stream:segment",
+                        SegmentPayload {
+                            segment: segment.text,
+                            start: segment.start,
+                            end: segment.end,
+                        },
+                    );
+                },
+            );
             let _ = tx.send(transcript);
         })
         .map_err(|e| format!("无法启动整段识别线程: {e}"))?;
-    *state
-        .recorder
-        .lock()
-        .map_err(|_| "录音状态异常".to_string())? = Some(recorder);
-    *state
-        .offline_session
-        .lock()
-        .map_err(|_| "录音状态异常".to_string())? = Some(OfflineRun { stop, rx });
+    // 同上：检查和写入在同一把锁里，并发 start 只能成功一个。
+    {
+        let mut slot = state
+            .recorder
+            .lock()
+            .map_err(|_| "录音状态异常".to_string())?;
+        if slot.is_some() {
+            drop(slot);
+            stop.store(true, Ordering::SeqCst);
+            discard.store(true, Ordering::SeqCst);
+            drop(recorder);
+            return Err("已经在录音了".into());
+        }
+        *slot = Some(recorder);
+        *state
+            .offline_session
+            .lock()
+            .map_err(|_| "录音状态异常".to_string())? = Some(OfflineRun { stop, discard, rx });
+    }
     Ok(())
 }
 
@@ -864,39 +983,50 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
         slot.take()
     };
 
+    // 停止采集 + 等识别线程收尾都是阻塞操作（最长 20/30 秒），放进阻塞线程。
     if let Some(stream) = stream {
-        // 先停采集（识别线程可能还有没取走的尾巴），无论成功与否都要让流式线程收尾。
-        let _ = recorder.stop()?;
-        stream.stop.store(true, Ordering::SeqCst);
-        let streaming = stream
-            .rx
-            .recv_timeout(Duration::from_secs(20))
-            .map_err(|_| "流式识别收尾超时".to_string())?;
-        return Ok(streaming);
+        return tauri::async_runtime::spawn_blocking(move || -> Result<Transcript, String> {
+            // 先停采集（尾巴留在队列里，由识别线程收尾时取走）。
+            let stopped = recorder.stop();
+            // stop 报错也要让识别线程退出，否则它会一直空转。
+            stream.stop.store(true, Ordering::SeqCst);
+            stopped?;
+            stream
+                .rx
+                .recv_timeout(Duration::from_secs(20))
+                .map_err(|_| "流式识别收尾超时".to_string())
+        })
+        .await
+        .map_err(|e| format!("停止录音失败: {e}"))?;
     }
 
-    // 整段模式：识别线程一直在跑，这里停采集、让它收尾
+    // 整段模式：识别线程一直在跑，这里停采集，尾巴由它收尾时取走
     let offline = state
         .offline_session
         .lock()
         .map_err(|_| "录音状态异常".to_string())?
         .take();
-    let _ = recorder.stop()?;
     let Some(offline) = offline else {
         return Err("识别线程已退出".into());
     };
-    offline.stop.store(true, Ordering::SeqCst);
-    let transcript = offline
-        .rx
-        .recv_timeout(Duration::from_secs(30))
-        .map_err(|_| "整段识别收尾超时".to_string())?;
-    if transcript.duration_seconds < 0.2 {
-        return Err("录音太短，至少说 0.2 秒".into());
-    }
-    if transcript.text.trim().is_empty() {
-        return Err("没有识别到内容，换个安静点的环境再试试".into());
-    }
-    Ok(transcript)
+    tauri::async_runtime::spawn_blocking(move || -> Result<Transcript, String> {
+        let stopped = recorder.stop();
+        offline.stop.store(true, Ordering::SeqCst);
+        stopped?;
+        let transcript = offline
+            .rx
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|_| "整段识别收尾超时".to_string())?;
+        if transcript.duration_seconds < 0.2 {
+            return Err("录音太短，至少说 0.2 秒".into());
+        }
+        if transcript.text.trim().is_empty() {
+            return Err("没有识别到内容，换个安静点的环境再试试".into());
+        }
+        Ok(transcript)
+    })
+    .await
+    .map_err(|e| format!("停止录音失败: {e}"))?
 }
 
 
@@ -976,6 +1106,7 @@ fn cancel_recording(state: State<AppState>) -> Result<(), String> {
         slot.take()
     };
     if let Some(stream) = state.stream.lock().ok().and_then(|mut slot| slot.take()) {
+        stream.discard.store(true, Ordering::SeqCst);
         stream.stop.store(true, Ordering::SeqCst);
     }
     // 整段模式的识别线程也要停，否则它会一直空转（队列空了也每 60ms 醒一次）
@@ -985,6 +1116,7 @@ fn cancel_recording(state: State<AppState>) -> Result<(), String> {
         .ok()
         .and_then(|mut slot| slot.take())
     {
+        offline.discard.store(true, Ordering::SeqCst);
         offline.stop.store(true, Ordering::SeqCst);
     }
     if let Some(recorder) = recorder {
@@ -1004,7 +1136,10 @@ async fn download_model(app: AppHandle, state: State<'_, AppState>) -> Result<St
     let result = models::download_all(&dir, state.cancel_download.clone(), &sink).await;
     state.downloading.store(false, Ordering::SeqCst);
     result?;
-    let _ = load_engine(&app, &state).await;
+    // 流式模式用不到整段引擎：别为了下载把它常驻在内存里（文件转写会按需加载）。
+    if state.settings().mode == "offline" {
+        let _ = load_engine(&app, &state).await;
+    }
     Ok(status_of(&app, &state.settings()))
 }
 
@@ -1041,7 +1176,9 @@ pub fn write_text_file(
     } else {
         format!("{base}.txt")
     };
-    let stem = name.trim_end_matches(".txt").to_string();
+    // 按字节切后缀（.txt 是 ASCII，切点一定在字符边界上）。
+    // 不能 trim_end_matches(".txt")：大写 .TXT 会切不掉，序号文件名变成 "x.TXT (2).txt"。
+    let stem = name[..name.len() - 4].to_string();
     let mut path = dir.join(&name);
     let mut index = 2;
     while path.exists() {
@@ -1185,6 +1322,21 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// 大写 .TXT 也要当成已有扩展名：否则序号文件会变成 "会议.TXT (2).txt"。
+    #[test]
+    fn keeps_uppercase_txt_extension() {
+        let dir = std::env::temp_dir().join(format!("vn-save-upper-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let (first, _) = write_text_file(&dir, "会议.TXT", "一").unwrap();
+        let (_, name2) = write_text_file(&dir, "会议.TXT", "二").unwrap();
+
+        assert_eq!(first.file_name().unwrap(), "会议.TXT");
+        assert_eq!(name2, "会议 (2).txt");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn streams_from_buffer_with_resampling() {
         let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
@@ -1225,13 +1377,21 @@ mod tests {
         });
 
         let mut partials = 0usize;
-        let transcript = run_streaming_core(engine, None, queue, 48_000, stop, |events| {
-            for event in events {
-                if let StreamEvent::Partial(_) = event {
-                    partials += 1;
+        let transcript = run_streaming_core(
+            engine,
+            None,
+            queue,
+            48_000,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            |events| {
+                for event in events {
+                    if let StreamEvent::Partial(_) = event {
+                        partials += 1;
+                    }
                 }
-            }
-        });
+            },
+        );
         println!("流式结果：{}", transcript.text);
         assert!(!transcript.text.is_empty(), "流式结果为空");
         assert!(partials > 0, "没有中间结果");
@@ -1270,7 +1430,7 @@ mod tests {
             upsampled.push(*sample);
         }
         // 上限调到 1000 个采样：音频远超上限 → 一定会触发丢弃
-        let queue = audio::SampleQueue::with_limit(48_000, Some(1_000));
+        let queue = audio::SampleQueue::with_limit(Some(1_000));
         queue.push(&upsampled);
         let stop = Arc::new(AtomicBool::new(false));
         let stopper = stop.clone();
@@ -1279,7 +1439,15 @@ mod tests {
             stopper.store(true, Ordering::SeqCst);
         });
 
-        let transcript = run_streaming_core(engine, None, queue, 48_000, stop, |_| {});
+        let transcript = run_streaming_core(
+            engine,
+            None,
+            queue,
+            48_000,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        );
         println!("带缺口的流式结果：{}", transcript.text);
         assert!(
             transcript.text.contains("未识别"),
@@ -1336,12 +1504,21 @@ mod tests {
         let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
 
         // 上限调到 1000 个采样：音频远超上限 → 一定会触发丢弃
-        let queue = audio::SampleQueue::with_limit(16_000, Some(1_000));
+        let queue = audio::SampleQueue::with_limit(Some(1_000));
         queue.push(wave.samples());
         let stop = Arc::new(AtomicBool::new(true));
 
+        let vad = engine.vad_config().expect("VAD 配置");
         let mut events = Vec::new();
-        let transcript = run_offline(engine, queue, 16_000, stop, |event| events.push(event));
+        let transcript = run_offline(
+            engine,
+            vad,
+            queue,
+            16_000,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            |event| events.push(event),
+        );
         println!("带缺口的整段结果：{}", transcript.text);
         assert!(
             transcript.text.contains("未识别"),

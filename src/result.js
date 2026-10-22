@@ -3,7 +3,8 @@
 import { els, fmtDuration, joinText, state, t } from './core.js'
 import { addHistory } from './history.js'
 
-export function showTranscript(transcript) {
+/// 渲染一次转写结果。`record: false` 只重绘、不写历史（切语言时用）。
+export function showTranscript(transcript, { record = true } = {}) {
   state.lastTranscript = transcript
   const text = (transcript.text || '').trim()
   els.text.value = text
@@ -27,11 +28,13 @@ export function showTranscript(transcript) {
     span.textContent = part
     els.meta.appendChild(span)
   }
-  addHistory(transcript, text)
+  if (record) addHistory(transcript, text)
 }
 
 /// 追加一句识别好的文本（事件是增量载荷：只带新句子）。
 export function appendSegment(text) {
+  // 取消 / 收尾结束之后迟到的句子不再追加，否则结果框会冒出被取消的内容。
+  if (state.phase !== 'recording' && state.phase !== 'transcribing') return
   const piece = (text || '').trim()
   if (!piece) return
   els.text.value = joinText(els.text.value, piece)

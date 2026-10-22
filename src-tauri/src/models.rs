@@ -184,6 +184,9 @@ pub fn streaming_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// 下载流式模型 **和标点模型**（一起下，用户不用再单独操作一次）。
+///
+/// 标点模型是可选功能：它下载失败不算整体失败 —— 流式模型已经可用，
+/// 只是句子没有标点。设置页会显示「标点模型未下载」。
 pub async fn download_streaming(
     dest_dir: &Path,
     punct_dir: &Path,
@@ -193,7 +196,14 @@ pub async fn download_streaming(
     for asset in STREAM_ASSETS {
         download_asset(asset, dest_dir, cancel.clone(), sink).await?;
     }
-    download_asset(&PUNCT, punct_dir, cancel, sink).await
+    if let Err(err) = download_asset(&PUNCT, punct_dir, cancel.clone(), sink).await {
+        // 用户按了取消：不能把「取消」当成「标点降级」报成功。
+        if cancel.load(Ordering::Relaxed) {
+            return Err("已取消下载".into());
+        }
+        eprintln!("[voice-notes] 标点模型下载失败，降级为无标点：{err}");
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -217,6 +227,25 @@ pub struct Progress {
 
 fn exists(path: &Path) -> bool {
     path.is_file()
+}
+
+/// 应用数据目录里的文件是我们自己下载的：大小必须和常量对得上。
+///
+/// 只判断「存在」的话，被截断/覆盖的文件也会被当成「模型已就绪」，
+/// 一录音才报「文件可能损坏」。自定义目录不校验（用户可能用别的版本）。
+fn app_data_file_ok(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let expected = match name {
+        MODEL_FILE => Some(MODEL.bytes),
+        TOKENS_FILE => Some(TOKENS.bytes),
+        VAD_FILE => Some(VAD.bytes),
+        // 别处带来的 model.onnx 没有已知大小，放行。
+        _ => None,
+    };
+    match expected {
+        Some(bytes) => fs::metadata(path).map(|meta| meta.len() == bytes).unwrap_or(false),
+        None => true,
+    }
 }
 
 fn candidate_dirs(app: &AppHandle, settings_dir: Option<&str>) -> Vec<(PathBuf, String)> {
@@ -244,28 +273,35 @@ fn find_vad(dir: &Path) -> Option<PathBuf> {
         .find(|p| !p.as_os_str().is_empty() && exists(p))
 }
 
+/// 单个目录里的可用模型。VAD 是必需的：整段模式的边录边识别和文件转写的分句
+/// 都靠它，没有 VAD 时录完只会得到空结果。
+fn model_paths_in(dir: &Path, source: &str) -> Option<ModelPaths> {
+    let model = [dir.join(MODEL_FILE), dir.join("model.onnx")]
+        .into_iter()
+        .find(|path| exists(path))?;
+    let tokens = dir.join(TOKENS_FILE);
+    if !exists(&tokens) {
+        return None;
+    }
+    // 应用数据目录里的文件是自己下的，大小对不上就是坏文件，不能报「已就绪」
+    if source == "app_data" && !(app_data_file_ok(&model) && app_data_file_ok(&tokens)) {
+        return None;
+    }
+    let vad = find_vad(dir).filter(|path| source != "app_data" || app_data_file_ok(path))?;
+    Some(ModelPaths {
+        dir: dir.to_string_lossy().into_owned(),
+        model: model.to_string_lossy().into_owned(),
+        tokens: tokens.to_string_lossy().into_owned(),
+        vad: Some(vad.to_string_lossy().into_owned()),
+        source: source.to_string(),
+    })
+}
+
 /// 按「自定义目录 > 应用数据」的顺序找出可用模型。
 pub fn resolve(app: &AppHandle, settings_dir: Option<&str>) -> Option<ModelPaths> {
-    for (dir, source) in candidate_dirs(app, settings_dir) {
-        let Some(model) = [dir.join(MODEL_FILE), dir.join("model.onnx")]
-            .into_iter()
-            .find(|p| exists(p))
-        else {
-            continue;
-        };
-        let tokens = dir.join(TOKENS_FILE);
-        if !exists(&tokens) {
-            continue;
-        }
-        return Some(ModelPaths {
-            dir: dir.to_string_lossy().into_owned(),
-            model: model.to_string_lossy().into_owned(),
-            tokens: tokens.to_string_lossy().into_owned(),
-            vad: find_vad(&dir).map(|p| p.to_string_lossy().into_owned()),
-            source,
-        });
-    }
-    None
+    candidate_dirs(app, settings_dir)
+        .into_iter()
+        .find_map(|(dir, source)| model_paths_in(&dir, &source))
 }
 
 /// 应用数据目录下的模型落盘位置。
@@ -380,7 +416,11 @@ async fn fetch_one(
         source: base.to_string(),
         message: None,
     });
-    let digest = hash_file(&part)?;
+    // 239 MB 的哈希在阻塞线程里算，别堵住 async 执行器。
+    let part_for_hash = part.clone();
+    let digest = tauri::async_runtime::spawn_blocking(move || hash_file(&part_for_hash))
+        .await
+        .map_err(|e| format!("校验失败: {e}"))??;
     if digest != asset.sha256 {
         let _ = fs::remove_file(&part);
         return Err("sha256 校验失败，文件已丢弃".into());
@@ -478,6 +518,46 @@ pub async fn download_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 只有 model + tokens、没有 silero_vad.onnx 的目录不能报「可用」。
+    ///
+    /// 回归测试：之前这种目录会被当成已就绪，录完却一句话都识别不出来。
+    #[test]
+    fn model_without_vad_is_not_usable() {
+        let dir = std::env::temp_dir().join(format!("vn-models-novad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(MODEL_FILE), b"model").unwrap();
+        fs::write(dir.join(TOKENS_FILE), b"tokens").unwrap();
+        assert!(
+            model_paths_in(&dir, "custom").is_none(),
+            "没有 VAD 的目录不能报可用"
+        );
+
+        fs::write(dir.join(VAD_FILE), b"vad").unwrap();
+        assert!(
+            model_paths_in(&dir, "custom").is_some(),
+            "model + tokens + silero_vad.onnx 齐全才可用"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 应用数据目录里被截断的模型文件不能被当成「已就绪」。
+    #[test]
+    fn truncated_app_data_model_is_not_ready() {
+        let dir = std::env::temp_dir().join(format!("vn-models-broken-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let truncated = dir.join(MODEL_FILE);
+        fs::write(&truncated, b"not a model").unwrap();
+        assert!(!app_data_file_ok(&truncated), "截断的模型应该被判为不可用");
+        // 别的来源的 model.onnx 没有已知大小，放行
+        let unknown = dir.join("model.onnx");
+        fs::write(&unknown, b"x").unwrap();
+        assert!(app_data_file_ok(&unknown), "未知大小的文件名应该放行");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// 真网络下载（只有 1.8MB 的 VAD），默认跳过：
     ///   VOICE_NOTES_DOWNLOAD_TEST=1 cargo test --lib downloads_vad -- --nocapture

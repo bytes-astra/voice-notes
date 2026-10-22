@@ -30,6 +30,7 @@
     let items = []
     let value = opts.value || ''
     let popup = null
+    let opening = false
 
     function current() {
       return items.find((item) => item.value === value)
@@ -59,6 +60,8 @@
       if (!popup) return
       if (event.key === 'Escape') {
         event.preventDefault()
+        // 别冒泡到全局 Esc：录音中按 Esc 关下拉框不该顺带取消录音。
+        event.stopPropagation()
         close()
         button.focus()
         return
@@ -76,52 +79,59 @@
         close()
         return
       }
-      // 展开前可以异步准备数据（比如去后端拿设备列表）
-      if (opts.onBeforeOpen) {
-        try {
-          await opts.onBeforeOpen()
-        } catch {
-          /* 忽略：弹层里至少还有旧数据 */
+      // onBeforeOpen 是异步的（列设备可能要等一下）：连点两次不能叠两层弹层。
+      if (opening) return
+      opening = true
+      try {
+        // 展开前可以异步准备数据（比如去后端拿设备列表）
+        if (opts.onBeforeOpen) {
+          try {
+            await opts.onBeforeOpen()
+          } catch {
+            /* 忽略：弹层里至少还有旧数据 */
+          }
         }
-      }
-      popup = document.createElement('div')
-      popup.className = 'select-popup'
-      popup.setAttribute('role', 'listbox')
-      for (const item of items) {
-        const row = document.createElement('button')
-        row.type = 'button'
-        row.className = 'select-item' + (item.value === value ? ' is-selected' : '')
-        row.setAttribute('role', 'option')
-        row.setAttribute('aria-selected', String(item.value === value))
-        row.textContent = item.label
-        row.addEventListener('click', () => {
-          value = item.value
-          render()
-          close()
-          if (opts.onChange) opts.onChange(value)
-        })
-        popup.appendChild(row)
-      }
-      document.body.appendChild(popup)
+        popup = document.createElement('div')
+        popup.className = 'select-popup'
+        popup.setAttribute('role', 'listbox')
+        for (const item of items) {
+          const row = document.createElement('button')
+          row.type = 'button'
+          row.className = 'select-item' + (item.value === value ? ' is-selected' : '')
+          row.setAttribute('role', 'option')
+          row.setAttribute('aria-selected', String(item.value === value))
+          row.textContent = item.label
+          row.addEventListener('click', () => {
+            value = item.value
+            render()
+            close()
+            if (opts.onChange) opts.onChange(value)
+          })
+          popup.appendChild(row)
+        }
+        document.body.appendChild(popup)
 
-      // 贴到按钮下方；空间不够就翻到上方
-      const rect = button.getBoundingClientRect()
-      popup.style.left = `${Math.round(rect.left)}px`
-      popup.style.minWidth = `${Math.round(rect.width)}px`
-      const height = popup.offsetHeight
-      const below = window.innerHeight - rect.bottom
-      if (height + 12 > below && rect.top > height + 12) {
-        popup.style.top = `${Math.round(rect.top - height - 6)}px`
-        popup.classList.add('is-up')
-      } else {
-        popup.style.top = `${Math.round(rect.bottom + 6)}px`
+        // 贴到按钮下方；空间不够就翻到上方
+        const rect = button.getBoundingClientRect()
+        popup.style.left = `${Math.round(rect.left)}px`
+        popup.style.minWidth = `${Math.round(rect.width)}px`
+        const height = popup.offsetHeight
+        const below = window.innerHeight - rect.bottom
+        if (height + 12 > below && rect.top > height + 12) {
+          popup.style.top = `${Math.round(rect.top - height - 6)}px`
+          popup.classList.add('is-up')
+        } else {
+          popup.style.top = `${Math.round(rect.bottom + 6)}px`
+        }
+        button.setAttribute('aria-expanded', 'true')
+        container.classList.add('is-open')
+        document.addEventListener('mousedown', onOutside, true)
+        document.addEventListener('keydown', onKey, true)
+        const selected = popup.querySelector('.is-selected') || popup.querySelector('.select-item')
+        if (selected) selected.focus()
+      } finally {
+        opening = false
       }
-      button.setAttribute('aria-expanded', 'true')
-      container.classList.add('is-open')
-      document.addEventListener('mousedown', onOutside, true)
-      document.addEventListener('keydown', onKey, true)
-      const selected = popup.querySelector('.is-selected') || popup.querySelector('.select-item')
-      if (selected) selected.focus()
     }
 
     button.addEventListener('click', () => {

@@ -6,10 +6,9 @@ import { showTranscript } from './result.js'
 import { renderStatus } from './status.js'
 import { setPhase } from './recorder.js'
 
-/// 支持的文件格式（symphonia 解码；视频轨会被忽略）。
-const FILE_EXTENSIONS = [
-  'mp3', 'wav', 'flac', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'mp4', 'mov', 'm4v', 'webm', 'wma',
-]
+/// 支持的文件格式（symphonia 0.5 能解出来的；视频轨会被忽略）。
+/// 别把 wma / opus / webm 加回来：0.5 没有对应的解码器，选了必然报错。
+const FILE_EXTENSIONS = ['mp3', 'wav', 'flac', 'ogg', 'oga', 'm4a', 'aac', 'mp4', 'mov', 'm4v']
 
 /// 从路径里取文件名（只用来显示）。
 function fileName(path) {
@@ -33,6 +32,10 @@ export async function transcribeFilePath(path) {
   if (state.phase !== 'idle') return
   setPhase('transcribing')
   const name = fileName(path)
+  // 新的一次转写：先清掉上一次的结果，否则分句会追加在旧文本后面。
+  state.lastTranscript = null
+  els.text.value = ''
+  els.meta.innerHTML = ''
   els.hint.textContent = t('result.fileDecoding', { name })
   state.fileSegments = 0
   state.transcribingFile = true

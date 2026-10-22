@@ -22,7 +22,11 @@ export async function copyText(text) {
 }
 
 export function buildFileName(text) {
-  const head = text.replace(/\s+/g, ' ').trim().slice(0, 18).replace(/[\\/:*?"<>|]/g, '')
+  // 按字符切，不用 slice：slice 会把 emoji 劈成半个代理项，后端 JSON 解析失败。
+  const head = [...text.replace(/\s+/g, ' ').trim()]
+    .slice(0, 18)
+    .join('')
+    .replace(/[\\/:*?"<>|]/g, '')
   const now = new Date()
   const pad = (n) => String(n).padStart(2, '0')
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`

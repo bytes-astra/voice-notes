@@ -62,7 +62,8 @@ export function renderStatus() {
   els.mic.title = ready ? '' : streamingMode ? t('model.needStreaming') : t('model.needOffline')
 
   els.settingsClearModel.classList.toggle('hidden', !status.modelDirCustom)
-  els.settingsModel.textContent = ready
+  // 设置页这块只讲整段模型：流式模式下不能用 streamingReady 冒充它已就绪。
+  els.settingsModel.textContent = status.modelReady
     ? t('settings.modelPath', {
         source: t(`model.source.${status.modelSource || 'app_data'}`),
         dir: status.modelDir,
@@ -122,6 +123,9 @@ export async function setMode(mode) {
       } else {
         void invoke('warm_up_streaming').catch(() => {})
       }
+    } else if (state.status.modelReady) {
+      // 切回整段前先把 239 MB 引擎加载好（后端切模式时已经释放了另一份）。
+      void warmUp()
     }
   } catch (error) {
     toast(fmtError(error), 'error')
@@ -219,9 +223,12 @@ export async function downloadStreamingModel() {
   setStreamProgress(0, state.status?.streamingTotalBytes || 0)
   els.streamProgressText.textContent = t('setup.preparing')
   try {
-    // 标点模型和流式模型一起下载，下完自动开启标点
+    // 标点模型和流式模型一起下载：标点下失败只是降级为无标点，
+    // 所以只有它确实就绪时才自动开启，否则开关别装作打开。
     state.status = await invoke('download_streaming_model')
-    state.status = await invoke('set_punct', { enabled: true })
+    if (state.status.punctReady) {
+      state.status = await invoke('set_punct', { enabled: true })
+    }
     els.streamProgressText.textContent = t('setup.done')
     toast(t('model.badge.streamingReady'))
     renderStatus()
@@ -248,13 +255,11 @@ export async function downloadModel() {
   els.setupText.textContent = t('setup.preparing')
   try {
     state.status = await invoke('download_model')
-    state.downloading = false
     els.setupText.textContent = t('setup.done')
     toast(t('model.readyToast'))
     renderStatus()
     warmUp()
   } catch (error) {
-    state.downloading = false
     toast(fmtError(error), 'error')
     els.setupText.textContent = t('setup.downloadFailed', { error: fmtError(error) })
   } finally {
@@ -284,6 +289,8 @@ export async function pickModelDir() {
 
 export async function warmUp() {
   if (!state.status?.modelReady) return
+  // 流式模式用不到整段引擎：下载 / 选目录后不要把它常驻在内存里。
+  if (state.status?.mode === 'streaming') return
   try {
     await invoke('warm_up')
   } catch (error) {

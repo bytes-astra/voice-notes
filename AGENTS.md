@@ -18,7 +18,7 @@ npm run build          # 打包 → src-tauri/target/release/bundle/
 - **所有界面文案走 `src/i18n.js` 的字典**：JS 里用 `t('key', {变量})`，HTML 里给元素加 `data-i18n="key"`（还有 `data-i18n-title/-placeholder/-aria`），启动时 `I18N.apply()` 填充。加语言 = 加一个字典，不要在代码里写死中文。后端也别返回中文展示文案（模型来源返回 `app_data` / `custom` 这样的 token）。
 - **字典文案必须在渲染时取，不能在模块顶层就取**：`const LANGS = [['auto', t('lang.auto')]]` 这种写法在切语言时不会跟着变（已经踩过三次：语言芯片、阶段提示 HINTS、视图标题）。正确写法是存 key，渲染时 `t(key)`（视图标题现在是 `VIEW_KEYS` + `viewTitle()`）。
 - **`aria-label` 也要走 i18n**（`data-i18n-aria="key"`），别在 HTML 里写死中文：写死的那份在英文界面下会漏出来（麦克风按钮踩过）。**随状态变的中文标签**（麦克风「开始录音 / 结束录音」）要用单独的渲染函数（如 `renderMicLabel()`），并在 `applyLocale()` 里重新调一次——`I18N.apply()` 只认 HTML 上的静态 `data-i18n-aria`，不会跟着阶段变。
-- **改文案后跑 `npm run check:i18n`**：检查各语言字典 key 是否对齐、`index.html` 引用的 key 是否存在（漏 key 会直接把 key 名显示在界面上）。
+- **改文案后跑 `npm run check:i18n`**：检查各语言字典 key 是否对齐、`index.html` 的 `data-i18n*` 引用、以及 `src/*.js` 里 `t('key')` 引用的 key 是否存在（漏 key 会直接把 key 名显示在界面上）。CI 构建前也会跑一次。
 - **同一个控件的文案不要按模式变**：麦克风下方的空闲提示语两种模式统一写「点击麦克风开始录音」，模式差异由「整段 / 流式」芯片的副标题说明。按钮动作永远是录音，提示语却写成「实时转写」会让人以为点的是转写已有文件。
 
 - 前端通过 `window.__TAURI__.*` 调插件（`withGlobalTauri: true`），调用面在 `src/tauri.js` 集中解构，其他模块从那里 import。
@@ -42,6 +42,8 @@ settings.rs  设置 JSON 持久化
 - 事件：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`。改事件名要同步 `src/events.js` 的 `listenEvents()`（事件名只在那一个文件里出现）。
 - **采集缓冲是消费式的**：`audio::SampleQueue` 的 `take_new()` 取走即释放，内存恒定（录音 1 小时和 1 分钟占一样多）。**电平表走独立的 `LevelRing`**（2048 样本）——采集缓冲没有历史了，音量表去读它会恒读 0。
 - **安全阀**：未消费采样超过 `MAX_PENDING_SECONDS × 设备实际采样率`（60 秒，采样率不能写死 48k）时丢最旧的，并用 `audio::gap_marker()` 在结果里留下可见的缺口，不能静默丢。
+- **停止录音时 `Recorder::stop()` 只关流、不取采样**：最后一段尾巴必须留给识别线程收尾时 `take_new()`。主线程先取走的话，句尾最后一个字会被切掉（离线/流式都中招）。
+- **模型目录必须有 `silero_vad.onnx`**：整段模式的边录边识别、文件转写的分句都靠 VAD，`models::resolve()` 会直接跳过没有 VAD 的目录（否则录完只会得到空结果）。
 - **两种模式都是边录边出字**：整段用 `OfflineSession`（VAD 切句 + `Engine::recognize()`），流式用 `StreamingSession`（200ms 分片喂 Zipformer）。整段模式**不再需要把整条录音留在内存里**。
 - **sherpa 的 `max_speech_duration` 不是硬切，是「把 VAD 参数调严」**：`buffer_.Size() > max_utterance_length_` 之后把 min_silence 0.5→0.1s、threshold 0.5→0.9，逼 VAD 找静音。真的连续说话时它找不到，句子可以长到 1 分钟以上。所以**整段模式的 VAD 缓冲给 60 秒**（`VoiceActivityDetector::create(&vad, 60.0)`）—— 给 32 秒会触发 sherpa 的 CircularBuffer 扩容（打 Overflow 警告 + 整段数据拷贝）。
 - **SenseVoice 的「30 秒上限」实测不是硬约束**：直接喂 55 秒 / 130 秒连续语音，准确率都是 98.6%（和短句一样）。官方那条限制更像建议。所以整段模式**默认整句一次识别**（最准）；只有超过 `MAX_SINGLE_SHOT_SECONDS`（90 秒）才切 30 秒窗口 + 2 秒重叠（`merge_transcripts` 合并），防的是编码器注意力平方级吃显存。**别为了「符合官方限制」就切**——切了反而更差（97.9%），而且硬切会把边界上的词劈开。

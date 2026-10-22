@@ -52,7 +52,7 @@ SenseVoiceSmall INT8 约 **228 MB**，不会打进安装包：
 ```
 model.int8.onnx   # 或 model.onnx
 tokens.txt
-silero_vad.onnx   # 可选：没有也能转写，只是少了 VAD 分句
+silero_vad.onnx   # 必需：没有 VAD 就无法分句，这个目录会被判为「未就绪」
 ```
 
 模型来源（固定 commit）：[sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17) · [silero_vad](https://huggingface.co/csukuangfj/vad)。
@@ -69,7 +69,7 @@ silero_vad.onnx   # 可选：没有也能转写，只是少了 VAD 分句
 npm install          # 只装 @tauri-apps/cli
 npm run dev          # 开发模式
 npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
-npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML 引用是否存在
+npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML/JS 引用的 key 是否存在（CI 也会跑）
 ```
 
 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 下载对应平台的**预编译静态库**（onnxruntime 等），之后走缓存。
@@ -137,7 +137,6 @@ src-tauri/
   src/audio.rs           cpal 采集、设备选择、电平、重采样
   src/models.rs          模型定位/下载/校验
   src/settings.rs        设置持久化
-  src/decode.rs          symphonia 后端解码（mp3/wav/flac/ogg/m4a/mp4/mov）
 scripts/make-icon.py     生成图标源图
 ```
 
@@ -160,7 +159,7 @@ VOICE_NOTES_RECORD_TEST=1 cargo test --lib records_microphone -- --nocapture
 
 ## 已知限制
 
-- 整段模式按 VAD 断句后逐句送模型，**一句话最长 30 秒**（SenseVoice 的单次输入上限，官方限制）—— 连续说话时要等说完或停顿才出第一句，界面上有「正在听…」提示。
+- 整段模式按 VAD 断句后逐句送模型；**单句默认整句一次识别**，超过 90 秒才切成 30 秒窗口 + 2 秒重叠合并（防极端长输入把内存吃光）。连续说话时要等停顿才出这一句。
 - 整段模式每句独立识别，**跨句上下文不保留**（SenseVoice 是无状态模型）；流式模式有上下文，但只支持中文。
 - 流式的标点是可选模型（见上），只加在定稿句上，实时中间结果不带标点；整段模式用 SenseVoice 自带的 ITN 标点。
 - 拖拽文件依赖 Tauri 的拖放事件（`onDragDropEvent`）：Tauri v2 默认拦截系统拖放，HTML5 的 `drop` 事件不会触发。

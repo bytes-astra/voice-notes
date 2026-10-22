@@ -8,10 +8,8 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use serde::Serialize;
-use sherpa_onnx::LinearResampler;
 use tauri::{AppHandle, Emitter};
 
-pub const TARGET_RATE: u32 = 16_000;
 /// 未消费音频的上限（秒）。ASR 线程跟不上时丢掉最旧的，并在结果里标记缺口。
 pub const MAX_PENDING_SECONDS: u32 = 60;
 /// 电平环长度（采样数）：只用来算音量，必须和采集缓冲分开。
@@ -47,15 +45,11 @@ pub struct NewAudio {
 impl SampleQueue {
     /// 有上限的缓冲：ASR 线程跟不上时丢最旧的（流式模式用）。
     pub fn new(sample_rate: u32) -> Self {
-        Self::with_limit(
-            sample_rate,
-            Some(MAX_PENDING_SECONDS as usize * sample_rate as usize),
-        )
+        Self::with_limit(Some(MAX_PENDING_SECONDS as usize * sample_rate as usize))
     }
 
     /// 指定上限的缓冲（测试用：可以把上限调得很小来触发丢弃）。
-    pub fn with_limit(sample_rate: u32, limit: Option<usize>) -> Self {
-        let _ = sample_rate;
+    pub fn with_limit(limit: Option<usize>) -> Self {
         Self {
             samples: Arc::new(Mutex::new(Vec::new())),
             limit,
@@ -149,11 +143,11 @@ impl Recorder {
         self.queue.clone()
     }
 
-    /// 结束录音并取回还没被消费掉的采样（未重采样）。
+    /// 结束录音。
     ///
-    /// 整段模式（缓冲不限）拿到的就是整条录音；流式模式里大部分已经被
-    /// 识别线程消费掉了，这里只剩尾巴。
-    pub fn stop(mut self) -> Result<Vec<f32>, String> {
+    /// **不取走队列里的采样**：识别线程收尾时还要自己 `take_new()` 那一小段
+    /// 尾巴（主线程先取走的话，句尾最后一个字会被切掉）。
+    pub fn stop(mut self) -> Result<(), String> {
         let _ = self.tx.send(Cmd::Stop);
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -161,7 +155,7 @@ impl Recorder {
         if let Some(error) = self.error.lock().unwrap().take() {
             return Err(error);
         }
-        Ok(self.queue.take_new().samples)
+        Ok(())
     }
 
     pub fn cancel(mut self) {
@@ -229,38 +223,13 @@ pub fn pick_device_name(requested: Option<&str>, available: &[String]) -> Option
 /// macOS 是在第一次真正打开输入流时才弹权限框的；放在界面渲染完之后调用，
 /// 用户看到的是已经画好的界面，而不是对着白屏等弹窗。
 pub fn probe_input(device: Option<&str>) -> Result<(), String> {
-    let host = cpal::default_host();
-    let available: Vec<String> = list_input_devices()
-        .into_iter()
-        .map(|device| device.name)
-        .collect();
-    let picked = pick_device_name(device, &available);
-    let device = match picked {
-        Some(name) => host
-            .input_devices()
-            .ok()
-            .and_then(|mut devices| {
-                devices.find(|device| device.name().map(|n| n == name).unwrap_or(false))
-            })
-            .ok_or_else(|| format!("找不到输入设备：{name}"))?,
-        None => host
-            .default_input_device()
-            .ok_or_else(|| "没有可用的麦克风".to_string())?,
-    };
-    let supported = device
-        .default_input_config()
-        .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
-    let format = supported.sample_format();
-    let config: cpal::StreamConfig = supported.config();
-    let stream = match format {
-        SampleFormat::F32 => device.build_input_stream(&config, |_: &[f32], _| {}, |_| {}, None),
-        SampleFormat::I16 => device.build_input_stream(&config, |_: &[i16], _| {}, |_| {}, None),
-        SampleFormat::U16 => device.build_input_stream(&config, |_: &[u16], _| {}, |_| {}, None),
-        SampleFormat::I32 => device.build_input_stream(&config, |_: &[i32], _| {}, |_| {}, None),
-        other => return Err(format!("不支持的采样格式：{other:?}")),
-    }
-    .map_err(|e| format!("打开麦克风失败: {e}"))?;
-    // 立刻丢弃即可：系统权限是在打开流的时候触发的。
+    // 打开再丢掉：系统权限是在打开输入流的时候触发的。
+    let (stream, _, _) = build_stream(
+        None,
+        LevelRing::default(),
+        Arc::new(Mutex::new(None)),
+        device,
+    )?;
     drop(stream);
     Ok(())
 }
@@ -362,23 +331,7 @@ fn build_stream(
     wanted: Option<&str>,
 ) -> Result<(cpal::Stream, u32, SampleQueue), String> {
     let host = cpal::default_host();
-    let available: Vec<String> = list_input_devices()
-        .into_iter()
-        .map(|device| device.name)
-        .collect();
-    let picked = pick_device_name(wanted, &available);
-    let device = match picked {
-        Some(name) => host
-            .input_devices()
-            .ok()
-            .and_then(|mut devices| {
-                devices.find(|device| device.name().map(|n| n == name).unwrap_or(false))
-            })
-            .ok_or_else(|| format!("找不到输入设备：{name}"))?,
-        None => host
-            .default_input_device()
-            .ok_or_else(|| "没有可用的麦克风".to_string())?,
-    };
+    let device = find_device(&host, wanted)?;
     let supported = device
         .default_input_config()
         .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
@@ -388,58 +341,43 @@ fn build_stream(
     let config: cpal::StreamConfig = supported.config();
     let queue = SampleQueue::new(sample_rate);
 
-    let on_error = |app: Option<AppHandle>, slot: Arc<Mutex<Option<String>>>| {
-        move |err: cpal::StreamError| {
-            let message = format!("麦克风异常: {err}");
-            if let Ok(mut guard) = slot.lock() {
-                *guard = Some(message.clone());
-            }
-            if let Some(app) = &app {
-                let _ = app.emit("audio:error", message);
-            }
-        }
-    };
     let stream = match format {
-        SampleFormat::F32 => {
-            let q = queue.clone();
-            let lv = levels.clone();
-            device.build_input_stream(
-                &config,
-                move |data: &[f32], _| append(data, channels, &q, &lv),
-                on_error(app.cloned(), error.clone()),
-                None,
-            )
-        }
-        SampleFormat::I16 => {
-            let q = queue.clone();
-            let lv = levels.clone();
-            device.build_input_stream(
-                &config,
-                move |data: &[i16], _| append(data, channels, &q, &lv),
-                on_error(app.cloned(), error.clone()),
-                None,
-            )
-        }
-        SampleFormat::U16 => {
-            let q = queue.clone();
-            let lv = levels.clone();
-            device.build_input_stream(
-                &config,
-                move |data: &[u16], _| append(data, channels, &q, &lv),
-                on_error(app.cloned(), error.clone()),
-                None,
-            )
-        }
-        SampleFormat::I32 => {
-            let q = queue.clone();
-            let lv = levels.clone();
-            device.build_input_stream(
-                &config,
-                move |data: &[i32], _| append(data, channels, &q, &lv),
-                on_error(app.cloned(), error.clone()),
-                None,
-            )
-        }
+        SampleFormat::F32 => make_stream::<f32>(
+            &device,
+            &config,
+            channels,
+            queue.clone(),
+            levels.clone(),
+            error.clone(),
+            app.cloned(),
+        ),
+        SampleFormat::I16 => make_stream::<i16>(
+            &device,
+            &config,
+            channels,
+            queue.clone(),
+            levels.clone(),
+            error.clone(),
+            app.cloned(),
+        ),
+        SampleFormat::U16 => make_stream::<u16>(
+            &device,
+            &config,
+            channels,
+            queue.clone(),
+            levels.clone(),
+            error.clone(),
+            app.cloned(),
+        ),
+        SampleFormat::I32 => make_stream::<i32>(
+            &device,
+            &config,
+            channels,
+            queue.clone(),
+            levels.clone(),
+            error.clone(),
+            app.cloned(),
+        ),
         other => return Err(format!("不支持的麦克风采样格式: {other:?}")),
     }
     .map_err(|e| format!("无法打开麦克风（{format:?}）: {e}"))?;
@@ -447,35 +385,95 @@ fn build_stream(
     Ok((stream, sample_rate, queue))
 }
 
-/// 多声道混成单声道，写进采集队列和电平环；F32/I16/U16 统一归一化到 -1..1。
-fn append<T>(data: &[T], channels: usize, queue: &SampleQueue, levels: &LevelRing)
+/// 按名字挑一个输入设备；挑不到就退回系统默认（和设置页的语义一致）。
+fn find_device(host: &cpal::Host, wanted: Option<&str>) -> Result<cpal::Device, String> {
+    let available: Vec<String> = list_input_devices()
+        .into_iter()
+        .map(|device| device.name)
+        .collect();
+    match pick_device_name(wanted, &available) {
+        Some(name) => host
+            .input_devices()
+            .ok()
+            .and_then(|mut devices| {
+                devices.find(|device| device.name().map(|n| n == name).unwrap_or(false))
+            })
+            .ok_or_else(|| format!("找不到输入设备：{name}")),
+        None => host
+            .default_input_device()
+            .ok_or_else(|| "没有可用的麦克风".to_string()),
+    }
+}
+
+fn stream_error_handler(
+    app: Option<AppHandle>,
+    slot: Arc<Mutex<Option<String>>>,
+) -> impl FnMut(cpal::StreamError) + Send + 'static {
+    move |err: cpal::StreamError| {
+        let message = format!("麦克风异常: {err}");
+        if let Ok(mut guard) = slot.lock() {
+            *guard = Some(message.clone());
+        }
+        if let Some(app) = &app {
+            let _ = app.emit("audio:error", message);
+        }
+    }
+}
+
+fn make_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    queue: SampleQueue,
+    levels: LevelRing,
+    error: Arc<Mutex<Option<String>>>,
+    app: Option<AppHandle>,
+) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
     T: SizedSample + Sample,
     f32: FromSample<T>,
 {
-    let mut mono = Vec::with_capacity(data.len() / channels.max(1) + 1);
-    for frame in data.chunks(channels.max(1)) {
-        let mut sum = 0f32;
-        for sample in frame {
-            sum += f32::from_sample(*sample);
-        }
-        mono.push(sum / frame.len().max(1) as f32);
-    }
-    queue.push(&mono);
-    levels.push(&mono);
+    let mut capture = Capture {
+        queue,
+        levels,
+        channels,
+        mono: Vec::new(),
+    };
+    device.build_input_stream(
+        config,
+        move |data: &[T], _| capture.push(data),
+        stream_error_handler(app, error),
+        None,
+    )
 }
 
-/// 设备采样率转 16 kHz（带抗混叠滤波），已符合则原样返回。
-pub fn resample_to_16k(samples: Vec<f32>, rate: u32) -> Vec<f32> {
-    if rate == TARGET_RATE || samples.is_empty() {
-        return samples;
-    }
-    match LinearResampler::create(rate as i32, TARGET_RATE as i32) {
-        Some(resampler) => {
-            let clamped: Vec<f32> = samples.into_iter().map(|s| s.clamp(-1.0, 1.0)).collect();
-            resampler.resample(&clamped, true)
+/// 采集回调里的工作区：复用 mono 缓冲，避免每块音频都分配一次 Vec。
+struct Capture {
+    queue: SampleQueue,
+    levels: LevelRing,
+    channels: usize,
+    mono: Vec<f32>,
+}
+
+impl Capture {
+    /// 多声道混成单声道，写进采集队列和电平环；F32/I16/U16 统一归一化到 -1..1。
+    fn push<T>(&mut self, data: &[T])
+    where
+        T: SizedSample + Sample,
+        f32: FromSample<T>,
+    {
+        let channels = self.channels.max(1);
+        self.mono.clear();
+        self.mono.reserve(data.len() / channels + 1);
+        for frame in data.chunks(channels) {
+            let mut sum = 0f32;
+            for sample in frame {
+                sum += f32::from_sample(*sample);
+            }
+            self.mono.push(sum / frame.len() as f32);
         }
-        None => samples,
+        self.queue.push(&self.mono);
+        self.levels.push(&self.mono);
     }
 }
 
@@ -522,6 +520,11 @@ mod tests {
 
     #[test]
     fn default_input_is_usable() {
+        // CI runner 的虚拟声卡可能列得出来、读配置却失败，别让宿主环境卡住构建。
+        if std::env::var("CI").is_ok() {
+            eprintln!("跳过：CI 环境不依赖宿主音频设备");
+            return;
+        }
         let host = cpal::default_host();
         let Some(device) = host.default_input_device() else {
             eprintln!("跳过：没有默认输入设备");
@@ -548,18 +551,14 @@ mod tests {
         }
         let recorder = start_with(None, None).expect("打开麦克风");
         let rate = recorder.sample_rate();
+        let queue = recorder.queue();
         std::thread::sleep(std::time::Duration::from_secs(2));
-        let samples = recorder.stop().expect("停止录音");
+        recorder.stop().expect("停止录音");
+        // 停止后采样仍留在队列里，由消费者取走（stop 不再代取）。
+        let samples = queue.take_new().samples;
         let peak = samples.iter().fold(0f32, |acc, s| acc.max(s.abs()));
         println!("采到 {} 个采样 @ {rate} Hz，峰值 {peak:.4}", samples.len());
         assert!(samples.len() > rate as usize, "录音样本太少");
         assert!(peak <= 1.0, "样本超出 [-1, 1]");
-    }
-
-    #[test]
-    fn resample_48k_to_16k_keeps_duration() {
-        let samples = vec![0.0f32; 48_000];
-        let out = resample_to_16k(samples, 48_000);
-        assert!((out.len() as i64 - 16_000).abs() < 64, "got {}", out.len());
     }
 }

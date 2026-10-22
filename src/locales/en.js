@@ -30,11 +30,12 @@ window.I18N_LOCALES['en'] = {
 
   'setup.title': 'First run: download the one-shot model',
   'setup.desc':
-    'SenseVoiceSmall INT8 is about 228 MB. Download it once and everything runs offline afterwards. It downloads from Hugging Face by default and falls back to hf-mirror; you can also point it at a local model folder.',
+    'SenseVoiceSmall INT8 is about 228 MB. Download it once and everything runs offline afterwards. It downloads from the hf-mirror mirror first and falls back to Hugging Face; you can also point it at a local model folder.',
   'setup.download': 'Download model',
   'setup.useExisting': 'Use an existing model folder',
-  'setup.chooseDir': 'Choose a folder containing model.int8.onnx and tokens.txt',
-  'setup.noModel': 'No model.int8.onnx / tokens.txt found in that folder',
+  'setup.chooseDir': 'Choose a folder containing model.int8.onnx, tokens.txt and silero_vad.onnx',
+  'setup.noModel':
+    'No model.int8.onnx / tokens.txt / silero_vad.onnx found in that folder',
   'setup.preparing': 'Preparing…',
   'setup.done': 'Download complete',
   'setup.downloadFailed': 'Download failed: {error}',
@@ -147,7 +148,7 @@ window.I18N_LOCALES['en'] = {
     'Punctuation model ready (CT-Transformer zh-en) — streaming results get punctuation automatically',
   'settings.punctMissing':
     'Punctuation model not downloaded (about {size}; it comes with the streaming model)',
-  'settings.punctEnabled': 'Punctuation model downloaded and switched on',
+  'settings.punctNeedDownload': 'Download the streaming model first — punctuation comes with it',
   'settings.punctAutoOn': 'Streaming results get punctuation automatically',
   'settings.punctAutoOff': 'Auto punctuation disabled',
   'settings.modelPath': '{source} · {dir}',
@@ -161,7 +162,6 @@ window.I18N_LOCALES['en'] = {
   'progress.connecting': 'Connecting',
   'progress.complete': 'Done',
   'progress.cache': 'Local cache',
-  'progress.punct': 'Punctuation model {pct}% · {done} / {total}',
 
   'duration.seconds': '{seconds}s',
   'duration.minutes': '{minutes}m {seconds}s',

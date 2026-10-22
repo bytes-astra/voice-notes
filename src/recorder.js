@@ -15,6 +15,12 @@ export function renderMicLabel() {
   els.mic.setAttribute('aria-label', state.phase === 'recording' ? t('record.micStop') : t('record.micStart'))
 }
 
+/// 按当前阶段重绘麦克风下方的提示语（切语言时要跟着重调）。
+export function renderHint() {
+  if (state.phase === 'idle') els.hint.textContent = idleHint()
+  else if (HINTS[state.phase]) els.hint.textContent = t(HINTS[state.phase])
+}
+
 export function setPhase(phase) {
   state.phase = phase
   els.app.dataset.phase = phase
@@ -22,8 +28,7 @@ export function setPhase(phase) {
   els.mic.querySelector('.mic-glyph').classList.toggle('hidden', phase === 'recording')
   els.mic.querySelector('.stop-glyph').classList.toggle('hidden', phase !== 'recording')
   els.mic.disabled = phase === 'requesting' || phase === 'transcribing'
-  if (phase === 'idle') els.hint.textContent = idleHint()
-  else if (HINTS[phase]) els.hint.textContent = t(HINTS[phase])
+  renderHint()
   if (phase !== 'recording') {
     els.liveLine.classList.add('hidden')
     els.liveLine.textContent = ''
@@ -34,6 +39,8 @@ export function setPhase(phase) {
 
 export function buildWave() {
   for (let i = 0; i < BARS; i++) els.wave.appendChild(document.createElement('span'))
+  // 首帧就把空闲剪影画出来，否则要等到第一次阶段变化才不显示。
+  renderWave()
 }
 
 export function renderWave() {
@@ -71,6 +78,9 @@ export function stopTimer() {
   state.timer = 0
 }
 
+/// 正在进行的「启动录音」流程；取消时要等它落定，否则它可能在取消之后才把会话建起来。
+let startTask = null
+
 export async function startRecording() {
   const streaming = state.status?.mode === 'streaming'
   if (streaming && !state.status.streamingReady) {
@@ -83,27 +93,54 @@ export async function startRecording() {
     els.setup.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     return
   }
-  if (state.phase !== 'idle') return
+  if (state.phase !== 'idle' || startTask) return
   setPhase('requesting')
+  const requestId = ++state.requestId
+  startTask = runStart(requestId)
+  try {
+    await startTask
+  } catch (error) {
+    if (requestId === state.requestId) {
+      setPhase('idle')
+      toast(fmtError(error), 'error')
+    }
+  } finally {
+    startTask = null
+  }
+}
+
+/// 真正启动一次录音。requestId 变了说明这次请求已经被取消（Esc）。
+async function runStart(requestId) {
   try {
     // 先单独触发一次麦克风权限（macOS 在第一次打开输入流时才弹框），
     // 用户同意后再开始录音；不同意就停在这里。
     await invoke('warm_up_mic')
   } catch (error) {
+    if (requestId !== state.requestId) return
     setPhase('idle')
     toast(t('record.micDenied', { error: fmtError(error) }), 'error')
     return
   }
+  // 等权限的过程中取消了：不再开始。
+  if (requestId !== state.requestId) return
   try {
     await invoke('start_recording')
+    // 启动后端会话的过程中被取消：把已经起来的会话也停掉，别留下一个看不见的录音。
+    if (requestId !== state.requestId) {
+      await invoke('cancel_recording').catch(() => {})
+      return
+    }
     state.startedAt = performance.now()
     els.timer.textContent = '00:00'
     // 两种模式都是边录边出字：先把结果区清空
+    state.lastTranscript = null
     els.text.value = ''
     els.meta.innerHTML = '<span>' + t('record.live') + '</span>'
     startTimer()
     setPhase('recording')
   } catch (error) {
+    // 过期的请求失败了不能影响新请求的阶段和提示。
+    if (requestId !== state.requestId) return
     setPhase('idle')
     toast(fmtError(error), 'error')
   }
@@ -129,12 +166,22 @@ export async function stopRecording() {
 
 export async function cancelRecording() {
   if (state.phase !== 'recording' && state.phase !== 'requesting') return
+  const wasRecording = state.phase === 'recording'
+  // 让还在 await 的启动流程放弃后续步骤（它可能在等权限或等后端启动）。
+  state.requestId += 1
   stopTimer()
+  // 等它落定再取消：否则它可能在这之后才把后端会话建起来，留下一个看不见的录音。
+  if (startTask) await startTask.catch(() => {})
   try {
     await invoke('cancel_recording')
   } catch {
     /* 忽略 */
   }
   els.timer.textContent = '00:00'
+  if (wasRecording) {
+    // 取消就是不要这段：清掉已经实时上屏的文字。
+    els.text.value = ''
+    els.meta.innerHTML = '<span>' + t('result.waiting') + '</span>'
+  }
   setPhase('idle')
 }

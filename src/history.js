@@ -1,11 +1,7 @@
 /* 历史记录：本地存储 + 列表渲染 */
 
-import { HISTORY_KEY, els, fmtDuration, historyStorageGet, historyStorageSet, state, t } from './core.js'
+import { HISTORY_KEY, I18N, els, fmtDuration, historyStorageSet, state, t } from './core.js'
 import { copyText, saveText } from './export.js'
-
-export function loadHistory() {
-  return historyStorageGet()
-}
 
 export function saveHistory() {
   historyStorageSet(state.history)
@@ -42,7 +38,8 @@ export function renderHistory() {
     text.textContent = item.text
     const sub = document.createElement('div')
     sub.className = 'history-sub'
-    const when = new Date(item.at).toLocaleString('zh-CN', {
+    // 日期跟着界面语言走：写死 zh-CN 的话英文界面还是 24 小时制中文格式。
+    const when = new Date(item.at).toLocaleString(I18N.locale, {
       month: 'numeric',
       day: 'numeric',
       hour: '2-digit',
@@ -56,6 +53,8 @@ export function renderHistory() {
     }
     main.append(text, sub)
     main.addEventListener('click', () => {
+      // 载入的是一条历史，不是「上次转写」：切语言时不能再把它重绘回去。
+      state.lastTranscript = null
       els.text.value = item.text
       els.meta.innerHTML = ''
       const span = document.createElement('span')
