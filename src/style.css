@@ -775,12 +775,19 @@ body { overflow: hidden; }
 }
 
 .sidebar-top {
-  height: 12px;
+  /* 高度跟着内容走：写死 12px 会把 30px 高的品牌行切掉一截（Windows 上
+     侧栏顶部没有红绿灯要避让，但品牌行本身放不下）。 */
+  height: auto;
   display: flex;
-  align-items: flex-end;
-  padding: 0 2px 6px;
+  align-items: center;
+  padding: 10px 2px 8px;
 }
-body.macos .sidebar-top { height: 78px; padding-bottom: 4px; }
+/* macOS：标题栏是覆盖式的，上方 78px 给红绿灯留位 */
+body.macos .sidebar-top {
+  height: 78px;
+  align-items: flex-end;
+  padding: 0 2px 4px;
+}
 
 .brand {
   display: flex;

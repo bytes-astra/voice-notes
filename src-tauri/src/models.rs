@@ -16,7 +16,9 @@ pub const MODEL_FILE: &str = "model.int8.onnx";
 pub const TOKENS_FILE: &str = "tokens.txt";
 pub const VAD_FILE: &str = "silero_vad.onnx";
 
+/// 官方源（直连慢，但最权威）
 const HF: &str = "https://huggingface.co";
+/// 国内镜像（默认走这个：国内直连 huggingface.co 经常超时）
 const MIRROR: &str = "https://hf-mirror.com";
 
 pub struct Asset {
@@ -432,7 +434,8 @@ pub async fn download_asset(
     }
 
     let mut errors = Vec::new();
-    for base in [HF, MIRROR] {
+    // 镜像优先：国内直连 huggingface.co 经常连不上，镜像失败再回官方源
+    for base in [MIRROR, HF] {
         if cancel.load(Ordering::Relaxed) {
             return Err("已取消下载".into());
         }
