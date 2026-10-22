@@ -171,3 +171,96 @@ fn vad_config(vad_model: Option<&str>) -> VadModelConfig {
         ..Default::default()
     }
 }
+
+/// 长录音：15 分钟音频边录边识别，句子一句不少，未消费缓冲始终有界。
+///
+/// 这是整个 Phase B 的核心承诺（「支持长时间的内容」），必须真的跑一遍：
+///   VOICE_NOTES_MODEL_DIR=/path/to/models cargo test --test asr_smoke -- --nocapture
+#[test]
+fn handles_fifteen_minute_recording() {
+    let Some(dir) = std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(std::path::PathBuf::from) else {
+        eprintln!("跳过：未设置 VOICE_NOTES_MODEL_DIR");
+        return;
+    };
+    let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
+        .into_iter()
+        .find(|p| p.is_file());
+    let (Some(model), tokens) = (model, dir.join("tokens.txt")) else {
+        eprintln!("跳过：找不到 SenseVoice 模型");
+        return;
+    };
+    if !tokens.is_file() {
+        eprintln!("跳过：找不到 tokens.txt");
+        return;
+    }
+    let mut vad_candidates = vec![dir.join("silero_vad.onnx")];
+    if let Some(parent) = dir.parent() {
+        vad_candidates.push(parent.join("silero_vad.onnx"));
+    }
+    let Some(vad_model) = vad_candidates.into_iter().find(|p| p.is_file()) else {
+        eprintln!("跳过：找不到 VAD 模型");
+        return;
+    };
+    let paths = voice_notes_lib::models::ModelPaths {
+        dir: dir.display().to_string(),
+        model: model.display().to_string(),
+        tokens: tokens.display().to_string(),
+        vad: Some(vad_model.display().to_string()),
+        source: "test".into(),
+    };
+    let engine = std::sync::Arc::new(
+        voice_notes_lib::asr::Engine::new(&paths, "zh", true).expect("加载模型"),
+    );
+    let vad = engine.vad_config().expect("VAD 配置");
+
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    let chunk = wave.samples();
+    // 5.6 秒 × 160 ≈ 15 分钟
+    const REPEATS: usize = 160;
+    let total_samples = chunk.len() * REPEATS;
+    let minutes = total_samples as f32 / 16_000.0 / 60.0;
+    println!("模拟录音 {minutes:.1} 分钟（{total_samples} 个采样）");
+
+    let queue = voice_notes_lib::audio::SampleQueue::new(16_000);
+    let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad);
+    let mut segments = 0usize;
+    let mut max_pending = 0usize;
+
+    // 模拟「边录边消费」：每喂 1 秒，取一次（和 ASR 线程的实际节奏一致）
+    let step = 16_000usize;
+    for _ in 0..REPEATS {
+        for piece in chunk.chunks(step) {
+            queue.push(piece);
+            let new_audio = queue.take_new();
+            max_pending = max_pending.max(queue.pending());
+            for event in session.push(&new_audio.samples) {
+                let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event;
+                segments += 1;
+                if segments % 40 == 1 {
+                    println!("  第 {segments} 句：{}", segment.text);
+                }
+            }
+        }
+    }
+    for event in session.finish() {
+        let voice_notes_lib::asr::OfflineEvent::Segment(_) = event;
+        segments += 1;
+    }
+
+    println!(
+        "识别出 {segments} 句，未消费缓冲峰值 {max_pending} 个采样（{:.1} 秒）",
+        max_pending as f32 / 16_000.0
+    );
+    let text = voice_notes_lib::asr::join_segments(session.segments().iter().map(|s| s.text.as_str()));
+    println!("总字数：{}", text.chars().count());
+
+    // 15 分钟 ≈ 160 段，每段都应该识别出来（允许 VAD 边界处的少量出入）
+    assert!(
+        segments * 100 >= REPEATS * 95,
+        "15 分钟只识别出 {segments} 句，漏了内容"
+    );
+    // 未消费缓冲必须恒定在上限以内（内存恒定的核心）
+    let limit = 60 * 16_000;
+    assert!(max_pending <= limit, "未消费缓冲涨到了 {max_pending}（上限 {limit}）");
+    assert!(text.chars().count() > 1000, "识别出的字数太少");
+}

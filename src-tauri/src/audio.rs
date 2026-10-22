@@ -68,6 +68,11 @@ impl SampleQueue {
         guard.extend_from_slice(samples);
     }
 
+    /// 当前还没被取走的采样数（诊断用：正常应该一直很小）。
+    pub fn pending(&self) -> usize {
+        self.samples.lock().map(|g| g.len()).unwrap_or(0)
+    }
+
     /// 取走全部未消费的采样；超出上限时（最旧的）会被丢掉并计数。
     pub fn take_new(&self) -> NewAudio {
         let Ok(mut guard) = self.samples.lock() else {
