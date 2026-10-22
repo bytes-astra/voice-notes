@@ -28,7 +28,7 @@ window.I18N_LOCALES['en'] = {
   'model.source.app_data': 'App data',
   'model.source.custom': 'Custom folder',
 
-  'setup.title': 'First run: download the model',
+  'setup.title': 'Download model',
   'setup.desc':
     'SenseVoiceSmall INT8 is about 228 MB. Download it once and everything runs offline afterwards. It downloads from the hf-mirror mirror first and falls back to Hugging Face; you can also point it at a local model folder.',
   'setup.download': 'Download model',

@@ -33,7 +33,7 @@
       'lang.ja': '日本語',
       'lang.ko': '한국어',
 
-      'setup.title': '首次使用：下载模型',
+      'setup.title': '下载模型',
       'setup.desc':
         'SenseVoiceSmall 约 228 MB，只需下载一次，之后完全离线运行。也可以直接指向一个已有的本地模型目录。',
       'setup.download': '下载模型',
