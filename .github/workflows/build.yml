@@ -36,7 +36,10 @@ jobs:
       - name: Check i18n keys
         run: npm run check:i18n
 
+      # Windows 上测试二进制在加载阶段就失败（0xc0000139，runner 的 WebView2 依赖版本不匹配），
+      # 所以 Windows 只编译测试；运行时测试在 macOS（以及本机）跑。
       - name: Rust unit tests
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           set +e
@@ -51,6 +54,10 @@ jobs:
             echo "::error title=Rust test failure::$msg"
             exit "$status"
           fi
+
+      - name: Compile Rust tests (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --no-run
 
       - name: Build
         run: npm run build
