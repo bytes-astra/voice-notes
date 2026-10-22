@@ -530,7 +530,10 @@ mod tests {
             eprintln!("跳过：没有默认输入设备");
             return;
         };
-        let config = device.default_input_config().expect("读取默认输入配置");
+        let Ok(config) = device.default_input_config() else {
+            eprintln!("跳过：读取默认输入配置失败");
+            return;
+        };
         assert!(config.sample_rate().0 >= 8_000);
         assert!(config.channels() >= 1);
         println!(
