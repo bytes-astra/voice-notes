@@ -12,7 +12,10 @@ use sherpa_onnx::LinearResampler;
 use tauri::{AppHandle, Emitter};
 
 pub const TARGET_RATE: u32 = 16_000;
-const MAX_SECONDS: u32 = 600;
+/// 未消费音频的上限（秒）。ASR 线程跟不上时丢掉最旧的，并在结果里标记缺口。
+pub const MAX_PENDING_SECONDS: u32 = 60;
+/// 电平环长度（采样数）：只用来算音量，必须和采集缓冲分开。
+const LEVEL_RING: usize = 2048;
 const LEVEL_INTERVAL: Duration = Duration::from_millis(60);
 
 enum Cmd {
@@ -20,10 +23,111 @@ enum Cmd {
     Cancel,
 }
 
+/// 采集缓冲：生产者（cpal 回调）写入，消费者（ASR 线程）取走即释放。
+///
+/// 内存不随录音时长增长 —— ASR 线程每轮 `take_new()` 取走新到的采样，
+/// 旧采样立刻释放。超过 `MAX_PENDING_SECONDS` 还没被取走的部分会丢掉最旧的，
+/// 并把丢弃数量报给调用方：调用方要在结果里标记缺口，不能静默丢。
+#[derive(Clone)]
+pub struct SampleQueue {
+    samples: Arc<Mutex<Vec<f32>>>,
+    /// 未消费采样的上限；None = 不限。
+    limit: Option<usize>,
+}
+
+/// 一次取走的新采样。
+#[derive(Clone, Debug, Default)]
+pub struct NewAudio {
+    /// 新到的采样
+    pub samples: Vec<f32>,
+    /// 因为超过上限而被丢弃的采样数
+    pub dropped: u32,
+}
+
+impl SampleQueue {
+    /// 有上限的缓冲：ASR 线程跟不上时丢最旧的（流式模式用）。
+    pub fn new(sample_rate: u32) -> Self {
+        Self {
+            samples: Arc::new(Mutex::new(Vec::new())),
+            limit: Some(MAX_PENDING_SECONDS as usize * sample_rate as usize),
+        }
+    }
+
+    /// 不设上限：整段模式在改成「边录边识别」之前要把整条录音留在内存里。
+    /// TODO(B4)：整段模式改成边录边识别后，这个变体就能删掉。
+    pub fn unbounded() -> Self {
+        Self {
+            samples: Arc::new(Mutex::new(Vec::new())),
+            limit: None,
+        }
+    }
+
+    pub fn push(&self, samples: &[f32]) {
+        let Ok(mut guard) = self.samples.lock() else { return };
+        guard.extend_from_slice(samples);
+    }
+
+    /// 取走全部未消费的采样；超出上限时（最旧的）会被丢掉并计数。
+    pub fn take_new(&self) -> NewAudio {
+        let Ok(mut guard) = self.samples.lock() else {
+            return NewAudio::default();
+        };
+        let mut dropped = 0u32;
+        if let Some(limit) = self.limit {
+            if guard.len() > limit {
+                let excess = guard.len() - limit;
+                guard.drain(..excess);
+                dropped = excess as u32;
+            }
+        }
+        NewAudio {
+            samples: std::mem::take(&mut *guard),
+            dropped,
+        }
+    }
+}
+
+/// 电平环：只保留最近一小段采样，用来算音量。
+///
+/// 必须和采集缓冲分开 —— 采集缓冲改成消费式之后就没有历史了，
+/// 音量表去读它会恒读 0（看起来像麦克风坏了）。
+#[derive(Clone, Default)]
+pub struct LevelRing {
+    samples: Arc<Mutex<Vec<f32>>>,
+}
+
+impl LevelRing {
+    fn push(&self, samples: &[f32]) {
+        let Ok(mut guard) = self.samples.lock() else { return };
+        guard.extend_from_slice(samples);
+        if guard.len() > LEVEL_RING {
+            let excess = guard.len() - LEVEL_RING;
+            guard.drain(..excess);
+        }
+    }
+
+    fn peak(&self) -> f32 {
+        let Ok(buf) = self.samples.lock() else { return 0.0 };
+        let tail = &buf[buf.len().saturating_sub(LEVEL_RING)..];
+        if tail.is_empty() {
+            return 0.0;
+        }
+        let rms = (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt();
+        (rms * 6.0).clamp(0.0, 1.0)
+    }
+}
+
+/// 识别跟不上、丢掉了一段音频时插进结果里的标记。
+pub fn gap_marker(dropped_samples: u32, sample_rate: u32) -> String {
+    let rate = sample_rate.max(1);
+    let seconds = (dropped_samples as f32 / rate as f32).ceil().max(1.0) as u32;
+    format!("……（此处约 {seconds} 秒未识别）……")
+}
+
 pub struct Recorder {
     tx: mpsc::Sender<Cmd>,
     join: Option<thread::JoinHandle<()>>,
-    samples: Arc<Mutex<Vec<f32>>>,
+    queue: SampleQueue,
     error: Arc<Mutex<Option<String>>>,
     sample_rate: u32,
 }
@@ -33,12 +137,15 @@ impl Recorder {
         self.sample_rate
     }
 
-    /// 共享的原始采样缓冲，流式识别线程按游标增量读取。
-    pub fn buffer(&self) -> Arc<Mutex<Vec<f32>>> {
-        self.samples.clone()
+    /// 共享的采集缓冲：识别线程每次 `take_new()` 取走新到的采样。
+    pub fn queue(&self) -> SampleQueue {
+        self.queue.clone()
     }
 
-    /// 结束录音并取回设备原始采样（未重采样）。
+    /// 结束录音并取回还没被消费掉的采样（未重采样）。
+    ///
+    /// 整段模式（缓冲不限）拿到的就是整条录音；流式模式里大部分已经被
+    /// 识别线程消费掉了，这里只剩尾巴。
     pub fn stop(mut self) -> Result<Vec<f32>, String> {
         let _ = self.tx.send(Cmd::Stop);
         if let Some(join) = self.join.take() {
@@ -47,11 +154,7 @@ impl Recorder {
         if let Some(error) = self.error.lock().unwrap().take() {
             return Err(error);
         }
-        let samples = std::mem::take(&mut *self.samples.lock().unwrap());
-        if samples.is_empty() {
-            return Err("没有录到声音".into());
-        }
-        Ok(samples)
+        Ok(self.queue.take_new().samples)
     }
 
     pub fn cancel(mut self) {
@@ -156,31 +259,38 @@ pub fn probe_input(device: Option<&str>) -> Result<(), String> {
 }
 
 /// 打开默认输入设备开始采集；音频只留在内存里，停止后由调用方转写。
-pub fn start(app: AppHandle, device: Option<&str>) -> Result<Recorder, String> {
-    start_with(Some(app), device)
+/// `bounded` = true 时未消费的采样有上限（流式模式用，内存恒定）；
+/// false 时整条录音都留在缓冲里（整段模式在改成边录边识别之前）。
+pub fn start(app: AppHandle, device: Option<&str>, bounded: bool) -> Result<Recorder, String> {
+    start_with(Some(app), device, bounded)
 }
 
 /// 与 [`start`] 相同，但不发 UI 事件（测试/无界面场景用）。
-pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Recorder, String> {
+pub fn start_with(
+    app: Option<AppHandle>,
+    device: Option<&str>,
+    bounded: bool,
+) -> Result<Recorder, String> {
     let device = device.map(|name| name.to_string());
     let (tx, rx) = mpsc::channel::<Cmd>();
-    let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, String>>();
-    let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(u32, SampleQueue), String>>();
+    let levels = LevelRing::default();
     let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-    let thread_samples = samples.clone();
+    let thread_levels = levels.clone();
     let thread_error = error.clone();
     let join = thread::Builder::new()
         .name("microphone".into())
         .spawn(move || {
             let stream = match build_stream(
                 app.as_ref(),
-                thread_samples.clone(),
+                thread_levels.clone(),
                 thread_error.clone(),
                 device.as_deref(),
+                bounded,
             ) {
-                Ok((stream, rate)) => {
-                    let _ = ready_tx.send(Ok(rate));
+                Ok((stream, rate, queue)) => {
+                    let _ = ready_tx.send(Ok((rate, queue)));
                     stream
                 }
                 Err(err) => {
@@ -199,7 +309,7 @@ pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Record
                 }
                 if last_tick.elapsed() >= LEVEL_INTERVAL {
                     last_tick = Instant::now();
-                    let level = peak(&thread_samples);
+                    let level = thread_levels.peak();
                     if let Some(app) = &app {
                         let _ = app.emit(
                             "audio:level",
@@ -225,10 +335,10 @@ pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Record
         .map_err(|e| format!("无法创建录音线程: {e}"))?;
 
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(rate)) => Ok(Recorder {
+        Ok(Ok((rate, queue))) => Ok(Recorder {
             tx,
             join: Some(join),
-            samples,
+            queue,
             error,
             sample_rate: rate,
         }),
@@ -246,10 +356,11 @@ pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Record
 
 fn build_stream(
     app: Option<&AppHandle>,
-    samples: Arc<Mutex<Vec<f32>>>,
+    levels: LevelRing,
     error: Arc<Mutex<Option<String>>>,
     wanted: Option<&str>,
-) -> Result<(cpal::Stream, u32), String> {
+    bounded: bool,
+) -> Result<(cpal::Stream, u32, SampleQueue), String> {
     let host = cpal::default_host();
     let available: Vec<String> = list_input_devices()
         .into_iter()
@@ -275,7 +386,11 @@ fn build_stream(
     let channels = supported.channels() as usize;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.config();
-    let cap = MAX_SECONDS as usize * sample_rate as usize;
+    let queue = if bounded {
+        SampleQueue::new(sample_rate)
+    } else {
+        SampleQueue::unbounded()
+    };
 
     let on_error = |app: Option<AppHandle>, slot: Arc<Mutex<Option<String>>>| {
         move |err: cpal::StreamError| {
@@ -290,37 +405,41 @@ fn build_stream(
     };
     let stream = match format {
         SampleFormat::F32 => {
-            let buf = samples.clone();
+            let q = queue.clone();
+            let lv = levels.clone();
             device.build_input_stream(
                 &config,
-                move |data: &[f32], _| append(data, channels, &buf, cap),
+                move |data: &[f32], _| append(data, channels, &q, &lv),
                 on_error(app.cloned(), error.clone()),
                 None,
             )
         }
         SampleFormat::I16 => {
-            let buf = samples.clone();
+            let q = queue.clone();
+            let lv = levels.clone();
             device.build_input_stream(
                 &config,
-                move |data: &[i16], _| append(data, channels, &buf, cap),
+                move |data: &[i16], _| append(data, channels, &q, &lv),
                 on_error(app.cloned(), error.clone()),
                 None,
             )
         }
         SampleFormat::U16 => {
-            let buf = samples.clone();
+            let q = queue.clone();
+            let lv = levels.clone();
             device.build_input_stream(
                 &config,
-                move |data: &[u16], _| append(data, channels, &buf, cap),
+                move |data: &[u16], _| append(data, channels, &q, &lv),
                 on_error(app.cloned(), error.clone()),
                 None,
             )
         }
         SampleFormat::I32 => {
-            let buf = samples.clone();
+            let q = queue.clone();
+            let lv = levels.clone();
             device.build_input_stream(
                 &config,
-                move |data: &[i32], _| append(data, channels, &buf, cap),
+                move |data: &[i32], _| append(data, channels, &q, &lv),
                 on_error(app.cloned(), error.clone()),
                 None,
             )
@@ -329,36 +448,25 @@ fn build_stream(
     }
     .map_err(|e| format!("无法打开麦克风（{format:?}）: {e}"))?;
 
-    Ok((stream, sample_rate))
+    Ok((stream, sample_rate, queue))
 }
 
-/// 多声道混成单声道并写入共享缓冲；F32/I16/U16 统一归一化到 -1..1。
-fn append<T>(data: &[T], channels: usize, buffer: &Arc<Mutex<Vec<f32>>>, cap: usize)
+/// 多声道混成单声道，写进采集队列和电平环；F32/I16/U16 统一归一化到 -1..1。
+fn append<T>(data: &[T], channels: usize, queue: &SampleQueue, levels: &LevelRing)
 where
     T: SizedSample + Sample,
     f32: FromSample<T>,
 {
-    let Ok(mut out) = buffer.lock() else { return };
-    if out.len() >= cap {
-        return;
-    }
+    let mut mono = Vec::with_capacity(data.len() / channels.max(1) + 1);
     for frame in data.chunks(channels.max(1)) {
         let mut sum = 0f32;
         for sample in frame {
             sum += f32::from_sample(*sample);
         }
-        out.push(sum / frame.len().max(1) as f32);
+        mono.push(sum / frame.len().max(1) as f32);
     }
-}
-
-fn peak(samples: &Arc<Mutex<Vec<f32>>>) -> f32 {
-    let Ok(buf) = samples.lock() else { return 0.0 };
-    let tail = &buf[buf.len().saturating_sub(2_048)..];
-    if tail.is_empty() {
-        return 0.0;
-    }
-    let rms = (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt();
-    (rms * 6.0).clamp(0.0, 1.0)
+    queue.push(&mono);
+    levels.push(&mono);
 }
 
 /// 设备采样率转 16 kHz（带抗混叠滤波），已符合则原样返回。
@@ -378,6 +486,43 @@ pub fn resample_to_16k(samples: Vec<f32>, rate: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn take_new_consumes_samples() {
+        let q = SampleQueue::new(48_000);
+        q.push(&[1.0, 2.0, 3.0]);
+        let got = q.take_new();
+        assert_eq!(got.samples, vec![1.0, 2.0, 3.0]);
+        assert_eq!(got.dropped, 0);
+        assert!(q.take_new().samples.is_empty()); // 取过就没有了
+    }
+
+    #[test]
+    fn take_new_drops_oldest_when_over_limit() {
+        let q = SampleQueue::new(48_000);
+        let limit = MAX_PENDING_SECONDS as usize * 48_000;
+        q.push(&vec![0.0; limit + 100]);
+        let got = q.take_new();
+        assert_eq!(got.dropped, 100);
+        assert_eq!(got.samples.len(), limit);
+    }
+
+    #[test]
+    fn pending_limit_follows_sample_rate() {
+        // 16 kHz 的设备上限应该按 16k 算，不能拿 48k 的样本数去卡
+        let q = SampleQueue::new(16_000);
+        let limit = MAX_PENDING_SECONDS as usize * 16_000;
+        q.push(&vec![0.0; limit]);
+        assert_eq!(q.take_new().dropped, 0);
+        q.push(&vec![0.0; 1]);
+        assert_eq!(q.take_new().dropped, 0);
+    }
+
+    #[test]
+    fn gap_marker_mentions_seconds() {
+        assert!(gap_marker(48_000, 48_000).contains('1')); // 48000 @48k = 1 秒
+        assert!(gap_marker(96_000, 48_000).contains('2')); // 2 秒
+    }
 
     #[test]
     fn default_input_is_usable() {
@@ -405,7 +550,7 @@ mod tests {
             eprintln!("跳过：未设置 VOICE_NOTES_RECORD_TEST");
             return;
         }
-        let recorder = start_with(None, None).expect("打开麦克风");
+        let recorder = start_with(None, None, true).expect("打开麦克风");
         let rate = recorder.sample_rate();
         std::thread::sleep(std::time::Duration::from_secs(2));
         let samples = recorder.stop().expect("停止录音");

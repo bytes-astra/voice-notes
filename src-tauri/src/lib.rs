@@ -396,16 +396,9 @@ async fn ensure_punctuation(
     Ok(engine)
 }
 
-fn take_new(buffer: &Arc<Mutex<Vec<f32>>>, cursor: &mut usize) -> Vec<f32> {
-    let Ok(guard) = buffer.lock() else {
-        return Vec::new();
-    };
-    if guard.len() <= *cursor {
-        return Vec::new();
-    }
-    let chunk = guard[*cursor..].to_vec();
-    *cursor = guard.len();
-    chunk
+/// 取走新到的采样（消费式：取走即释放，内存不随录音时长增长）。
+fn take_new(queue: &audio::SampleQueue) -> audio::NewAudio {
+    queue.take_new()
 }
 
 /// 边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
@@ -413,7 +406,7 @@ fn run_streaming(
     app: &AppHandle,
     engine: Arc<StreamingEngine>,
     punctuator: Option<Arc<PunctuationEngine>>,
-    buffer: Arc<Mutex<Vec<f32>>>,
+    queue: audio::SampleQueue,
     rate: u32,
     stop: Arc<AtomicBool>,
 ) -> Transcript {
@@ -422,7 +415,7 @@ fn run_streaming(
         parts: Vec::new(),
         committed: String::new(),
     };
-    run_streaming_core(engine, punctuator, buffer, rate, stop, |events| {
+    run_streaming_core(engine, punctuator, queue, rate, stop, |events| {
         emitter.apply(events)
     })
 }
@@ -430,7 +423,7 @@ fn run_streaming(
 fn run_streaming_core<F>(
     engine: Arc<StreamingEngine>,
     punctuator: Option<Arc<PunctuationEngine>>,
-    buffer: Arc<Mutex<Vec<f32>>>,
+    queue: audio::SampleQueue,
     rate: u32,
     stop: Arc<AtomicBool>,
     mut emit: F,
@@ -453,11 +446,10 @@ where
     let mut preroll: Vec<f32> = Vec::new();
     let mut active = false;
     let mut last_voice = std::time::Instant::now();
-    let mut cursor = 0usize;
-
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(60));
-        let chunk = take_new(&buffer, &mut cursor);
+        let new_audio = take_new(&queue);
+        let chunk = new_audio.samples;
         if chunk.is_empty() {
             continue;
         }
@@ -506,7 +498,7 @@ where
     }
 
     // 收尾：把剩余采样和重采样器内部缓冲一起冲出去
-    let chunk = take_new(&buffer, &mut cursor);
+    let chunk = take_new(&queue).samples;
     let tail = match &resampler {
         Some(resampler) => resampler.resample(&chunk, true),
         None => chunk,
@@ -656,8 +648,8 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
         } else {
             None
         };
-        let recorder = audio::start(app.clone(), settings.input_device.as_deref())?;
-        let buffer = recorder.buffer();
+        let recorder = audio::start(app.clone(), settings.input_device.as_deref(), true)?;
+        let queue = recorder.queue();
         let rate = recorder.sample_rate();
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std::sync::mpsc::channel();
@@ -667,7 +659,7 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
             .name("streaming-asr".into())
             .spawn(move || {
                 let transcript =
-                    run_streaming(&thread_app, engine, punctuator, buffer, rate, thread_stop);
+                    run_streaming(&thread_app, engine, punctuator, queue, rate, thread_stop);
                 let _ = tx.send(transcript);
             })
             .map_err(|e| format!("无法启动流式识别线程: {e}"))?;
@@ -685,7 +677,8 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
     if models::resolve(&app, settings.model_dir.as_deref()).is_none() {
         return Err("模型未就绪，请先下载语音模型".into());
     }
-    let recorder = audio::start(app, settings.input_device.as_deref())?;
+    // TODO(B4)：整段模式改成边录边识别后，这里就不再需要把整条录音留在内存里
+    let recorder = audio::start(app, settings.input_device.as_deref(), false)?;
     *state
         .recorder
         .lock()
@@ -712,20 +705,21 @@ async fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> Result<Tr
     };
 
     if let Some(stream) = stream {
-        // 先停采集（缓冲里已有全部音频），无论成功与否都要让流式线程收尾。
-        let rate = recorder.sample_rate();
-        let samples = recorder.stop()?;
+        // 先停采集（识别线程可能还有没取走的尾巴），无论成功与否都要让流式线程收尾。
+        let _ = recorder.stop()?;
         stream.stop.store(true, Ordering::SeqCst);
         let streaming = stream
             .rx
             .recv_timeout(Duration::from_secs(20))
             .map_err(|_| "流式识别收尾超时".to_string())?;
-        let _ = (rate, samples);
         return Ok(streaming);
     }
 
     let rate = recorder.sample_rate();
     let samples = recorder.stop()?;
+    if samples.is_empty() {
+        return Err("没有录到声音".into());
+    }
     let samples = audio::resample_to_16k(samples, rate);
     if samples.len() < wav::TARGET_RATE as usize / 5 {
         return Err("录音太短，至少说 0.2 秒".into());
@@ -1024,7 +1018,8 @@ mod tests {
             upsampled.push(*sample);
             upsampled.push(*sample);
         }
-        let buffer = Arc::new(Mutex::new(upsampled));
+        let queue = audio::SampleQueue::new(48_000);
+        queue.push(&upsampled);
         let stop = Arc::new(AtomicBool::new(false));
         let stopper = stop.clone();
         std::thread::spawn(move || {
@@ -1033,7 +1028,7 @@ mod tests {
         });
 
         let mut partials = 0usize;
-        let transcript = run_streaming_core(engine, None, buffer, 48_000, stop, |events| {
+        let transcript = run_streaming_core(engine, None, queue, 48_000, stop, |events| {
             for event in events {
                 if let StreamEvent::Partial(_) = event {
                     partials += 1;
