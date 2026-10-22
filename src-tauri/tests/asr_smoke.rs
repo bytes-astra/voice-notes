@@ -5,7 +5,8 @@
 
 use std::path::PathBuf;
 
-use voice_notes_lib::asr::Engine;
+use voice_notes_lib::asr::{Engine, OfflineEvent, OfflineSession};
+use sherpa_onnx::{SileroVadModelConfig, VadModelConfig};
 use voice_notes_lib::models::ModelPaths;
 
 fn model_paths() -> Option<ModelPaths> {
@@ -88,4 +89,85 @@ fn recognize_matches_transcribe_on_one_sentence() {
     println!("transcribe：{}", batch.text);
     assert!(!direct.trim().is_empty());
     assert_eq!(direct.trim(), batch.text.trim());
+}
+
+/// 边录边识别与整条一次识别的文本一致（去掉空白和标点后比字符）
+#[test]
+fn offline_session_matches_batch_transcribe() {
+    let Some(paths) = model_paths() else {
+        eprintln!("跳过：找不到 SenseVoice 模型");
+        return;
+    };
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    let engine = std::sync::Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
+
+    // 路径 A：边录边（按 3200 样本推进）
+    let mut session = OfflineSession::new(engine.clone(), vad_config(paths.vad.as_deref()));
+    let mut events = Vec::new();
+    for chunk in wave.samples().chunks(3200) {
+        events.extend(session.push(chunk));
+    }
+    events.extend(session.finish());
+    let live: String = events
+        .iter()
+        .map(|e| match e {
+            OfflineEvent::Segment(s) => s.text.as_str(),
+        })
+        .collect();
+
+    // 路径 B：整条一次
+    let batch = engine.transcribe(wave.samples());
+
+    println!("边录边：{live}");
+    println!("整条一次：{}", batch.text);
+    let norm = |s: &str| -> String {
+        s.chars()
+            .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation() && !"，。！？、；：“”‘’（）《》".contains(*c))
+            .collect()
+    };
+    assert!(!norm(&live).is_empty());
+    assert_eq!(norm(&live), norm(&batch.text));
+}
+
+/// 说到一半停止：finish() 要把没成句的剩余音频也识别出来
+#[test]
+fn offline_session_finishes_partial_sentence() {
+    let Some(paths) = model_paths() else {
+        eprintln!("跳过：找不到 SenseVoice 模型");
+        return;
+    };
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    let engine = std::sync::Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
+    let mut session = OfflineSession::new(engine, vad_config(paths.vad.as_deref()));
+    // 只喂前 1.2 秒（不够 VAD 判静音成句），然后 finish
+    let head = &wave.samples()[..(16_000 * 12 / 10).min(wave.samples().len())];
+    let _ = session.push(head);
+    let events = session.finish();
+    let text: String = events
+        .iter()
+        .map(|e| match e {
+            OfflineEvent::Segment(s) => s.text.as_str(),
+        })
+        .collect();
+    println!("收尾识别：{text}");
+    assert!(!text.trim().is_empty(), "收尾时应该把没说完的半句也识别出来");
+}
+
+/// 与 asr.rs 里整段模式同一套 VAD 参数。
+fn vad_config(vad_model: Option<&str>) -> VadModelConfig {
+    VadModelConfig {
+        silero_vad: SileroVadModelConfig {
+            model: vad_model.map(|p| p.to_string()),
+            threshold: 0.5,
+            min_silence_duration: 0.5,
+            min_speech_duration: 0.25,
+            window_size: 512,
+            max_speech_duration: 30.0,
+        },
+        sample_rate: 16_000,
+        num_threads: 1,
+        provider: Some("cpu".into()),
+        debug: false,
+        ..Default::default()
+    }
 }

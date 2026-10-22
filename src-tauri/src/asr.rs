@@ -359,6 +359,120 @@ pub struct StreamingEngine {
     vad: Option<VadModelConfig>,
 }
 
+
+/// 整段模式的「边录边按句识别」会话。
+///
+/// 和 [`StreamingSession`] 一样是流式的，但用的是 SenseVoice（整段模型）：
+/// VAD 在录音过程中持续切句，切出一句就立刻送去识别并产出事件。
+///
+/// 为什么要单独一个会话：整段模式以前是「录完再把整条音频喂给 VAD」，
+/// 那要求把整条录音留在内存里（1 小时 ≈ 115MB）。改成边录边识别后，
+/// 识别完的句子立刻丢掉音频只留文本，内存就恒定了。
+///
+/// 代价：SenseVoice 是无状态的，每句独立识别，跨句上下文丢失 ——
+/// 这和整段模式「整条一次识别」时的分段行为其实是一样的。
+pub struct OfflineSession {
+    engine: Arc<Engine>,
+    detector: VoiceActivityDetector,
+    /// 还没凑够一个 VAD 窗口（512 样本）的采样
+    vad_pending: Vec<f32>,
+    /// 已经喂进来的采样总数（用来算时间轴）
+    fed_samples: usize,
+    /// 被 VAD 切出并识别成功的句子的样本数
+    recognized_samples: usize,
+    segments: Vec<Segment>,
+    /// 纯推理耗时累计（毫秒）
+    elapsed_ms: u64,
+}
+
+/// 整段会话产出的事件。
+#[derive(Clone, Debug)]
+pub enum OfflineEvent {
+    /// 识别好的一句
+    Segment(Segment),
+}
+
+impl OfflineSession {
+    pub fn new(engine: Arc<Engine>, vad: VadModelConfig) -> Self {
+        let detector = VoiceActivityDetector::create(&vad, MAX_SEGMENT_SECONDS + 2.0)
+            .expect("创建 VAD 失败");
+        Self {
+            engine,
+            detector,
+            vad_pending: Vec::new(),
+            fed_samples: 0,
+            recognized_samples: 0,
+            segments: Vec::new(),
+            elapsed_ms: 0,
+        }
+    }
+
+    /// 喂入 16 kHz 单声道采样，返回这一轮识别出来的句子。
+    pub fn push(&mut self, samples: &[f32]) -> Vec<OfflineEvent> {
+        let mut events = Vec::new();
+        self.vad_pending.extend_from_slice(samples);
+        self.fed_samples += samples.len();
+        while self.vad_pending.len() >= VAD_WINDOW {
+            let window: Vec<f32> = self.vad_pending.drain(..VAD_WINDOW).collect();
+            self.detector.accept_waveform(&window);
+            self.drain(&mut events);
+        }
+        events
+    }
+
+    /// 收尾：把 VAD 里还没成句的剩余音频冲出来识别。
+    pub fn finish(&mut self) -> Vec<OfflineEvent> {
+        let mut events = Vec::new();
+        if !self.vad_pending.is_empty() {
+            let rest = std::mem::take(&mut self.vad_pending);
+            self.detector.accept_waveform(&rest);
+        }
+        self.detector.flush();
+        self.drain(&mut events);
+        events
+    }
+
+    /// 把 VAD 已经切好的句子取出来识别。
+    fn drain(&mut self, events: &mut Vec<OfflineEvent>) {
+        while let Some(segment) = self.detector.front() {
+            let samples = segment.samples().to_vec();
+            let start = segment.start() as f32 / SAMPLE_RATE as f32;
+            let end = start + samples.len() as f32 / SAMPLE_RATE as f32;
+            self.detector.pop();
+
+            let started = Instant::now();
+            let text = self.engine.recognize(&samples);
+            self.elapsed_ms += started.elapsed().as_millis() as u64;
+            if text.trim().is_empty() {
+                continue;
+            }
+            self.recognized_samples += samples.len();
+            let segment = Segment { text, start, end };
+            events.push(OfflineEvent::Segment(segment.clone()));
+            self.segments.push(segment);
+        }
+    }
+
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    /// 纯推理耗时累计（毫秒）
+    pub fn elapsed_ms(&self) -> u64 {
+        self.elapsed_ms
+    }
+
+    /// 喂进来的采样总数（判断「录得太短」用；不含 VAD 内部缓冲）
+    pub fn recorded_samples(&self) -> usize {
+        self.fed_samples
+    }
+
+    /// 被 VAD 切出并识别成功的句子的采样数（判断「没识别到内容」用）
+    pub fn recognized_samples(&self) -> usize {
+        self.recognized_samples
+    }
+}
+
 /// 一次流式识别会话：喂 PCM，收中间结果和断句。
 pub struct StreamingSession {
     recognizer: Arc<StreamingEngine>,
