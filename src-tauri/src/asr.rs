@@ -39,8 +39,6 @@ pub struct Transcript {
     pub duration_seconds: f32,
     pub elapsed_ms: u64,
     pub language: String,
-    /// 最终文本是否来自非流式校正（流式模式结束后用 SenseVoice 复核过）。
-    pub corrected: bool,
 }
 
 pub struct Engine {
@@ -164,7 +162,6 @@ impl Engine {
             duration_seconds: duration,
             elapsed_ms: started.elapsed().as_millis() as u64,
             language: self.language.clone(),
-            corrected: false,
         }
     }
 }
@@ -263,7 +260,6 @@ mod tests {
             duration_seconds: 1.5,
             elapsed_ms: 200,
             language: "zh".into(),
-            corrected: false,
         };
         let value = serde_json::to_value(&transcript).unwrap();
         assert_eq!(value["durationSeconds"], serde_json::json!(1.5));
@@ -611,7 +607,6 @@ impl StreamingSession {
             duration_seconds: self.fed_samples as f32 / SAMPLE_RATE as f32,
             elapsed_ms: self.started.elapsed().as_millis() as u64,
             language: "zh-en".into(),
-            corrected: false,
         }
     }
 }

@@ -499,7 +499,6 @@ fn run_offline(
         duration_seconds,
         elapsed_ms,
         language: engine.language.clone(),
-        corrected: false,
     }
 }
 
@@ -958,7 +957,6 @@ async fn transcribe_file(
             duration_seconds: session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
             elapsed_ms: session.elapsed_ms(),
             language: engine.language.clone(),
-            corrected: false,
         })
     })
     .await

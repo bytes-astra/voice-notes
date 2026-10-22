@@ -21,7 +21,6 @@ export function showTranscript(transcript) {
     t('result.elapsed', { seconds: elapsed.toFixed(1) }),
     t('result.rtf', { rtf }),
     t('result.chars', { count: chars }),
-    transcript.corrected ? t('result.corrected') : null,
   ]) {
     if (!part) continue
     const span = document.createElement('span')
