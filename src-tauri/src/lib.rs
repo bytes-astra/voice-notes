@@ -1,6 +1,7 @@
 //! VoiceNotes —— 本地语音转文字桌面应用（Tauri 2 + SenseVoiceSmall INT8）。
 
 pub mod asr;
+pub mod decode;
 pub mod audio;
 pub mod models;
 pub mod settings;
@@ -907,6 +908,63 @@ async fn transcribe_samples(
     .map_err(|e| format!("转写失败: {e}"))?
 }
 
+
+/// 转写一个音频 / 视频文件。
+///
+/// 解码在后端做（symphonia），逐块喂给整段会话：内存恒定，1 小时的文件也不会
+/// 整条进内存。格式支持 mp3 / wav / flac / ogg / m4a / mp4 / mov（视频轨忽略）。
+#[tauri::command]
+async fn transcribe_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Transcript, String> {
+    load_engine(&app, &state).await?;
+    let engine = shared_engine(&state)?;
+    let thread_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Transcript, String> {
+        let vad = engine
+            .vad_config()
+            .ok_or("缺少 VAD 模型，无法断句")?;
+        let mut session = asr::OfflineSession::new(engine.clone(), vad);
+
+        let emit_segment = |segment: &asr::Segment| {
+            let _ = thread_app.emit(
+                "stream:segment",
+                SegmentPayload {
+                    segment: segment.text.clone(),
+                    start: segment.start,
+                    end: segment.end,
+                },
+            );
+        };
+
+        decode::decode_to_16k(std::path::Path::new(&path), |chunk| {
+            for event in session.push(chunk) {
+                let asr::OfflineEvent::Segment(segment) = event;
+                emit_segment(&segment);
+            }
+            Ok(())
+        })?;
+
+        for event in session.finish() {
+            let asr::OfflineEvent::Segment(segment) = event;
+            emit_segment(&segment);
+        }
+
+        Ok(Transcript {
+            text: asr::join_segments(session.segments().iter().map(|s| s.text.as_str())),
+            segments: session.segments().to_vec(),
+            duration_seconds: session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
+            elapsed_ms: session.elapsed_ms(),
+            language: engine.language.clone(),
+            corrected: false,
+        })
+    })
+    .await
+    .map_err(|e| format!("转写失败: {e}"))?
+}
+
 /// 从缓存里拿一个可共享的整段引擎（录音线程和文件转写共用同一份模型）。
 fn shared_engine(state: &AppState) -> Result<Arc<Engine>, String> {
     let guard = state.engine.lock().map_err(|_| "引擎状态异常".to_string())?;
@@ -1089,6 +1147,7 @@ pub fn run() {
             stop_recording,
             cancel_recording,
             transcribe_wav,
+            transcribe_file,
             download_model,
             download_streaming_model,
             download_punctuation_model,

@@ -20,6 +20,9 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sherpa-onnx = "1.13.8"
+# 纯 Rust 音频解码器：后端直接从磁盘解码 mp3/wav/flac/ogg/m4a/mp4/mov，
+# 不用 ffmpeg，也不用系统库。0.5 的 MSRV 是 1.53，0.6 要求 1.85（会破本项目的 1.78）。
+symphonia = { version = "0.5", features = ["all"] }
 cpal = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 futures-util = "0.3"
