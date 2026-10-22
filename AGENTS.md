@@ -79,6 +79,32 @@ cargo test --test decode_smoke -- --nocapture   # 后端解码 + 文件全链路
 
 `asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR` 指向包含 `model.int8.onnx` / `tokens.txt` 的目录，未设置时自动跳过。`decode_smoke` 的全链路用例同样需要它（另加 `VOICE_NOTES_MODEL_DIR` 才跑文件转写那一项）。
 
+### 转写质量探针
+
+`cargo test --test quality_probe -- --nocapture --test-threads=1` 是**只打印不断言**的对比工具：
+把 ITN 开关、语言指定方式、流式 greedy/beam/热词、VAD 模型与静音阈值、端点硬切行为在同一段真实音频上的
+实际表现打出来。**任何「换模型 / 调参数 / 加热词」的改动都要先跑它做前后对比，别凭感觉。**
+
+```bash
+VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
+VOICE_NOTES_VAD_ALT=/path/to/silero_vad_v5.onnx \
+VOICE_NOTES_HOTWORDS=$'再确认一下\n产品评审会' \
+VOICE_NOTES_RULE3=60 \
+  cargo test --test quality_probe -- --nocapture --test-threads=1
+```
+
+参考文本放在 `src-tauri/tests/fixtures/<名字>.txt`（人工听写）时，探针会自动算 CER。
+2026-10-23 的转写质量调研与路线图在 `docs/research/`（先看 `2026-10-23-asr-quality-roadmap.md`）。
+
+语料（仅本机，wav 不入库）：
+```bash
+node scripts/fetch-quality-corpus.mjs 12   # 真人中文电话录音 + 转写（minds14）
+bash scripts/gen-tts-corpus.sh             # TTS 20 句 + 数字句 + 长句 + 噪声变体
+```
+探针会自动扫描 `src-tauri/tests/fixtures/quality/*.wav`：有同名 `.txt` 就算 CER，没有就只打印识别结果。
+当前基线（zh + ITN 整段）：真人 5.85% / 真人+噪声 5.56% / TTS 26.47% / 长句 20.00%。
+**别拿 TTS 的绝对 CER 当质量结论**——它主要暴露「VAD 切字头」这类相对差异。
+
 ## Windows
 
 - Tauri 不能在 macOS 上交叉打 Windows 包，CI 用 `.github/workflows/build.yml`（windows-latest）出 msi/nsis。

@@ -1,0 +1,196 @@
+# 转写优化方案（2026-10-23，基于独立复核）
+
+> 依据：[复核报告](./2026-10-23-review.md) 与 [路线图](./2026-10-23-asr-quality-roadmap.md)。
+> 只做**复核后仍然成立**的项；被推翻的（`auto` 语言、`modeling_unit` 必填）不做；被收窄的（标点 int8）单列阻塞项。
+> 约束不变：本地离线、纯 CPU、内存恒定、无打包器、文案走 i18n、下载镜像优先。
+
+## 0.0 语料（已建好，2026-10-23）
+
+不用等用户录音也能量：已经建了两路互补语料（wav 不入库，脚本可复现）：
+
+| 来源 | 内容 | 条数 | 脚本 |
+|---|---|---|---|
+| **真人** | PolyAI/minds14 zh-CN 电话录音 + 逐句转写 | 12 | `scripts/fetch-quality-corpus.mjs` |
+| **TTS** | macOS `say` 合成，覆盖日常口语/术语/数字/英文混说 | 20 + 5 数字 + 1 长句 | `scripts/gen-tts-corpus.sh` |
+| **噪声** | 上述部分样本混粉红噪声（≈10 dB） | 5 | 同上 |
+
+当前代码（zh + ITN，整段模式）的基线 CER：
+
+| 类别 | 条数 | CER |
+|---|---|---|
+| 真人（电话） | 12 | **5.85%** |
+| 真人 + 噪声 | 5 | 5.56% |
+| TTS（干净） | 20 | 26.47% |
+| 长句（~30 s） | 1 | 20.00% |
+
+**TTS 的 26% 不是模型差，是它暴露了一个真 bug**（见下）。TTS 语料只用于**相对对比**，绝对 CER 以真人两行为准。
+
+### 语料第一次运行就抓到一个真 bug：VAD 切掉字头
+
+对「音频开头就是语音、没有前导静音」的样本（TTS、剪辑过的文件），VAD 段起点落在 0.20–0.49 s，
+**把第一个字/词切掉**：
+
+| 样本 | no-VAD 识别 | 经 VAD 后 |
+|---|---|---|
+| tts-01 | 今天下午开一个产品评审会 | **天**下午开一个产品评审会 |
+| tts-05 | 登录页面的错误提示需要改一下 | **页面**的错误提示需要改一下 |
+| tts-09 | 我们先把接口文档更新一下 | **把**接口文档更新一下 |
+
+原因：sherpa 的 VAD 内部 padding 只有 ≈314 ms（`2×window + min_speech`），而 TTS 的起音较软，
+VAD 把它当静音，314 ms 追不回来。录音路径通常有前导静音（按下录音再说话）影响较小，
+**文件转写 / 紧贴开头的录音会中招**。
+
+两种修法的实测（同一语料）：
+
+| 修法 | real | noisy | tts | long | 问题 |
+|---|---|---|---|---|---|
+| 现状 | 5.85% | 5.56% | 26.47% | 20.00% | 切字头 |
+| 前补 0.5 s 静音 | 7.45% | 2.78% | **18.49%** | 15.83% | 改变了 VAD 状态，真人样本出现新的小错 |
+| 第一段起点回扩 0.4 s | 6.91% | 2.78% | **15.55%** | 15.00% | 真人 real-05 多出「你好」（把噪声当语音） |
+
+**结论：不能无脑回扩**。正确修法是「**带能量门控的 pre-roll**」：只当段前 0.4 s 内有语音级能量时才回扩，
+否则保持原样；验收标准 = tts 首字恢复且 real CER 不升。这正是语料存在的意义——它同时抓到了 bug 和
+「naive 修法会引入新错」。
+
+### 语料的局限（别过度解读）
+
+- minds14 只有「查账户余额」一个场景，**领域窄**；要判断通用转写质量，还得补 AISHELL-1 test / FLEURS-zh 子集。
+- TTS 是合成音，**不能代表真人**（26% vs 5.85% 就是证据），只做相对对比。
+- 噪声是人工混的，SNR 是近似值。
+
+## 0. 总览
+
+| 批次 | 项 | 预期收益 | 改动量 | 证据强度 | 验收方式 |
+|---|---|---|---|---|---|
+| **B1** | VAD v4 → v5 | 中文会议/噪声下切句更准（上游 ROC-AUC 0.83→0.94） | 3 个常量，0 行逻辑 | 📄 上游数据；本地无反证 | 下载后 sha 校验通过；`quality_probe` 切句与现状一致 |
+| **B1** | 文件转写路径 VAD 缓冲 32 s → 60 s | 消除 CircularBuffer 扩容（Overflow + 整段拷贝） | 1 行 | ✅ 代码不一致已核实 | `asr.rs` 两处一致；`decode_smoke` 通过 |
+| **B1** | 流式 `rule3` 20 → 60 | 消除连续说话每 20 s 被硬切 | 1 行 | ✅ 本机实测 20.368 s 处硬切 | `quality_probe` 24.5 s 连续语音不再触发 endpoint |
+| **B1.5** | **VAD pre-roll（能量门控）** | 救回被切掉的字头（TTS 语料 CER 26.47%→15.55%，且不伤真人） | 中：`OfflineSession`/`transcribe` 保留段前 0.4 s + 能量判断 | ✅ 语料实测（bug + 两种 naive 修法的代价） | tts 首字恢复；real CER 不升（≤5.85%） |
+| **B2** | 流式热词（术语表） | 专名/同音字纠正（本机实测「在」→「再」） | 后端 ~80 行 + 前端 ~60 行 + i18n | ✅ 机制本机实测；收益数字来自第三方基准 | 探针：同一音频 + 术语表，错字被纠正；无术语表时仍走 greedy |
+| **B3** | VAD `min_silence` 0.5→0.3、短句合并 | 治「切太碎 / 拖带静音」 | 中 | 📄 需要语料 | 同一语料 CER 与平均句长对比 |
+| **B3** | 离线同音词替换（`hr`） | 整段模式修专名 | 中，且**依赖 `replace.fst` 资源** | 📄 官方示例 | 探针：专名被替换；语义不变 |
+| **B4** | 标点换 int8 | 省 209 MiB 下载 | 小（代码）+ **托管未解决** | ⚠️ 复核收窄 | 体积/质量/速度三点已实测；先解决下载源 |
+| **B5** | 换模型（Qwen3-ASR / FireRed / X-ASR） | 不确定（中文互有胜负） | 大 | 📄 需本地 CER | 同一语料横向对比后再定 |
+
+**明确不做**：离线 SenseVoice + beam/热词（会 `_Exit(-1)` 杀进程）、LLM 后编辑、ROVER/二遍、FSMN-VAD、SenseVoice 粤语版、Whisper。
+
+## 1. B1：今天就能做完（常量级）
+
+### 1.1 Silero VAD v4 → v5
+
+- **改动**：`src-tauri/src/models.rs` 的 `VAD` 常量三处：
+  - `path` → `/csukuangfj/vad/resolve/fba88cd2e921609e7675c3aaf51e0b9b295da4bc/silero_vad_v5.onnx`
+  - `bytes` → `2_313_101`
+  - `sha256` → `6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396`
+  - 文件名仍叫 `silero_vad.onnx`（应用内路径不变）。
+- **老用户迁移**：`app_data_file_ok` 会比对 `VAD.bytes`，现有 v4 文件（1,807,522 B）大小不符 → 自动判定未就绪并重新下载。**无需写迁移代码**，但要在 PR 里说明「升级后会重下 2.3 MB」。
+- **验收**：
+  - 下载 → sha256 校验通过；
+  - `quality_probe` 的 VAD 组：切句段数/边界与 v4 一致（干净样本应无差异）；
+  - `asr_smoke` / `decode_smoke`（有模型时）通过。
+- **风险/回滚**：v5 在噪声上的收益我们**没有本地证据**，若语料上出现切句变差，改回三个常量即可。
+- **注意**：`models.rs` 的 sha 必须与下载文件一致，否则 `model_paths_in` 会判定未就绪（已踩过）。
+
+### 1.2 文件转写路径 VAD 缓冲 32 s → 60 s
+
+- **改动**：`src-tauri/src/asr.rs:114`，`VoiceActivityDetector::create(vad_config, MAX_SEGMENT_SECONDS + 2.0)` → `60.0`，与录音路径 `:485` 一致；顺手把 `MAX_SEGMENT_SECONDS + 2.0` 这个魔数删掉或提成常量。
+- **验收**：`decode_smoke` 全链路通过；长文件（>30 s）不出现 `Overflow` 日志。
+- **风险**：VAD 缓冲变大 = 单次最多保留 60 s 音频（60×16000×4 ≈ 3.8 MB），内存仍恒定。
+
+### 1.3 流式 `rule3` 20 → 60
+
+- **改动**：`src-tauri/src/asr.rs:381`，`config.rule3_min_utterance_length = 20.0` → `60.0`；在注释里写清「rule3 是硬切，VAD 门控才是真正的断句」。
+- **验收**：`quality_probe` 的端点用例：24.5 s 连续语音在 20 s 处不再触发 endpoint。
+- **风险**：连续说话时解码器状态更长（KV/encoder 状态增长），60 s 内可接受；超过 60 s 仍会被切，但 VAD 一般先切。
+- **不做**：`enable_endpoint=false`。实测已有 VAD 门控，但关掉 endpoint 会让「长句无静音」时完全没有提交点；保留 60 s 兜底更稳。
+
+## 2. B2：流式热词（本批唯一的功能项，也是收益最大的）
+
+### 2.1 为什么只能做流式
+
+SenseVoice（整段）没有 context graph，sherpa 的 `CreateStream(hotwords)` 在 SenseVoice 实现里落到基类默认实现 → `_Exit(-1)`。**本机已复现**。所以热词只加在 `StreamingEngine` 上；整段模式保持不动。
+
+### 2.2 后端改动（`settings.rs` / `lib.rs` / `asr.rs`）
+
+1. **设置项**：`Settings` 增加
+   ```rust
+   #[serde(default)]
+   pub hotwords: Vec<String>,
+   ```
+   `normalize()` 里清洗：`trim`、去空、去重、单条 ≤ 32 字、最多 100 条（防止误插与解码变慢）。
+2. **命令**：`set_hotwords(app, state, hotwords: Vec<String>)`，保存后**清空 `state.streaming_engine`**（和 `set_mode` 同样用 `spawn_blocking` 清理），下次录音按新词表重建。
+3. **引擎**：`StreamingEngine::new(paths, hotwords: &[String])`：
+   - `hotwords.is_empty()` → `decoding_method = "greedy_search"`（保持现状延迟）；
+   - 非空 → `decoding_method = "modified_beam_search"`，并把词表以 `\n` 连接存进 `StreamingEngine { hotwords: Option<String>, .. }`；
+   - `new_stream()`：`Some(words)` 走 `recognizer.create_stream_with_hotwords(&words)`，否则 `create_stream()`。
+   - **不要**设 `modeling_unit`：C API 默认 `cjkchar`（本机已验证），只有换 bpe 模型时才需要。
+4. **状态**：`status` 命令返回 `hotwords: Vec<String>`，前端用来回填设置页。
+
+### 2.3 前端改动（`src/index.html` / `status.js` / `tauri.js` / `i18n.js` / `locales/*.js`）
+
+- 设置页加一块「术语表」：多行 textarea（一行一个词/短语）+「保存」按钮 + 说明文案（「仅流式模式生效；产品名、人名、项目代号」）。
+- 保存：`split('\n')` → trim 去空 → `set_hotwords`；成功后轻提示，失败显示错误。
+- 文案全部走 i18n：`settings.hotwords` / `settings.hotwordsHint` / `settings.hotwordsPlaceholder` / `settings.hotwordsSave` / `toast.hotwordsSaved`；`check:i18n` 必须通过。
+- 不引入任何新依赖、不加打包步骤。
+
+### 2.4 验收标准
+
+| 项 | 方法 |
+|---|---|
+| 词表生效 | `quality_probe`（`VOICE_NOTES_HOTWORDS=$'再确认一下'`）：同一段 `zh-tail2.wav`，「我们**在**确认一」→「我们**再**确认一」 |
+| 无词表不退化 | 不设 `VOICE_NOTES_HOTWORDS` 时仍 greedy，3.5 s 音频 ≈ 122 ms（与现状一致） |
+| 有词表延迟 | beam 下 3.5 s 音频 ≈ 130 ms；**首字延迟**在 Windows/macOS 各测一次 |
+| 清洗逻辑 | 单元测试：空行/重复/超长/超过 100 条被裁掉；设置 round-trip |
+| 失败不崩 | 词表为空或模型缺失时，录音仍按 greedy 工作（不能因为热词配置把录音挡住） |
+| 误插 | 语料上人工看 20 句：热词是否被塞进没说的句子（预期 < 5%） |
+
+### 2.5 风险与缓解
+
+- **误插**（hallucination 式插入）：词表上限 100 条 + 单条 32 字；`hotwords_score` 先用默认 1.5，A/B 后再考虑 2.0。
+- **延迟**：只有配了词表才切 beam；没配词表零成本。
+- **引擎重建**：改词表后第一次录音会重新加载 161 MB（约 1–2 s），与切模式同量级，可接受。
+- **Windows**：热词的 CPU 表现未在本机验证，验收里单独列一条。
+
+## 3. B3：有了语料再做（先量后改）
+
+| 项 | 做法 | 验收 |
+|---|---|---|
+| `min_silence` 0.5→0.3 | 改 `Engine::new` / `StreamingEngine::new` 的 VAD 配置；**两处一起改**，否则两模式断句不一致 | 同一语料：句数、平均句长、CER 三项对比；变差就回 0.5 |
+| 短句合并（`merge_length_s=15`） | 在 `OfflineSession` 的 commit 前加一层缓冲：短于 N 秒的句子与下一句合并（N 用 3–5 s 起步） | 句数下降、单句 CER 不升；注意 `stream:segment` 粒度变化，前端不用改（只影响「每句一条」的节奏） |
+| 离线同音词替换（`hr`） | `Engine::new` 设 `config.hr = HomophoneReplacerConfig { lexicon, rule_fsts }`；**先做 spike**：确认能否拿到官方 `lexicon.txt` 与 `replace.fst`（后者需 pynini/Linux 生成，拿不到就只做「精确词表替换」的后处理版本） | 专名被纠正；普通句不被误改 |
+| 标点 int8 | **阻塞**：官方 HF 只有 fp32；可选 (a) 下载器支持 GitHub release 直链 + sha（国内可达性风险）(b) 固定第三方镜像 sha（供应链风险）(c) 维持 fp32 | 先解决托管再谈；质量已有实测（6/7 一致、1 句丢逗号） |
+
+## 4. B4/B5：先不排期
+
+- 标点 int8：等 B3 的托管结论。它不是「质量优化」，只是省下载。
+- 换模型：**需要同一份语料**跑出 SenseVoice vs Qwen3-ASR vs FireRed ASR2 的 CER 再决定；
+  唯一确定的价值是「Qwen3-ASR 解锁整段热词」，但整段热词也可以先用 B3 的同音词替换顶一阵。
+
+## 5. 度量规范（所有批次共用）
+
+1. **语料**：`src-tauri/tests/fixtures/<名字>.wav` + 同名 `.txt`（人工听写，逐字）。
+   建议 20 条：10 条安静近讲、5 条有键盘/风扇噪声、5 条多人/远场；每条 3–30 s。
+2. **跑法**：`cargo test --test quality_probe -- --nocapture --test-threads=1`，输出里带 `[CER x/y = z%]`。
+3. **对比表**：每项改动记录「CER / 句数 / 平均句长 / 首字延迟 / 端到端耗时」五个数，写进 PR 描述。
+4. **口径**：CER 用去标点、去空白的逐字编辑距离（探针里的 `norm()`），不要混用「字数正确率」。
+
+## 6. 顺序与工期
+
+| 顺序 | 内容 | 预估 | 前置 |
+|---|---|---|---|
+| 1 | B1 三项（VAD v5、32s→60s、rule3） | 0.5 天 | 无 |
+| 2 | B2 流式热词（后端 + 前端 + i18n + 测试） | 1.5–2 天 | 语料里挑一条含专名的样本做验收 |
+| 3 | 语料整理（你来提供） | — | 你 |
+| 4 | B3 前面三项（VAD 参数、短句合并、同音词 spike） | 2–3 天 | 语料 |
+| 5 | 标点 int8 / 换模型 | 视结论 | 语料 + 托管决策 |
+
+## 7. 回滚
+
+- 所有行为改动都通过常量或设置项开关：VAD 版本（常量）、`rule3`（常量）、热词（设置项，清空即回 greedy）。
+- 每批单独提交，出问题 revert 单个 commit 即可；不涉及模型格式迁移（VAD 只是换文件）。
+
+## 8. 需要你拍板的三件事
+
+1. **热词入口**：设置页一个多行文本框（最快）还是「录音时临时术语表 + 设置页长期表」两处？（建议先只做设置页）
+2. **B1 是否现在直接做**（VAD v5 会让老用户重下 2.3 MB；不重下就继续用 v4）。
+3. **语料**：能否提供 10–30 条 wav + 听写文本？没有它，B3/B4 都不该动，B2 的收益也只能用第三方数字背书。
