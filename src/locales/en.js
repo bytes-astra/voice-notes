@@ -30,9 +30,8 @@ window.I18N_LOCALES['en'] = {
 
   'setup.title': 'Download model',
   'setup.desc':
-    'SenseVoiceSmall INT8 is about 228 MB. Download it once and everything runs offline afterwards. It downloads from the hf-mirror mirror first and falls back to Hugging Face; you can also point it at a local model folder.',
+    'SenseVoiceSmall INT8 is about 228 MB. Download it once and everything runs offline afterwards. It downloads from the hf-mirror mirror first and falls back to Hugging Face.',
   'setup.download': 'Download model',
-  'setup.useExisting': 'Use an existing model folder',
   'setup.chooseDir': 'Choose a folder containing model.int8.onnx, tokens.txt and silero_vad.onnx',
   'setup.noModel':
     'No model.int8.onnx / tokens.txt / silero_vad.onnx found in that folder',

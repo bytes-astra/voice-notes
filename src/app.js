@@ -101,7 +101,6 @@ export function bindUI() {
       /* 忽略 */
     }
   })
-  els.pickModelBtn.addEventListener('click', () => void pickModelDir())
 
   for (const item of els.navItems) {
     item.addEventListener('click', () => switchView(item.dataset.view))

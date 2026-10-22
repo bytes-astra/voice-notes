@@ -252,7 +252,6 @@ export async function downloadModel() {
   if (state.downloading) return
   state.downloading = true
   els.downloadBtn.disabled = true
-  els.pickModelBtn.disabled = true
   els.cancelDownloadBtn.classList.remove('hidden')
   els.setupProgress.classList.remove('hidden')
   setProgress(0, state.status?.totalBytes || 0)
@@ -269,8 +268,7 @@ export async function downloadModel() {
   } finally {
     state.downloading = false
     els.downloadBtn.disabled = false
-    els.pickModelBtn.disabled = false
-    els.cancelDownloadBtn.classList.add('hidden')
+      els.cancelDownloadBtn.classList.add('hidden')
   }
 }
 

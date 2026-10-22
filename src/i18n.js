@@ -35,9 +35,8 @@
 
       'setup.title': '下载模型',
       'setup.desc':
-        'SenseVoiceSmall 约 228 MB，只需下载一次，之后完全离线运行。也可以直接指向一个已有的本地模型目录。',
+        'SenseVoiceSmall 约 228 MB，只需下载一次，之后完全离线运行。',
       'setup.download': '下载模型',
-      'setup.useExisting': '使用已有模型目录',
       'setup.chooseDir': '选择包含 model.int8.onnx、tokens.txt 和 silero_vad.onnx 的目录',
       'setup.noModel': '这个目录里没有找到 model.int8.onnx / tokens.txt / silero_vad.onnx',
       'setup.preparing': '准备中…',

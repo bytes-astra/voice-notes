@@ -65,7 +65,6 @@ export const els = {
   setupText: $('setup-progress-text'),
   setupPct: $('setup-progress-pct'),
   downloadBtn: $('download-btn'),
-  pickModelBtn: $('pick-model-btn'),
   cancelDownloadBtn: $('cancel-download-btn'),
   wave: $('wave'),
   mic: $('mic-btn'),
