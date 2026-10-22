@@ -42,11 +42,13 @@ pub const TOKENS: Asset = Asset {
     sha256: "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
 };
 
+// Silero VAD v5（2025-10）：与 v4 接口一致，sherpa 按张量签名自动识别。
+// 上游数据：中文会议 ROC-AUC 0.83→0.94，多域准确率 0.85→0.91，纯噪声误报 0.51→0.61。
 pub const VAD: Asset = Asset {
     name: VAD_FILE,
-    path: "/csukuangfj/vad/resolve/fba88cd2e921609e7675c3aaf51e0b9b295da4bc/silero_vad.onnx",
-    bytes: 1_807_522,
-    sha256: "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
+    path: "/csukuangfj/vad/resolve/fba88cd2e921609e7675c3aaf51e0b9b295da4bc/silero_vad_v5.onnx",
+    bytes: 2_313_101,
+    sha256: "6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396",
 };
 
 pub const ASSETS: [&Asset; 3] = [&MODEL, &TOKENS, &VAD];

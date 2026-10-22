@@ -5,3 +5,4 @@ src-tauri/gen/schemas/
 *.dmg
 dist/
 src-tauri/tests/fixtures/quality/
+.vn-models/
