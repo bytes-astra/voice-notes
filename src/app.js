@@ -23,10 +23,15 @@ import { renderThemeIcon, syncWindowBackground, toggleTheme } from './theme.js'
 let deviceSelect = null
 let localeSelect = null
 
-const VIEW_TITLES = { transcribe: t('view.transcribe'), history: t('view.history'), settings: t('view.settings') }
+// 视图标题存 key、文案在渲染时取：模块顶层就 t() 的话切语言后标题不会更新
+const VIEW_KEYS = { transcribe: 'view.transcribe', history: 'view.history', settings: 'view.settings' }
+
+function viewTitle(view) {
+  return t(VIEW_KEYS[view])
+}
 
 export function switchView(view) {
-  if (!VIEW_TITLES[view]) return
+  if (!VIEW_KEYS[view]) return
   if (state.phase === 'recording' && view !== 'transcribe') {
     toast(t('toast.recordingBusy'))
     return
@@ -39,7 +44,7 @@ export function switchView(view) {
   for (const item of els.navItems) {
     item.setAttribute('aria-current', item.dataset.view === view ? 'page' : 'false')
   }
-  els.viewTitle.textContent = VIEW_TITLES[view]
+  els.viewTitle.textContent = viewTitle(view)
 }
 
 /// 切换界面语言：存到 localStorage，然后重绘所有动态文案。
@@ -53,6 +58,7 @@ export function applyLocale(preference) {
   renderThemeIcon()
   renderMicLabel()
   refreshSelectItems(stored)
+  els.viewTitle.textContent = viewTitle(state.view)
   if (state.lastTranscript) showTranscript(state.lastTranscript)
 }
 

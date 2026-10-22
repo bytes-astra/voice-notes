@@ -22,6 +22,7 @@ const STREAM_CHUNK: usize = 3_200;
 const TAIL_SILENCE_SAMPLES: usize = 4_800;
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Segment {
     pub text: String,
     pub start: f32,
@@ -29,6 +30,9 @@ pub struct Segment {
 }
 
 #[derive(Clone, Debug, Serialize)]
+// 前端读的是 transcript.durationSeconds / elapsedMs：这里必须是 camelCase，
+// 否则时长和耗时会变成 undefined，结果区和历史记录里恒显示 0。
+#[serde(rename_all = "camelCase")]
 pub struct Transcript {
     pub text: String,
     pub segments: Vec<Segment>,
@@ -230,6 +234,29 @@ mod tests {
     fn strips_sensevoice_tags() {
         assert_eq!(clean("<|zh|><|NEUTRAL|><|Speech|>你好 世界"), "你好 世界");
         assert_eq!(clean("  <|en|>hello   there "), "hello there");
+    }
+
+    /// 前端读 transcript.durationSeconds / elapsedMs：序列化必须是 camelCase，
+    /// 否则结果区的时长/耗时/RTF 和历史记录里的时长全是 0。
+    #[test]
+    fn transcript_serializes_camel_case() {
+        let transcript = Transcript {
+            text: "你好".into(),
+            segments: vec![Segment {
+                text: "你好".into(),
+                start: 0.0,
+                end: 1.0,
+            }],
+            duration_seconds: 1.5,
+            elapsed_ms: 200,
+            language: "zh".into(),
+            corrected: false,
+        };
+        let value = serde_json::to_value(&transcript).unwrap();
+        assert_eq!(value["durationSeconds"], serde_json::json!(1.5));
+        assert_eq!(value["elapsedMs"], serde_json::json!(200));
+        assert!(value.get("duration_seconds").is_none());
+        assert!(value.get("elapsed_ms").is_none());
     }
 }
 
