@@ -62,7 +62,7 @@ window.I18N_LOCALES['en'] = {
 
   'mode.offline': 'One-shot',
   'mode.group': 'Transcription mode',
-  'mode.offlineDesc': 'Whole clip in one pass · punctuation',
+  'mode.offlineDesc': 'Sentence by sentence · many languages',
   'mode.streaming': 'Streaming',
   'mode.streamingDesc': 'Text as you speak · Chinese only',
   'mode.streamingDownload': 'Download streaming model',

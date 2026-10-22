@@ -67,7 +67,7 @@
 
       'mode.offline': '整段',
       'mode.group': '转写模式',
-      'mode.offlineDesc': '录完再转 · 带标点',
+      'mode.offlineDesc': '整句出字 · 多语言',
       'mode.streaming': '流式',
       'mode.streamingDesc': '实时出字 · 仅中文',
       'mode.streamingDownload': '下载流式模型',
