@@ -172,6 +172,74 @@ fn threads() -> i32 {
         .unwrap_or(2)
 }
 
+
+/// 超过这个长度的句子才改用重叠窗口（秒）。
+///
+/// 实测（65 秒 / 130 秒连续 TTS）：SenseVoice 直接吃 55 秒或 130 秒的音频，
+/// 准确率都是 98.6%，并没有因为超过官方说的 30 秒上限而变差 —— 官方那条
+/// 限制更像「建议」而不是硬上限。硬切反而会把边界上的词劈开。
+///
+/// 但输入越长，编码器的注意力越吃显存（帧数平方级），所以留一个上限：
+/// 超过 90 秒就切成 30 秒窗口 + 2 秒重叠，避免极端情况下把内存吃光。
+const MAX_SINGLE_SHOT_SECONDS: usize = 90;
+
+/// 超长句的窗口参数：30 秒窗口 + 2 秒重叠 + 28 秒步进。
+///
+/// 相邻窗口重叠 2 秒，这段音频被解两次，两边文本的公共部分就是重叠区，
+/// 合并时删掉即可（官方 long_audio_no_vad.py 的做法）。
+const WINDOW_SECONDS: usize = 30;
+const OVERLAP_SECONDS: usize = 2;
+/// 合并时至少要能对上这么多字才算真的重叠上（对不上就保留全部，宁可重复也别丢话）
+const MIN_OVERLAP_CHARS: usize = 4;
+/// 公共部分最多取多少字（官方 merge_transcripts 也是这个上限）
+const MAX_OVERLAP_CHARS: usize = 200;
+
+/// 标点：比较重叠部分时忽略（模型在窗口边界常会多吐一个句号）。
+fn is_merge_punct(c: char) -> bool {
+    c.is_ascii_punctuation()
+        || "\u{3002}\u{ff01}\u{ff1f}\u{3001}\u{ff1b}\u{ff1a}\u{ff08}\u{ff09}\u{300a}\u{300b}\u{2026}\u{2014}\u{201c}\u{201d}\u{2018}\u{2019},.!?;:()"
+            .contains(c)
+}
+
+/// 后一段开头应该从哪里切掉（返回**字节**下标，0 = 不切）。
+///
+/// 找前一段结尾和后一段开头的最长公共部分（比较时忽略标点），
+/// 返回后一段里重复部分的结束位置。
+fn overlap_cut(previous: &str, next: &str) -> usize {
+    let prev: Vec<char> = previous.chars().filter(|c| !is_merge_punct(*c)).collect();
+    // next 的非标点字符 + 它们在原始字符串里的字节位置
+    let mut next_chars: Vec<char> = Vec::new();
+    let mut next_bytes: Vec<usize> = Vec::new();
+    for (byte, c) in next.char_indices() {
+        if !is_merge_punct(c) {
+            next_chars.push(c);
+            next_bytes.push(byte);
+        }
+    }
+    let max = prev.len().min(next_chars.len()).min(MAX_OVERLAP_CHARS);
+    for n in (MIN_OVERLAP_CHARS..=max).rev() {
+        if prev[prev.len() - n..] == next_chars[..n] {
+            // 切到第 n 个非标点字符之后（原始字节位置）
+            return next_bytes.get(n).copied().unwrap_or(next.len());
+        }
+    }
+    0
+}
+
+/// 合并重叠窗口识别出来的文本：删掉相邻两段重复的部分。
+pub fn merge_transcripts(texts: &[String]) -> String {
+    let mut result = String::new();
+    for (index, text) in texts.iter().enumerate() {
+        if index == 0 {
+            result = text.clone();
+            continue;
+        }
+        let cut = overlap_cut(&result, text);
+        result.push_str(&text[cut..]);
+    }
+    result
+}
+
 fn decode(recognizer: &OfflineRecognizer, samples: &[f32]) -> String {
     let stream = recognizer.create_stream();
     stream.accept_waveform(SAMPLE_RATE, samples);
@@ -412,8 +480,11 @@ pub enum OfflineEvent {
 
 impl OfflineSession {
     pub fn new(engine: Arc<Engine>, vad: VadModelConfig) -> Self {
-        let detector = VoiceActivityDetector::create(&vad, MAX_SEGMENT_SECONDS + 2.0)
-            .expect("创建 VAD 失败");
+        // 缓冲给 60 秒：sherpa 的 max_speech_duration 不是硬切，而是把 VAD 参数
+        // 调严（min_silence 0.5→0.1s、threshold 0.5→0.9）逼它找静音。真的连续
+        // 说话时它找不到，句子可以长到 1 分钟以上 —— 缓冲不够就会触发扩容
+        // （sherpa 会打印 Overflow 警告）。
+        let detector = VoiceActivityDetector::create(&vad, 60.0).expect("创建 VAD 失败");
         Self {
             engine,
             detector,
@@ -459,7 +530,7 @@ impl OfflineSession {
             self.detector.pop();
 
             let started = Instant::now();
-            let text = self.engine.recognize(&samples);
+            let text = self.recognize_segment(&samples);
             self.elapsed_ms += started.elapsed().as_millis() as u64;
             if text.trim().is_empty() {
                 continue;
@@ -469,6 +540,30 @@ impl OfflineSession {
             events.push(OfflineEvent::Segment(segment.clone()));
             self.segments.push(segment);
         }
+    }
+
+    /// 识别一段切好的音频。
+    ///
+    /// 常规长度直接一次识别（实测最准）；超过 `MAX_SINGLE_SHOT_SECONDS`
+    /// 才改用重叠窗口，防止超长输入把模型显存吃光。
+    fn recognize_segment(&self, samples: &[f32]) -> String {
+        let single_limit = MAX_SINGLE_SHOT_SECONDS * SAMPLE_RATE as usize;
+        if samples.len() <= single_limit {
+            return self.engine.recognize(samples);
+        }
+        let window = WINDOW_SECONDS * SAMPLE_RATE as usize;
+        let step = window - OVERLAP_SECONDS * SAMPLE_RATE as usize;
+        let mut texts: Vec<String> = Vec::new();
+        let mut start = 0usize;
+        while start < samples.len() {
+            let end = (start + window).min(samples.len());
+            texts.push(self.engine.recognize(&samples[start..end]));
+            if end >= samples.len() {
+                break;
+            }
+            start += step;
+        }
+        merge_transcripts(&texts)
     }
 
     pub fn segments(&self) -> &[Segment] {
@@ -670,5 +765,112 @@ mod gap_tests {
         insert_gaps(&mut transcript, Vec::new());
         assert_eq!(transcript.text, "只有一句。");
         assert_eq!(transcript.segments.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn merges_overlapping_text() {
+        let texts = vec![
+            "今天下午三点我们开一个产品评审会讨论下个版本的排期和优先级主要是把核心流程的体验做顺再把一些边角".to_string(),
+            "版本的排期和优先级主要是把核心流程的体验做顺再把一些边角的功能砍掉这样团队能专注".to_string(),
+        ];
+        let merged = merge_transcripts(&texts);
+        println!("合并结果：{merged}");
+        assert!(merged.contains("一些边角的功能砍掉"), "边界处被劈开了: {merged}");
+        assert_eq!(merged.matches("边角").count(), 1, "边界处重复了: {merged}");
+    }
+
+    #[test]
+    fn keeps_text_when_no_overlap() {
+        let texts = vec!["第一句话。".to_string(), "完全不相干的内容。".to_string()];
+        let merged = merge_transcripts(&texts);
+        assert_eq!(merged, "第一句话。完全不相干的内容。");
+    }
+
+    #[test]
+    fn ignores_punctuation_when_comparing() {
+        // 前一段以句号结尾，后一段开头没有句号 —— 也要能对上
+        let texts = vec!["排期和优先级。".to_string(), "排期和优先级主要是".to_string()];
+        let merged = merge_transcripts(&texts);
+        assert_eq!(merged, "排期和优先级。主要是");
+    }
+
+    #[test]
+    fn short_common_part_is_not_merged() {
+        // 只对上 2 个字（不足 MIN_OVERLAP_CHARS），宁可保留重复也不删
+        let texts = vec!["好的".to_string(), "好的继续".to_string()];
+        let merged = merge_transcripts(&texts);
+        assert_eq!(merged, "好的好的继续");
+    }
+}
+
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    /// 超长句（> 90 秒）走重叠窗口 + 合并，边界不能重复也不能丢。
+    #[test]
+    fn long_segment_uses_overlapping_windows() {
+        let Some(dir) = std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(std::path::PathBuf::from) else {
+            eprintln!("跳过：未设置 VOICE_NOTES_MODEL_DIR");
+            return;
+        };
+        let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
+            .into_iter()
+            .find(|p| p.is_file());
+        let (Some(model), tokens) = (model, dir.join("tokens.txt")) else {
+            eprintln!("跳过：找不到 SenseVoice 模型");
+            return;
+        };
+        let mut cands = vec![dir.join("silero_vad.onnx")];
+        if let Some(parent) = dir.parent() {
+            cands.push(parent.join("silero_vad.onnx"));
+        }
+        let Some(vad_model) = cands.into_iter().find(|p| p.is_file()) else {
+            eprintln!("跳过：找不到 VAD 模型");
+            return;
+        };
+        let paths = crate::models::ModelPaths {
+            dir: dir.display().to_string(),
+            model: model.display().to_string(),
+            tokens: tokens.display().to_string(),
+            vad: Some(vad_model.display().to_string()),
+            source: "test".into(),
+        };
+        let engine = std::sync::Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
+        let vad = engine.vad_config().expect("VAD");
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/long_zh2.wav").expect("读取音频");
+        let audio = wave.samples().to_vec();
+        assert!(
+            audio.len() > MAX_SINGLE_SHOT_SECONDS * SAMPLE_RATE as usize,
+            "这个测试要一段超过 {MAX_SINGLE_SHOT_SECONDS} 秒的音频"
+        );
+
+        let session = OfflineSession::new(engine, vad);
+        let text = session.recognize_segment(&audio);
+        println!("超长句识别结果（{} 字）：{}", text.chars().count(), text);
+
+        // 原文是同一段话重复 6 遍：窗口边界不能重复，也不能丢内容
+        assert_eq!(
+            text.matches("边角").count(),
+            6,
+            "窗口边界重复了: {text}"
+        );
+        // 模型偶尔在句中多吐一个句号（「给到。最终方案」），所以按字数比
+        let norm = |s: &str| -> usize {
+            s.chars()
+                .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation() && !"，。！？、；：".contains(*c))
+                .count()
+        };
+        let expected = "今天下午三点我们开一个产品评审会讨论下个版本的排期和优先级主要是把核心流程的体验做顺再把一些边角的功能砍掉这样团队能专注在真正影响用户的事情上最后再对齐一下设计稿和接口文档下周一之前给到最终方案"
+            .repeat(6);
+        let ratio = norm(&text) as f32 / norm(&expected).max(1) as f32;
+        println!("字数比：{:.1}%", ratio * 100.0);
+        assert!(ratio > 0.95, "识别出的字数太少: {ratio:.3} {text}");
     }
 }

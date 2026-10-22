@@ -264,3 +264,102 @@ fn handles_fifteen_minute_recording() {
     assert!(max_pending <= limit, "未消费缓冲涨到了 {max_pending}（上限 {limit}）");
     assert!(text.chars().count() > 1000, "识别出的字数太少");
 }
+
+/// 长句（65 秒无停顿）：30 秒硬切会把边界上的词劈开，
+/// 重叠窗口 + 文本合并要能还原成完整句子。
+///
+///   VOICE_NOTES_MODEL_DIR=/path/to/models cargo test --test asr_smoke -- --nocapture
+#[test]
+fn long_sentence_survives_the_30s_limit() {
+    let Some(dir) = std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(std::path::PathBuf::from) else {
+        eprintln!("跳过：未设置 VOICE_NOTES_MODEL_DIR");
+        return;
+    };
+    let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
+        .into_iter()
+        .find(|p| p.is_file());
+    let (Some(model), tokens) = (model, dir.join("tokens.txt")) else {
+        eprintln!("跳过：找不到 SenseVoice 模型");
+        return;
+    };
+    if !tokens.is_file() {
+        eprintln!("跳过：找不到 tokens.txt");
+        return;
+    }
+    let mut cands = vec![dir.join("silero_vad.onnx")];
+    if let Some(parent) = dir.parent() {
+        cands.push(parent.join("silero_vad.onnx"));
+    }
+    let Some(vad_model) = cands.into_iter().find(|p| p.is_file()) else {
+        eprintln!("跳过：找不到 VAD 模型");
+        return;
+    };
+    let paths = voice_notes_lib::models::ModelPaths {
+        dir: dir.display().to_string(),
+        model: model.display().to_string(),
+        tokens: tokens.display().to_string(),
+        vad: Some(vad_model.display().to_string()),
+        source: "test".into(),
+    };
+    let engine = std::sync::Arc::new(
+        voice_notes_lib::asr::Engine::new(&paths, "zh", true).expect("加载模型"),
+    );
+    let vad = engine.vad_config().expect("VAD 配置");
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/long_zh.wav").expect("读取长句音频");
+    let audio = wave.samples();
+
+    let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad);
+    let mut segments = Vec::new();
+    for piece in audio.chunks(3200) {
+        for event in session.push(piece) {
+            let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event;
+            segments.push(segment);
+        }
+    }
+    for event in session.finish() {
+        let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event;
+        segments.push(segment);
+    }
+    for s in &segments {
+        println!(
+            "段 {:6.2}s~{:6.2}s（{:5.2}s）: {}",
+            s.start,
+            s.end,
+            s.end - s.start,
+            s.text
+        );
+    }
+    let text = voice_notes_lib::asr::join_segments(segments.iter().map(|s| s.text.as_str()));
+    println!("\n整段结果：{text}");
+
+    // 边界上的词不能被劈开：「一些边角」必须完整
+    assert!(
+        text.contains("一些边角") || text.contains("边角的"),
+        "边界上的词被劈开了: {text}"
+    );
+    // 也不能重复
+    assert_eq!(
+        text.matches("边角").count(),
+        3,
+        "边界处重复了: {text}"
+    );
+    // 结尾也要在（说明最后一段没被吃掉）
+    assert!(text.contains("给到最终方案"), "结尾丢了: {text}");
+    // 原文是同一段话重复 3 遍，三遍都得在
+    assert_eq!(
+        text.matches("给到最终方案").count(),
+        3,
+        "三遍里少了内容: {text}"
+    );
+    // 字数不能少太多（没有整段被吞掉）
+    let norm = |s: &str| -> usize {
+        s.chars()
+            .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation() && !"，。！？、；：".contains(*c))
+            .count()
+    };
+    let expected = "今天下午三点我们开一个产品评审会讨论下个版本的排期和优先级主要是把核心流程的体验做顺再把一些边角的功能砍掉这样团队能专注在真正影响用户的事情上最后再对齐一下设计稿和接口文档下周一之前给到最终方案"
+        .repeat(3);
+    let ratio = norm(&text) as f32 / norm(&expected).max(1) as f32;
+    println!("字数比：{:.1}%（{} / {}）", ratio * 100.0, norm(&text), norm(&expected));
+    assert!(ratio > 0.9, "识别出的字数太少: {ratio:.3} {text}");
+}

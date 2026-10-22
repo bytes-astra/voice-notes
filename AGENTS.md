@@ -43,6 +43,8 @@ settings.rs  设置 JSON 持久化
 - **采集缓冲是消费式的**：`audio::SampleQueue` 的 `take_new()` 取走即释放，内存恒定（录音 1 小时和 1 分钟占一样多）。**电平表走独立的 `LevelRing`**（2048 样本）——采集缓冲没有历史了，音量表去读它会恒读 0。
 - **安全阀**：未消费采样超过 `MAX_PENDING_SECONDS × 设备实际采样率`（60 秒，采样率不能写死 48k）时丢最旧的，并用 `audio::gap_marker()` 在结果里留下可见的缺口，不能静默丢。
 - **两种模式都是边录边出字**：整段用 `OfflineSession`（VAD 切句 + `Engine::recognize()`），流式用 `StreamingSession`（200ms 分片喂 Zipformer）。整段模式**不再需要把整条录音留在内存里**。
+- **sherpa 的 `max_speech_duration` 不是硬切，是「把 VAD 参数调严」**：`buffer_.Size() > max_utterance_length_` 之后把 min_silence 0.5→0.1s、threshold 0.5→0.9，逼 VAD 找静音。真的连续说话时它找不到，句子可以长到 1 分钟以上。所以**整段模式的 VAD 缓冲给 60 秒**（`VoiceActivityDetector::create(&vad, 60.0)`）—— 给 32 秒会触发 sherpa 的 CircularBuffer 扩容（打 Overflow 警告 + 整段数据拷贝）。
+- **SenseVoice 的「30 秒上限」实测不是硬约束**：直接喂 55 秒 / 130 秒连续语音，准确率都是 98.6%（和短句一样）。官方那条限制更像建议。所以整段模式**默认整句一次识别**（最准）；只有超过 `MAX_SINGLE_SHOT_SECONDS`（90 秒）才切 30 秒窗口 + 2 秒重叠（`merge_transcripts` 合并），防的是编码器注意力平方级吃显存。**别为了「符合官方限制」就切**——切了反而更差（97.9%），而且硬切会把边界上的词劈开。
 - **事件载荷是增量的**：`stream:segment` 只带新句子（`segment`/`start`/`end`），`stream:partial` 只带中间结果。不要改回累计全文 —— 长时间会话下那是 O(n²) 的传输与重绘。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）。
 - **文件解码在后端**：`decode::decode_to_16k()` 用 symphonia 逐块解码，内存恒定。symphonia 锁 **0.5**（0.6 要求 Rust 1.85，会破本项目声明的 1.78）。
 - **拖拽用 Tauri 的 `onDragDropEvent`**：Tauri v2 默认拦截系统拖放（`dragDropEnabled`），HTML5 的 `drop` 事件在真实应用里不会触发。
