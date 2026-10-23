@@ -27,6 +27,9 @@ use engine::{
     status_of, AppState, Status,
 };
 use log::on_off;
+// install_menu 只在 macOS 存在（menu.rs 里是 cfg 掉的），import 也要跟着 cfg，
+// 否则 Windows 上会报 unresolved import。
+#[cfg(target_os = "macos")]
 use menu::install_menu;
 use output::{sanitize_name, write_text_file, Saved};
 use settings::Settings;
