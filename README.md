@@ -1,10 +1,8 @@
 # VoiceNotes · 本地语音转文字
 
-用 **SenseVoiceSmall (INT8)** 在本机把语音转成文字，另有**流式模式**（中文 Zipformer，边说边出）。Tauri 2 桌面应用，macOS / Windows / Linux 通用，默认不联网（只有首次下载模型时需要网络）。
+在 Mac / Windows 上把语音转成文字，**音频不出本机**。默认用 **SenseVoiceSmall INT8**（约 228 MB）离线识别，另有**流式模式**（Zipformer，边说边出字）。
 
-参考了 DSH 的语音输入实现（`client-ui-voice-input` + `speech-to-text-sensevoice`）：同样用 Silero VAD 切句 + sherpa-onnx 跑 SenseVoice，同样在前端重采样成 16 kHz 单声道 PCM16。
-
-界面是「左侧导航 + 右侧主区」，转写 / 历史 / 设置各一页；界面语言可切中文或英文。
+Tauri 2 桌面应用，CPU 本地推理，不需要独立显卡；除了下载模型那一次，全程不联网。
 
 ![主界面](docs/screenshots/ready.png)
 
@@ -12,11 +10,11 @@
 | --- | --- | --- |
 | ![录音](docs/screenshots/recording.png) | ![历史](docs/screenshots/history.png) | ![设置](docs/screenshots/settings.png) |
 
-流式模式（边说边出，中间结果单独一行显示）与切换到流式时的下载提示：
+流式模式与模型下载提示：
 
-| 流式 | 流式模型未下载 | 首次运行 |
+| 流式 | 流式模型未下载 | 模型未下载 |
 | --- | --- | --- |
-| ![流式](docs/screenshots/streaming.png) | ![流式下载](docs/screenshots/stream-setup.png) | ![首次运行](docs/screenshots/first-run.png) |
+| ![流式](docs/screenshots/streaming.png) | ![流式下载](docs/screenshots/stream-setup.png) | ![下载模型](docs/screenshots/first-run.png) |
 
 深色主题与英文界面：
 
@@ -26,28 +24,58 @@
 
 ## 功能
 
-- **点一下开始、再点一下结束**，Esc 取消，空格键快捷开关；录音时有实时电平波形与计时。
-- **两种识别方式**：**整段**（SenseVoice，支持 6 种语言）和**流式**（Zipformer，仅中文）。**两种都是边录边出字**：整段模式用 VAD 按语音段切开、逐句送模型，流式用 transducer 逐帧解码。
-- **录音时长不限**：采集缓冲是消费式的（识别完就释放），内存恒定 —— 录 1 小时和录 1 分钟占的内存一样。
-- **VAD 自动分句**：长录音按语音段切开逐段识别，静音段被跳过，结果按中英文习惯拼接。
-- **中 / 英 / 粤 / 日 / 韩 / 自动检测** 语言选择，ITN（数字、标点）可开关。
-- **可选输入设备**：多麦、外接声卡、回环设备都能选，不会再录到「不是你想录的那个声音」。
-- **标点可选**：装上标点模型（CT-Transformer）后，流式结果按句自动补标点；不装也能用。
-- **流式术语表（热词）**：设置里一行一句填常用说法、人名、地名（最多 100 条），流式解码时按热词加权，专有名词不容易再听错；只对流式模式生效。
-- **文件转写**：把音频/视频拖进窗口，或按 `⌘O` / `Ctrl+O` 选文件；**在后端解码**（symphonia，纯 Rust，不需要 ffmpeg），支持 mp3 / wav / flac / ogg / m4a / mp4 / mov（视频轨忽略），长文件也是边解边转，内存恒定。
-- **界面语言**：中文 / English，设置里可切；文案集中在字典文件里。
-- **历史记录**（本地 localStorage，最多 100 条），一键复制、保存。
-- **保存目录可指定**，默认 `文档/语音转文字/`，文件为 UTF-8 的 `.txt`。
-- 完全离线：模型在本机运行，音频不出机器。
+- **点麦克风开始、再点一次结束**；空格键快捷开关，Esc 取消；录音时有实时电平波形和计时。
+- **两种识别方式，都是边录边出字**：
+  - **整段**：SenseVoiceSmall，支持中 / 英 / 粤 / 日 / 韩 / 自动检测；按 VAD 切句后逐句识别。
+  - **流式**：Zipformer transducer，仅中文；实时出字，中间结果单独一行。
+- **流式术语表（热词）**：一行一句填常用说法、人名、地名（最多 100 条），解码时按热词加权，专有名词不容易再听错。
+- **标点可选**：流式结果按句自动补标点（CT-Transformer，随流式模型一起下载）。
+- **录音时长不限**：采集缓冲是消费式的，识别完就释放，录 1 小时和录 1 分钟占的内存一样。
+- **可选输入设备**：多麦、外接声卡、回环设备都能选。
+- **文件转写**：把音频 / 视频拖进窗口，或按 `⌘O` / `Ctrl+O` 选文件；后端解码（symphonia，纯 Rust，不需要 ffmpeg），支持 mp3 / wav / flac / ogg / m4a / mp4 / mov（视频轨忽略），长文件边解边转。
+- **界面语言**：中文 / English，设置里可切。
+- **历史记录**：只存本地（最多 100 条），一键复制、保存。
+- **保存目录可指定**，默认 `文档/语音转文字/`，文件是 UTF-8 的 `.txt`。
+
+## 安装
+
+### macOS
+
+CI 产物（tag `v0.2.0` 对应的 Actions Artifacts）里是 `dmg`，装完把应用拖进「应用程序」即可。
+
+包是 **ad-hoc 签名、未公证**：首次打开会提示「无法验证开发者」，选「仍要打开」或右键 → 打开，或者：
+
+```bash
+sudo xattr -dr com.apple.quarantine /Applications/VoiceNotes.app
+```
+
+自己构建的 `dist/VoiceNotes.app` 同理。
+
+### Windows
+
+CI 产物是 `msi` 和 `exe`（NSIS），安装时按提示装 WebView2。模型落在 `%APPDATA%\com.hugh.voicenotes\models`。
+
+Tauri 不能在 macOS 上交叉打 Windows 包，要自己出包得在 Windows 机器上装 Rust、Node 18+ 和 Visual Studio Build Tools（C++ 工作负载），然后 `npm run build`；也可以推 tag 让 CI 出。
+
+### Linux
+
+Tauri 本身支持，但 CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2gtk-4.1-dev` 等，`cpal` 走 ALSA）。
 
 ## 首次运行：下载模型
 
-SenseVoiceSmall INT8 约 **228 MB**，不会打进安装包：
+模型不打进安装包，第一次运行要下载：
 
-1. 启动后顶部会出现「下载模型」卡片（模型缺失时都会出现，不只是首次）。
-2. 点 **下载模型**：**优先走 `hf-mirror.com` 镜像**（国内直连 Hugging Face 经常连不上），镜像失败自动回退官方源；支持断点续传（`.part`），下载完做 SHA-256 校验。
-3. **流式模型**单独下载（约 161 MB，仅在切到「流式」模式时需要）：点模式切换里的「流式」，按提示下载；**标点模型（约 281 MB）会一起下载**，下完自动开启，给流式结果按句补标点。流式模型只覆盖中文，选粤语/日语/韩语会自动切回整段模式。
-4. 已经有本地模型：**设置 → 模型目录 → 选择目录…**，指向一个包含下面文件的目录（随时可以点「使用应用内模型」切回来）：
+| 模型 | 大小 | 什么时候需要 |
+| --- | --- | --- |
+| SenseVoiceSmall INT8 | 约 228 MB | 必装，整段模式用 |
+| Silero VAD | 约 2.3 MB | 随上面一起 |
+| Zipformer 流式模型 | 约 161 MB | 想用流式模式时 |
+| CT-Transformer 标点模型 | 约 281 MB | 随流式模型一起下载 |
+
+1. 启动后顶部出现「下载模型」卡片（模型缺失时都会出现，不只是首次）。
+2. 点「下载模型」：**优先走 `hf-mirror.com` 镜像**（国内直连 Hugging Face 经常连不上），镜像失败自动回退官方源；支持断点续传（`.part`），下完做 SHA-256 校验。
+3. 想用流式：点模式切换里的「流式」，按提示下载流式 + 标点模型（共约 440 MB）。流式只覆盖中文，选粤语 / 日语 / 韩语会自动切回整段。
+4. 已经有本地模型：**设置 → 模型目录 → 选择目录…**，指向一个包含下面文件的目录（随时点「使用应用内模型」切回来）：
 
 ```
 model.int8.onnx   # 或 model.onnx
@@ -55,63 +83,65 @@ tokens.txt
 silero_vad.onnx   # 必需：没有 VAD 就无法分句，这个目录会被判为「未就绪」
 ```
 
-5. 术语表在 **设置 → 术语表** 里填（一行一句常用说法、人名、地名），只对流式模式生效。
+5. 术语表在 **设置 → 术语表** 里填（一行一句），只对流式模式生效。
 
-模型来源（固定 commit）：[sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17) · [silero_vad](https://huggingface.co/csukuangfj/vad)。
+模型版本是固定的（HF commit + sha256 校验），不会自动更新 —— 换模型需要换应用版本。
 
-## 已经打好的包
+来源：[sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17) · [silero_vad](https://huggingface.co/csukuangfj/vad) · [streaming-zipformer-zh-int8-2025-06-30](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30)
 
-`dist/VoiceNotes.app` 是 macOS (arm64) 的 ad-hoc 签名构建（`bundle.macOS.signingIdentity = "-"`，带 hardened runtime；不设时 Tauri 不会 codesign，其他 Mac 会报「已损坏」）。未公证：首次打开会提示「无法验证开发者」，右键 → 打开，或执行 `xattr -dr com.apple.quarantine /Applications/VoiceNotes.app`。模型不入包，首次运行按上面的流程下载。
+## 两种模式怎么选
+
+| 模式 | 模型 | 语言 | 特点 |
+| --- | --- | --- | --- |
+| 整段 | SenseVoiceSmall INT8 | 中 / 英 / 粤 / 日 / 韩 / 自动 | 按句识别，长句更准；分句处会有停顿延迟 |
+| 流式 | Zipformer transducer | 仅中文 | 逐字出字，首字约 1 个分片（200 ms）；支持术语表 |
+
+实测（`src-tauri/tests/quality_probe.rs` 探针，40 条真人中文电话录音 + TTS / 数字 / 长句 / 噪声变体，语料只在本机）：
+
+- 整段模式字符错误率：**真人 11.41%**，加噪变体 **1.39%**，长句 15.00%；
+- 流式在 5 条中文样本上是 99%，而且出字更快。
+
+三个容易踩的坑，代码里都处理了：
+
+- **流式收尾要补 300 ms 静音**：解码器需要尾部上下文才会吐出最后一个字，不补就丢句尾（「产品评审会」→「产品评审」）。
+- **SenseVoice 开 ITN 时自己就带标点**：标点模型只补没有标点的句子，两者叠加会变成「。。」。
+- **VAD 会切掉开头第一个字**（音频开头直接是语音时）：整段模式做了带门控的 0.4 秒回扩补回来。
 
 ## 开发
 
-需要 Rust 1.78+、Node 18+，macOS 需要 Xcode Command Line Tools。
+需要 Rust 1.78+、Node 18+；macOS 还要 Xcode Command Line Tools。
 
 ```bash
 npm install          # 只装 @tauri-apps/cli
 npm run dev          # 开发模式
 npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
-npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML/JS 引用的 key 是否存在（CI 也会跑）
+npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML/JS 引用的 key 是否存在
 ```
 
 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 下载对应平台的**预编译静态库**（onnxruntime 等），之后走缓存。
 
-## 准确率取舍
+前端是原生 JS + ES Modules，没有打包器、没有框架、不要为 UI 引入构建步骤；界面文案统一放在 `src/i18n.js` 的字典里，改完跑一次 `npm run check:i18n`。
 
-两种模式各管一段，别混着比：
+## 质量探针与语料
 
-| 模式 | 模型 | 语言 | 实测（字符错误率 CER） |
-| --- | --- | --- | --- |
-| 整段 | SenseVoiceSmall INT8 | 中 / 英 / 粤 / 日 / 韩 / 自动 | 40 条真人中文电话录音 **11.41%**（zh + ITN）；加噪变体 **1.39%** |
-| 流式 | Zipformer transducer | 仅中文 | 同样 5 条样本上 **99%**，而且边说边出字，首字约 1 个分片 |
+改模型、调参数、加热词之前，先用探针做前后对比，别凭感觉：
 
-数据来自 `src-tauri/tests/quality_probe.rs`（只打印不断言的对比探针）：语料是 40 条真人中文电话录音 + 20 条 TTS + 数字句 + 长句 + 噪声变体，wav 只在本机，不入库；**TTS 的绝对 CER 不代表真实质量**，只用来做参数改动前后的相对对比。
+```bash
+cd src-tauri
+VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
+  cargo test --test quality_probe -- --nocapture --test-threads=1
+```
 
-三个容易踩的坑，代码里都处理了：
+探针只打印不断言，会把 ITN 开关、语言指定方式、流式 greedy/beam/热词、VAD 模型与静音阈值、端点硬切行为在同一段音频上的实际表现打出来。
 
-- **流式收尾要补 300ms 静音**，解码器需要尾部上下文才会吐出最后一个字，不补就会丢句尾（“产品评审会”→“产品评审”）。
-- **SenseVoice 开 ITN 时自己就带标点**，标点模型只补**没有标点**的句子，两者叠加会变成「。。」。
-- **VAD 会切掉开头第一个字**（音频开头直接是语音时），整段模式做了带门控的 0.4 秒回扩补回。
+语料（wav 只在本机，不入库）：
 
-## Windows 打包
+```bash
+node scripts/fetch-quality-corpus.mjs 12   # 真人中文电话录音 + 转写（minds14）
+bash scripts/gen-tts-corpus.sh             # TTS / 数字 / 长句 / 噪声变体
+```
 
-Tauri **不能在 macOS 上交叉打 Windows 安装包**（需要 Windows 的 MSVC 工具链、NSIS/WiX 和 WebView2）。两条可行路径：
-
-1. **Windows 机器**：装 Rust、Node 18+、Visual Studio Build Tools（C++ 工作负载），然后
-   ```bash
-   npm install
-   npm run build
-   ```
-   产物在 `src-tauri/target/release/bundle/msi/*.msi` 与 `nsis/*.exe`。
-2. **GitHub Actions**：仓库已带 `.github/workflows/build.yml`，推送 tag（`v*`）或在 Actions 里手动运行，会同时产出 macOS（dmg）和 Windows（msi/exe），在 Artifacts 里下载。
-
-Windows 包使用 `downloadBootstrapper` 安装 WebView2；应用内下载的模型与 macOS 一致，落在 `%APPDATA%\com.hugh.voicenotes\models`。
-
-### 平台说明
-
-- **macOS**：麦克风权限写在 `src-tauri/Info.plist`（`NSMicrophoneUsageDescription`），**点麦克风时**系统会弹授权框；未签名的本地构建在「系统设置 → 隐私与安全性 → 麦克风」里需要手动勾选。
-- **Windows**：使用 WebView2（安装包会引导下载）；`cpal` 走 WASAPI，无需额外权限。
-- **Linux**：需要 `libasound2-dev`、`libwebkit2gtk-4.1-dev` 等 Tauri 依赖（`cpal` 走 ALSA）。
+调研过程与优化方案在 `docs/research/`，先看 `2026-10-23-asr-quality-roadmap.md`。
 
 ## 结构
 
@@ -136,51 +166,41 @@ src/                     前端（原生 JS，无构建）
 src-tauri/
   src/lib.rs             Tauri 命令、状态、保存
   src/asr.rs             SenseVoice 推理 + Silero VAD 分句 + 整段/流式会话
-  src/decode.rs          symphonia 后端解码（mp3/wav/flac/ogg/m4a/mp4/mov）
   src/audio.rs           cpal 采集、设备选择、电平、重采样
-  src/models.rs          模型定位/下载/校验
+  src/decode.rs          symphonia 后端解码（mp3/wav/flac/ogg/m4a/mp4/mov）
+  src/models.rs          模型定位 / 下载 / 校验
   src/settings.rs        设置持久化
-  assets/hotwords.txt    流式术语表种子（95 条）
+  assets/hotwords.txt    流式术语表种子
   tests/quality_probe.rs 转写质量对比探针（只打印不断言）
-scripts/make-icon.py           生成图标源图
-scripts/fetch-quality-corpus.mjs  拉真人中文语料（minds14）
-scripts/gen-tts-corpus.sh        生成 TTS / 数字 / 长句 / 噪声语料
-docs/research/           转写质量调研与优化方案（2026-10-23）
+scripts/                 图标生成、语料拉取与生成
+docs/research/           转写质量调研与优化方案
 ```
 
 ## 测试
 
 ```bash
 cd src-tauri
-cargo test --lib                  # 逻辑、WAV 解析、设备选择、重采样
-cargo test --test asr_smoke       # 真模型转写 tests/fixtures/zh.wav（缺模型自动跳过）
-cargo test --test streaming_smoke # 流式识别、句尾冲刷、设备挑选
-cargo test --test quality_probe -- --nocapture --test-threads=1  # 质量对比探针（不打断言）
-
-# 需要真实网络的用例（默认跳过）
-VOICE_NOTES_DOWNLOAD_TEST=1 cargo test --lib downloads_vad -- --nocapture
-VOICE_NOTES_RECORD_TEST=1 cargo test --lib records_microphone -- --nocapture
+cargo test --lib                  # 逻辑、设置清洗、设备选择、重采样
+cargo test --test asr_smoke       # 真模型转写（缺模型自动跳过）
+cargo test --test streaming_smoke # 流式识别、句尾冲刷
+cargo test --test decode_smoke    # 后端解码 + 文件全链路转写
 ```
 
-`asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR`，`streaming_smoke` 需要 `VOICE_NOTES_STREAMING_MODEL_DIR`（流式四个文件：`encoder.int8.onnx`/`decoder.int8.onnx`/`joiner.int8.onnx`/`tokens.txt`），未设置时自动跳过。
+`asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR`（整段模型目录），`streaming_smoke` 需要 `VOICE_NOTES_STREAMING_MODEL_DIR`（流式四个文件：`encoder.int8.onnx` / `decoder.onnx` / `joiner.int8.onnx` / `tokens.txt`），未设置就跳过。要跑真实网络的用例，得显式加 `VOICE_NOTES_DOWNLOAD_TEST=1` 或 `VOICE_NOTES_RECORD_TEST=1`。
 
-语料（只在本机，wav 不入库）：
-
-```bash
-node scripts/fetch-quality-corpus.mjs 12   # 真人中文电话录音 + 转写
-bash scripts/gen-tts-corpus.sh             # TTS / 数字 / 长句 / 噪声变体
-```
-
-实测（Apple Silicon）：5.6 秒中文音频转写耗时约 200 ms，实时率约 0.04×。
+实测（Apple Silicon）：5.6 秒中文音频转写约 200 ms，实时率约 0.04×。
 
 ## 已知限制
 
-- 整段模式按 VAD 断句后逐句送模型；**单句默认整句一次识别**，超过 90 秒才切成 30 秒窗口 + 2 秒重叠合并（防极端长输入把内存吃光）。连续说话时要等停顿才出这一句。
-- 整段模式每句独立识别，**跨句上下文不保留**（SenseVoice 是无状态模型）；流式模式有上下文，但只支持中文。
-- 流式的标点是可选模型（见上），只加在定稿句上，实时中间结果不带标点；整段模式用 SenseVoice 自带的 ITN 标点。
-- 拖拽文件依赖 Tauri 的拖放事件（`onDragDropEvent`）：Tauri v2 默认拦截系统拖放，HTML5 的 `drop` 事件不会触发。
-- 首次转写需要把 239 MB 模型读进内存，约 1–2 秒；之后常驻复用。
-- **流式术语表只对流式模式生效**：SenseVoice 上加热词或 beam search 会直接把识别进程打挂（`_Exit(-1)`），所以整段模式没有这个开关；术语表改动会清空流式引擎，下次录音重新加载（161 MB）。
-- **语言选择只是提示，不是过滤器**：选中「中文」后模型仍可能输出中英混说里的英文词；选错语言反而更差（中文音频选 English 会明显退化）。
-- 说话人分离、时间戳导出未做。
-- 打包 `.dmg` 需要能调用 `hdiutil`；在受限沙箱里 `npm run build` 可能只产出 `.app`（`--bundles app` 可跳过 dmg）。
+- 流式模型只支持中文；粤语 / 日语 / 韩语请用整段模式。
+- **术语表只对流式生效**：SenseVoice 上加 beam search 或热词会让识别进程直接崩掉，所以整段模式没有这个开关；改术语表会清空流式引擎，下次录音重新加载 161 MB。
+- **语言选择只是提示，不是过滤器**：选中「中文」后，中英混说里的英文词仍会保留；选错语言反而更差。
+- 整段模式每句独立识别，**跨句上下文不保留**（SenseVoice 是无状态模型）。
+- 整段模式连续说话时要等停顿才出这一句；单句默认整句一次识别，超过 90 秒才切成 30 秒窗口加 2 秒重叠合并。
+- 说话人分离、时间戳导出没做。
+- 打包 `.dmg` 需要能调用 `hdiutil`；受限沙箱里可能只产出 `.app`（`--bundles app` 可跳过 dmg）。
+
+## 隐私
+
+- 音频只在本机处理，不上传；只有下载模型那一次需要联网。
+- 历史记录只存在本地，不做任何同步。
