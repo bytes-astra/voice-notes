@@ -152,6 +152,15 @@ PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-browsers node /tmp/vn-ui/shots.mjs     # 重出
 ## 打包与发布
 
 - **macOS 必须 ad-hoc 签名**：`tauri.conf.json` 的 `bundle.macOS.signingIdentity` 必须是 `"-"`。不设时 Tauri 不做 codesign，链接器留下的是 `linker-signed`（`Sealed Resources=none`、Info.plist 未绑定），`codesign --verify` 失败；别的 Mac 从 dmg 装完 Gatekeeper 报「已损坏」（不是「未验证开发者」）。签名后仍提示「无法验证开发者」，可右键打开或 `xattr -dr com.apple.quarantine`；要免提示只能 Developer ID + 公证。
+- **打包版必须带麦克风 entitlement**：`src-tauri/Entitlements.plist` 里的 `com.apple.security.device.audio-input`，通过 `bundle.macOS.entitlements` 挂上。Tauri 打包签名带 hardened runtime（`codesign -dv` 打出 `flags=0x10002(adhoc,runtime)`），**缺这条 entitlement 时 tccd 根本不弹授权框**，直接打 `Policy disallows prompt … access to kTCCServiceMicrophone denied`，录音拿到的是精确零流；系统设置里手动开开关、`tccutil reset Microphone` 都救不回来。
+  - 表现和下面那条「ad-hoc 丢权限」一模一样（能开始录、没字、提示 `record.empty`），但原因不同 —— **先看系统日志再动手**：`log show --last 5m --predicate 'subsystem == "com.apple.TCC"' | grep -i voicenotes | grep -i microphone`；看到 `entitlement … is missing` 就是这个（补 entitlement 重新打包），看到 `AUTHREQ_PROMPTING` + `authValue=2` 才是真授权成功。
+  - dev 模式的 `target/debug/voice-notes` 是 linker-signed（无 runtime 标志），不需要这条 entitlement —— 所以「开发时好好的、打包就没声」基本就是它，别去怀疑录音代码。
+- **ad-hoc 签名 = 每次重新打包都会丢麦克风权限**：ad-hoc 签名的 designated requirement **就是代码签名哈希本身**（`codesign -d -r- VoiceNotes.app` 打出 `# designated => cdhash H"…"`），macOS 的 TCC 拿它匹配授权记录 —— 重新打包 → cdhash 变 → 记录对不上 → **静默拒绝，麦克风喂精确的零流**。
+  - 表现：能开始录音、有时长统计，但识别不出东西；**系统设置 → 麦克风里 VoiceNotes 的开关还是「开」**（那条绑的是上一个构建）。别被这个误导 —— 开关开着 ≠ 当前构建有权限。
+  - 恢复：终端跑 `tccutil reset Microphone com.hugh.voicenotes`，再启动应用重新授权。
+  - 让授权跨构建存活：给应用一个**稳定的签名身份**（自签名证书即可：`openssl req -x509 ... -addext "extendedKeyUsage=codeSigning"` → PKCS#12 导入钥匙串 → `security set-key-partition-list`；或 Apple Development 证书），`bundle.macOS.signingIdentity` 填它 —— designated requirement 从 `cdhash …` 变成 `certificate leaf = H"…"`，跨构建不变。
+  - 换签名后第一次仍要允许一次，之后那份授权跟着证书走、跨构建有效。**（2026-10-23 更正）** 以前记的「换签名也不弹框、只能手动开开关」是缺 `audio-input` entitlement 造成的，补上后 `tccutil reset` + 重启就会正常弹框（系统日志 `AUTHREQ_PROMPTING` → `AUTHREQ_RESULT authValue=2`）。
+  - 排查：日志里的电平峰值全是 `0.00000`（不是 0.005 这种底噪）就是被拒了；真麦克风静音也有底噪。
 - 打包 `.dmg` 需要能调 `hdiutil`，受限沙箱里可能只产出 `.app`（`--bundles app` 可跳过 dmg）。
 - Tauri **不能在 macOS 上交叉打 Windows 包**，CI 用 `.github/workflows/build.yml`（windows-latest）出 msi/nsis。
 - 推 tag（`v*`）触发 CI，同时产出 macOS（dmg）和 Windows（msi/exe），在 Artifacts 下载。
