@@ -20,6 +20,8 @@ export function currentTheme() {
 }
 
 export function syncWindowBackground() {
+  // macOS 开了窗口透明 + 原生材质：再设不透明底色会把材质整个盖住。
+  if (navigator.userAgent.includes('Mac')) return
   try {
     getCurrentWindow()?.setBackgroundColor?.(WINDOW_BG[currentTheme()])?.catch?.(() => {})
   } catch {

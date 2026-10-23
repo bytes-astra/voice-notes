@@ -92,6 +92,22 @@ textarea, input, .mono { user-select: text; }
   color: var(--muted);
 }
 
+/* macOS：窗口开了透明 + 原生材质（见 lib.rs 的 set_effects）。
+   body 与侧栏不画底色 → 系统材质透出来；主区自己刷不透明底色，保证正文可读。
+   其它平台保持原样（body 上有底色），不受影响。 */
+body.macos {
+  background: transparent;
+  background-image: none;
+}
+body.macos .sidebar {
+  background: transparent;
+}
+body.macos .main {
+  background-color: var(--bg);
+  background-image: var(--bg-glow);
+  background-attachment: fixed;
+}
+
 .app {
   max-width: 880px;
   margin: 0 auto;

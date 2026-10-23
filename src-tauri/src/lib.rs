@@ -890,6 +890,15 @@ pub fn run() {
                 on_off(loaded.punct),
             ));
             app.manage(AppState::new(loaded));
+            // macOS 原生材质（NSVisualEffectView）：窗口是透明的，侧栏不画底色，
+            // 系统材质从后面透出来；主区自己刷不透明底色。
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                use tauri::window::{Effect, EffectsBuilder};
+                let _ = window.set_effects(
+                    EffectsBuilder::new().effect(Effect::Sidebar).build(),
+                );
+            }
             #[cfg(target_os = "macos")]
             install_menu(app)?;
             Ok(())
