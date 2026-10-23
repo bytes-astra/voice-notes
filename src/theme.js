@@ -29,6 +29,19 @@ export function syncWindowBackground() {
   }
 }
 
+/// 窗口外观（NSWindow.appearance）跟着应用主题走。
+///
+/// macOS 的原生材质（NSVisualEffectView）明暗跟的是**窗口外观**，不是网页的
+/// `data-theme` —— 不同步的话，系统浅色 + 应用暗色 = 浅色材质配深色字，直接看不清。
+export function syncWindowTheme() {
+  try {
+    const theme = currentTheme() === 'dark' ? 'Dark' : 'Light'
+    getCurrentWindow()?.setTheme?.(theme)?.catch?.(() => {})
+  } catch {
+    /* 忽略 */
+  }
+}
+
 /// 主题按钮图标跟着当前主题走：浅色显示太阳，深色显示月亮。
 const THEME_ICONS = {
   light:
@@ -51,5 +64,6 @@ export function toggleTheme() {
   document.documentElement.dataset.theme = next
   localStorage.setItem(THEME_KEY, next)
   syncWindowBackground()
+  syncWindowTheme()
   renderThemeIcon()
 }

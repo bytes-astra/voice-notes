@@ -18,7 +18,7 @@ import {
 import { openOutputDir, pickAndTranscribeFile, pickOutputDir, transcribeFilePath } from './files.js'
 import { listenEvents } from './events.js'
 import { copyText, saveText } from './export.js'
-import { renderThemeIcon, syncWindowBackground, toggleTheme } from './theme.js'
+import { renderThemeIcon, syncWindowBackground, syncWindowTheme, toggleTheme } from './theme.js'
 
 let deviceSelect = null
 let localeSelect = null
@@ -331,12 +331,14 @@ async function init() {
   const theme = localStorage.getItem(THEME_KEY)
   if (theme) document.documentElement.dataset.theme = theme
   syncWindowBackground()
+  syncWindowTheme()
   renderThemeIcon()
   // 没手动选过主题时，系统切换深浅色要跟着变（连窗口底色一起）
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (!localStorage.getItem(THEME_KEY)) {
       renderThemeIcon()
       syncWindowBackground()
+      syncWindowTheme()
     }
   })
 
