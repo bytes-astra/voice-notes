@@ -103,7 +103,7 @@ node scripts/fetch-quality-corpus.mjs 12   # 真人中文电话录音 + 转写�
 bash scripts/gen-tts-corpus.sh             # TTS 20 句 + 数字句 + 长句 + 噪声变体
 ```
 探针会自动扫描 `src-tauri/tests/fixtures/quality/*.wav`：有同名 `.txt` 就算 CER，没有就只打印识别结果。
-当前基线（zh + ITN 整段，已含 pre-roll 修复）：真人 5.85% / 真人+噪声 2.78% / TTS 15.97%（修复前 26.47%）/ 长句 15.00%。
+当前基线（zh + ITN 整段，已含 pre-roll 修复；40 条真人语料）：真人 11.41% / 真人+噪声 1.39% / TTS 15.55%（修复前 26.47%）/ 长句 15.00%。
 **别拿 TTS 的绝对 CER 当质量结论**——它主要暴露「VAD 切字头」这类相对差异。
 
 ## Windows

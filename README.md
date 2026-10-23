@@ -33,6 +33,7 @@
 - **中 / 英 / 粤 / 日 / 韩 / 自动检测** 语言选择，ITN（数字、标点）可开关。
 - **可选输入设备**：多麦、外接声卡、回环设备都能选，不会再录到「不是你想录的那个声音」。
 - **标点可选**：装上标点模型（CT-Transformer）后，流式结果按句自动补标点；不装也能用。
+- **流式术语表（热词）**：设置里一行一句填常用说法、人名、地名（最多 100 条），流式解码时按热词加权，专有名词不容易再听错；只对流式模式生效。
 - **文件转写**：把音频/视频拖进窗口，或按 `⌘O` / `Ctrl+O` 选文件；**在后端解码**（symphonia，纯 Rust，不需要 ffmpeg），支持 mp3 / wav / flac / ogg / m4a / mp4 / mov（视频轨忽略），长文件也是边解边转，内存恒定。
 - **界面语言**：中文 / English，设置里可切；文案集中在字典文件里。
 - **历史记录**（本地 localStorage，最多 100 条），一键复制、保存。
@@ -43,17 +44,18 @@
 
 SenseVoiceSmall INT8 约 **228 MB**，不会打进安装包：
 
-1. 启动后顶部会出现「首次使用：下载整段模型」。
-2. 点 **下载整段模型**：**优先走 `hf-mirror.com` 镜像**（国内直连 Hugging Face 经常连不上），镜像失败自动回退官方源；支持断点续传（`.part`），下载完做 SHA-256 校验。
-3. **流式模型**单独下载（约 161 MB，仅在切到「流式」模式时需要）：点模式切换里的「流式」，按提示下载；流式模型只覆盖中文，选粤语/日语/韩语会自动切回整段模式。
-4. **标点模型**（可选，约 281 MB）：设置 → 流式标点 → 下载，下完自动开启，给流式结果按句补标点；不装也不影响识别。
-5. 也可以点 **使用已有模型目录**，指向一个包含以下文件的目录（设置里随时可以点「使用应用内模型」切回来）：
+1. 启动后顶部会出现「下载模型」卡片（模型缺失时都会出现，不只是首次）。
+2. 点 **下载模型**：**优先走 `hf-mirror.com` 镜像**（国内直连 Hugging Face 经常连不上），镜像失败自动回退官方源；支持断点续传（`.part`），下载完做 SHA-256 校验。
+3. **流式模型**单独下载（约 161 MB，仅在切到「流式」模式时需要）：点模式切换里的「流式」，按提示下载；**标点模型（约 281 MB）会一起下载**，下完自动开启，给流式结果按句补标点。流式模型只覆盖中文，选粤语/日语/韩语会自动切回整段模式。
+4. 已经有本地模型：**设置 → 模型目录 → 选择目录…**，指向一个包含下面文件的目录（随时可以点「使用应用内模型」切回来）：
 
 ```
 model.int8.onnx   # 或 model.onnx
 tokens.txt
 silero_vad.onnx   # 必需：没有 VAD 就无法分句，这个目录会被判为「未就绪」
 ```
+
+5. 术语表在 **设置 → 术语表** 里填（一行一句常用说法、人名、地名），只对流式模式生效。
 
 模型来源（固定 commit）：[sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17) · [silero_vad](https://huggingface.co/csukuangfj/vad)。
 
@@ -76,19 +78,20 @@ npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML/JS �
 
 ## 准确率取舍
 
-同一段音频，两个模型的实测对比（5 条中文样本，字符级准确率）：
+两种模式各管一段，别混着比：
 
-| | 结果 |
-| --- | --- |
-| 流式（Zipformer + 收尾补静音） | **99%** |
-| 整段（SenseVoice + ITN） | 91%（“明天”听成“今天”） |
+| 模式 | 模型 | 语言 | 实测（字符错误率 CER） |
+| --- | --- | --- | --- |
+| 整段 | SenseVoiceSmall INT8 | 中 / 英 / 粤 / 日 / 韩 / 自动 | 40 条真人中文电话录音 **11.41%**（zh + ITN）；加噪变体 **1.39%** |
+| 流式 | Zipformer transducer | 仅中文 | 同样 5 条样本上 **99%**，而且边说边出字，首字约 1 个分片 |
 
-所以最终文本默认用**流式**的结果，不再用整段模型二次复核 —— 实测流式并不比整段差，而复核要求保留全部音频，和「录音不限时长、内存恒定」的目标冲突。
+数据来自 `src-tauri/tests/quality_probe.rs`（只打印不断言的对比探针）：语料是 40 条真人中文电话录音 + 20 条 TTS + 数字句 + 长句 + 噪声变体，wav 只在本机，不入库；**TTS 的绝对 CER 不代表真实质量**，只用来做参数改动前后的相对对比。
 
-两个容易踩的坑，代码里都处理了：
+三个容易踩的坑，代码里都处理了：
 
 - **流式收尾要补 300ms 静音**，解码器需要尾部上下文才会吐出最后一个字，不补就会丢句尾（“产品评审会”→“产品评审”）。
 - **SenseVoice 开 ITN 时自己就带标点**，标点模型只补**没有标点**的句子，两者叠加会变成「。。」。
+- **VAD 会切掉开头第一个字**（音频开头直接是语音时），整段模式做了带门控的 0.4 秒回扩补回。
 
 ## Windows 打包
 
@@ -137,7 +140,12 @@ src-tauri/
   src/audio.rs           cpal 采集、设备选择、电平、重采样
   src/models.rs          模型定位/下载/校验
   src/settings.rs        设置持久化
-scripts/make-icon.py     生成图标源图
+  assets/hotwords.txt    流式术语表种子（95 条）
+  tests/quality_probe.rs 转写质量对比探针（只打印不断言）
+scripts/make-icon.py           生成图标源图
+scripts/fetch-quality-corpus.mjs  拉真人中文语料（minds14）
+scripts/gen-tts-corpus.sh        生成 TTS / 数字 / 长句 / 噪声语料
+docs/research/           转写质量调研与优化方案（2026-10-23）
 ```
 
 ## 测试
@@ -147,6 +155,7 @@ cd src-tauri
 cargo test --lib                  # 逻辑、WAV 解析、设备选择、重采样
 cargo test --test asr_smoke       # 真模型转写 tests/fixtures/zh.wav（缺模型自动跳过）
 cargo test --test streaming_smoke # 流式识别、句尾冲刷、设备挑选
+cargo test --test quality_probe -- --nocapture --test-threads=1  # 质量对比探针（不打断言）
 
 # 需要真实网络的用例（默认跳过）
 VOICE_NOTES_DOWNLOAD_TEST=1 cargo test --lib downloads_vad -- --nocapture
@@ -154,6 +163,13 @@ VOICE_NOTES_RECORD_TEST=1 cargo test --lib records_microphone -- --nocapture
 ```
 
 `asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR`，`streaming_smoke` 需要 `VOICE_NOTES_STREAMING_MODEL_DIR`（流式四个文件：`encoder.int8.onnx`/`decoder.int8.onnx`/`joiner.int8.onnx`/`tokens.txt`），未设置时自动跳过。
+
+语料（只在本机，wav 不入库）：
+
+```bash
+node scripts/fetch-quality-corpus.mjs 12   # 真人中文电话录音 + 转写
+bash scripts/gen-tts-corpus.sh             # TTS / 数字 / 长句 / 噪声变体
+```
 
 实测（Apple Silicon）：5.6 秒中文音频转写耗时约 200 ms，实时率约 0.04×。
 
@@ -164,5 +180,7 @@ VOICE_NOTES_RECORD_TEST=1 cargo test --lib records_microphone -- --nocapture
 - 流式的标点是可选模型（见上），只加在定稿句上，实时中间结果不带标点；整段模式用 SenseVoice 自带的 ITN 标点。
 - 拖拽文件依赖 Tauri 的拖放事件（`onDragDropEvent`）：Tauri v2 默认拦截系统拖放，HTML5 的 `drop` 事件不会触发。
 - 首次转写需要把 239 MB 模型读进内存，约 1–2 秒；之后常驻复用。
+- **流式术语表只对流式模式生效**：SenseVoice 上加热词或 beam search 会直接把识别进程打挂（`_Exit(-1)`），所以整段模式没有这个开关；术语表改动会清空流式引擎，下次录音重新加载（161 MB）。
+- **语言选择只是提示，不是过滤器**：选中「中文」后模型仍可能输出中英混说里的英文词；选错语言反而更差（中文音频选 English 会明显退化）。
 - 说话人分离、时间戳导出未做。
 - 打包 `.dmg` 需要能调用 `hdiutil`；在受限沙箱里 `npm run build` 可能只产出 `.app`（`--bundles app` 可跳过 dmg）。
