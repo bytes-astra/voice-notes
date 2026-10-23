@@ -161,7 +161,7 @@ fn recognize_matches_transcribe_on_one_sentence() {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... VOICE_NOTES_MODEL_DIR=/Users/hugh/Library/Application\ Support/com.hugh.voicenotes/models cargo test --test asr_smoke recognize_matches -- --nocapture`
+Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... VOICE_NOTES_MODEL_DIR=/Users/hugh/Library/Application\ Support/com.github.bytes-astra.voicenotes/models cargo test --test asr_smoke recognize_matches -- --nocapture`
 Expected: FAIL —— `recognize` 未定义
 
 - [ ] **Step 3: 实现**
@@ -377,7 +377,7 @@ fn streaming_via_queue_matches_direct() {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=/Users/hugh/Library/Application\ Support/com.hugh.voicenotes/models/streaming cargo test --test streaming_smoke -- --nocapture`
+Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=/Users/hugh/Library/Application\ Support/com.github.bytes-astra.voicenotes/models/streaming cargo test --test streaming_smoke -- --nocapture`
 Expected: FAIL（整段路径已改但流式路径仍用旧的游标 `take_new`，行为未对齐）
 
 - [ ] **Step 3: 实现**

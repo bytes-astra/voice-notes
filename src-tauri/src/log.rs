@@ -1,8 +1,8 @@
 //! 应用日志：**一直开着，不需要用户配置**。
 //!
 //! - 写到系统标准日志目录（Tauri 的 `app_log_dir`）：
-//!   macOS `~/Library/Logs/com.hugh.voicenotes/voice-notes.log`，
-//!   Windows `%LOCALAPPDATA%\com.hugh.voicenotes\logs\voice-notes.log`
+//!   macOS `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，
+//!   Windows `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log`
 //! - 超过 1 MB 轮转一次，保留 `voice-notes.log.1`
 //! - 同时镜像到 stderr：开发时终端直接看得到，macOS 上进系统日志
 //! - **界面上的文案不放技术细节，细节都在这里**（见 AGENTS.md）

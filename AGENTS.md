@@ -31,7 +31,7 @@ cargo test --test quality_probe -- --nocapture --test-threads=1   # 质量探针
 - **后端错误只返回字典 key**：用 `crate::code("record.empty")` / `crate::code_detail("record.micError", e)`（lib.rs 里定义），得到 `"record.empty"` / `"record.micError:<细节>"`。前端 `core.js` 的 `fmtError()` 查字典翻译。**新增错误码必须同时加进 `src/locales/zh-CN.js` 和 `src/locales/en.js`**，`npm run check:i18n` 会校验后端引用的码在字典里。
 - **用户提示与技术细节分开**（两条线，别混）：
   - **界面文案 = 一句中性的话 + 用户看得懂的参数**（字典里只留 `{value}` / `{seconds}` 这类占位符）。别口语化（「识别跟不上，丢掉了…」这种），也别把内部黑话写给用户（线程、预热、收尾、引擎状态、断句）—— 用「麦克风发生异常」「识别已停止」这种说法。
-  - **技术细节（系统错误文本、路径、采样格式名）只进日志**：`code_detail()` 会把细节写进日志文件（`~/Library/Logs/com.hugh.voicenotes/voice-notes.log`，见后端约定里那条）；**字典里不要留 `{error}` 占位符**（`{error}` 只用来装「嵌套的干净文案」，比如 `result.fileFailed` 里那句已经翻译过的原因）。
+  - **技术细节（系统错误文本、路径、采样格式名）只进日志**：`code_detail()` 会把细节写进日志文件（`~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，见后端约定里那条）；**字典里不要留 `{error}` 占位符**（`{error}` 只用来装「嵌套的干净文案」，比如 `result.fileFailed` 里那句已经翻译过的原因）。
   - 字典里查不到的错误码 → 界面显示 `error.unknown`，**不要把错误码或细节原样甩给用户**。
 - **缺口标记用占位符**：识别跟不上丢掉音频时，后端在文本里插 `[[gap:秒数]]`（`audio::gap_marker`），前端渲染时用 `core.js` 的 `localizeText()` 换成 `t('record.gap', {seconds})`。**后端不要直接写中文标记**。占位符前后拼句不加空格（后端 `asr::join_segments` 与前端 `joinText()` 规则一致）。
 - **字典文案在渲染时取**：存 key，渲染时 `t(key)`。模块顶层取 `t()` 会在切语言时不更新（语言芯片、阶段提示、视图标题都踩过）。视图标题现在是 `VIEW_KEYS` + `viewTitle()`。
@@ -69,7 +69,7 @@ menu.rs      macOS 原生菜单（只有 macOS 编）
 - **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续），前端只在 `fatal` 为真时才取消录音。
 - **事件载荷是增量的**：`stream:segment` 只带新句子，`stream:partial` 只带中间结果。别改回累计全文（长时间会话是 O(n²) 的传输与重绘）。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）。
 - 文件解码在后端：`decode::decode_to_16k()` 逐块解码，内存恒定。symphonia 锁 **0.5**（0.6 要 Rust 1.85，会破本项目声明的 1.78）。
-- **日志一直开着，不需要用户配置**：`log.rs`（`log::info` / `warn` / `error`）写到系统标准日志目录 —— macOS `~/Library/Logs/com.hugh.voicenotes/voice-notes.log`，Windows `%LOCALAPPDATA%\com.hugh.voicenotes\logs\voice-notes.log`；超 1 MB 轮转一次保留 `.1`，同时镜像 stderr。**没有开关、没有设置页** —— 用户反馈问题直接把这个文件发过来。前端那边用 `client_log` 命令写进同一个文件（`src/tauri.js` 的 `logEvent()`），这样一份文件就是完整的一份记录。
+- **日志一直开着，不需要用户配置**：`log.rs`（`log::info` / `warn` / `error`）写到系统标准日志目录 —— macOS `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，Windows `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log`；超 1 MB 轮转一次保留 `.1`，同时镜像 stderr。**没有开关、没有设置页** —— 用户反馈问题直接把这个文件发过来。前端那边用 `client_log` 命令写进同一个文件（`src/tauri.js` 的 `logEvent()`），这样一份文件就是完整的一份记录。
 - **技术细节只进日志，不进界面文案**：`code_detail()` 已经把细节写进日志了，界面那边只显示字典里的干净文案（见「用户提示与技术细节分开」那条）。前端把错误抛给界面时同理：toast 里放干净文案，细节用 `logEvent('ERROR', …)` 记下来。
 - 拖拽用 Tauri 的 `onDragDropEvent`：Tauri v2 默认拦截系统拖放，HTML5 `drop` 事件在真应用里不触发。**所以 `tauri.conf.json` 的 `dragDropEnabled` 必须保持 `true`** —— 关掉它 wry 就不装拖放 handler，`onDragDropEvent` 永远不触发，拖拽转写直接变成死代码（而且没有 HTML5 兜底）。
 
@@ -157,7 +157,7 @@ PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-browsers node /tmp/vn-ui/shots.mjs     # 重出
   - dev 模式的 `target/debug/voice-notes` 是 linker-signed（无 runtime 标志），不需要这条 entitlement —— 所以「开发时好好的、打包就没声」基本就是它，别去怀疑录音代码。
 - **ad-hoc 签名 = 每次重新打包都会丢麦克风权限**：ad-hoc 签名的 designated requirement **就是代码签名哈希本身**（`codesign -d -r- VoiceNotes.app` 打出 `# designated => cdhash H"…"`），macOS 的 TCC 拿它匹配授权记录 —— 重新打包 → cdhash 变 → 记录对不上 → **静默拒绝，麦克风喂精确的零流**。
   - 表现：能开始录音、有时长统计，但识别不出东西；**系统设置 → 麦克风里 VoiceNotes 的开关还是「开」**（那条绑的是上一个构建）。别被这个误导 —— 开关开着 ≠ 当前构建有权限。
-  - 恢复：终端跑 `tccutil reset Microphone com.hugh.voicenotes`，再启动应用重新授权。
+  - 恢复：终端跑 `tccutil reset Microphone com.github.bytes-astra.voicenotes`，再启动应用重新授权。
   - 让授权跨构建存活：给应用一个**稳定的签名身份**（自签名证书即可：`openssl req -x509 ... -addext "extendedKeyUsage=codeSigning"` → PKCS#12 导入钥匙串 → `security set-key-partition-list`；或 Apple Development 证书），`bundle.macOS.signingIdentity` 填它 —— designated requirement 从 `cdhash …` 变成 `certificate leaf = H"…"`，跨构建不变。
   - 换签名后第一次仍要允许一次，之后那份授权跟着证书走、跨构建有效。**（2026-10-23 更正）** 以前记的「换签名也不弹框、只能手动开开关」是缺 `audio-input` entitlement 造成的，补上后 `tccutil reset` + 重启就会正常弹框（系统日志 `AUTHREQ_PROMPTING` → `AUTHREQ_RESULT authValue=2`）。
   - 排查：日志里的电平峰值全是 `0.00000`（不是 0.005 这种底噪）就是被拒了；真麦克风静音也有底噪。

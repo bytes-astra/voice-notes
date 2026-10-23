@@ -53,7 +53,7 @@ sudo xattr -dr com.apple.quarantine /Applications/VoiceNotes.app
 
 ### Windows
 
-CI 产物是 `msi` 和 `exe`（NSIS），安装时按提示装 WebView2。模型落在 `%APPDATA%\com.hugh.voicenotes\models`。
+CI 产物是 `msi` 和 `exe`（NSIS），安装时按提示装 WebView2。模型落在 `%APPDATA%\com.github.bytes-astra.voicenotes\models`。
 
 Tauri 不能在 macOS 上交叉打 Windows 包，要自己出包得在 Windows 机器上装 Rust、Node 18+ 和 Visual Studio Build Tools（C++ 工作负载），然后 `npm run build`；也可以推 tag 让 CI 出。
 
@@ -217,10 +217,10 @@ cargo test --test decode_smoke    # 后端解码 + 文件全链路转写
 
 | 系统 | 位置 |
 |---|---|
-| macOS | `~/Library/Logs/com.hugh.voicenotes/voice-notes.log` |
-| Windows | `%LOCALAPPDATA%\com.hugh.voicenotes\logs\voice-notes.log` |
+| macOS | `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log` |
+| Windows | `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log` |
 
 - 超过 1 MB 会轮转一次，旧文件留成 `voice-notes.log.1`。
 - 里面记的是**技术细节**（错误码、系统错误文本、耗时、丢了几秒音频），界面上的提示只给一句话，原因都在日志里。
 - 反馈问题时把这个文件发过来就行 —— 前端的异常和关键操作也在同一个文件里。
-- 在 Finder 里按 `⌘⇧G` 输入 `~/Library/Logs` 就能找到；或者在终端 `tail -f ~/Library/Logs/com.hugh.voicenotes/voice-notes.log`。
+- 在 Finder 里按 `⌘⇧G` 输入 `~/Library/Logs` 就能找到；或者在终端 `tail -f ~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`。

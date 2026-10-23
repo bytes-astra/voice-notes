@@ -48,7 +48,7 @@ pub fn code(key: &str) -> String {
 ///
 /// **细节只进日志，不进界面**：用户看到的是字典里的干净文案
 /// （`record.micError` → 「麦克风发生异常」），细节写进日志文件
-/// （`~/Library/Logs/com.hugh.voicenotes/voice-notes.log`，见 log.rs）。
+/// （`~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，见 log.rs）。
 /// 细节仍然跟着错误码一起回给前端，是为了填 `{value}` 这类
 /// 用户看得懂的参数（比如「找不到输入设备：{value}」）。
 pub fn code_detail(key: &str, detail: impl std::fmt::Display) -> String {
