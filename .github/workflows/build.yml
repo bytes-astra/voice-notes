@@ -70,3 +70,42 @@ jobs:
             src-tauri/target/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
+
+  # 把构建产物挂到 GitHub Release 上（Actions 的 Artifacts 90 天就过期，Release 不会）
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) -print0 \
+            | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          cd artifacts
+          mapfile -t files < <(find . -type f \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o -name 'SHA256SUMS' \) | sort)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "没有可发布的产物"; exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # 同一个 tag 重新构建：覆盖旧附件
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" \
+              --title "VoiceNotes $tag" --generate-notes --verify-tag
+          fi
