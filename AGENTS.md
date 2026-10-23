@@ -124,4 +124,5 @@ bash scripts/gen-tts-corpus.sh             # TTS 20 句 + 数字句 + 长句 + �
 - **harness 的静态服务器用 Node 起，别用 `python -m http.server`**：python 那个会偶发 `ERR_CONNECTION_RESET`（app.js / i18n.js 加载失败），表现是 `state is not defined` 或页面半渲染，很容易误判成代码问题。截图脚本里加一行 `page.on('requestfailed', ...)` 就能立刻看出是服务器抖了。
 
 - **VAD 会切掉开头第一个字**：音频开头直接是语音（没有前导静音，比如 TTS、剪过的文件）时，sherpa VAD 的内部 padding 只有 ≈314ms，首字会被切（「今天下午」→「天下午」）。`asr.rs` 的 `should_pre_roll` 只在「第一段 + 起点 <0.6s + 段前 RMS > 段 RMS×0.3」时把起点回扩 0.4s。**不要改成无门控回扩**——实测会把开头噪声当语音（真人样本多出「您好」）。
+- **macOS 分发必须 ad-hoc 签名**：`tauri.conf.json` 的 `bundle.macOS.signingIdentity` 必须是 `"-"`。不设时 Tauri 不做 codesign，链接器留下的是 `linker-signed`（`Sealed Resources=none`、Info.plist 未绑定），`codesign --verify` 失败；别的 Mac 从 dmg 安装后 Gatekeeper 会报「已损坏」（不是「未验证开发者」）。签名后仍会提示「无法验证开发者」，可右键打开或 `xattr -dr com.apple.quarantine`；要免提示只能 Developer ID + 公证。
 - 端到端冒烟结果：非流式 5.6s 中文 ≈ 200ms（RTF 0.04）；流式同段音频首字约 1 个分片、整段 0.5s 内出完，无标点。

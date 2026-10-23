@@ -59,7 +59,7 @@ silero_vad.onnx   # 必需：没有 VAD 就无法分句，这个目录会被判�
 
 ## 已经打好的包
 
-`dist/VoiceNotes.app` 是 macOS (arm64) 的 ad-hoc 签名构建，双击即可运行（未公证，首次打开若被拦，右键 → 打开）。模型不入包，首次运行按上面的流程下载。
+`dist/VoiceNotes.app` 是 macOS (arm64) 的 ad-hoc 签名构建（`bundle.macOS.signingIdentity = "-"`，带 hardened runtime；不设时 Tauri 不会 codesign，其他 Mac 会报「已损坏」）。未公证：首次打开会提示「无法验证开发者」，右键 → 打开，或执行 `xattr -dr com.apple.quarantine /Applications/VoiceNotes.app`。模型不入包，首次运行按上面的流程下载。
 
 ## 开发
 
