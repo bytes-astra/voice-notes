@@ -39,6 +39,11 @@ cargo test --test quality_probe -- --nocapture --test-threads=1   # 质量探针
 - **同一个控件的文案不要按模式变**：麦克风下方的空闲提示两种模式统一写「点击麦克风开始录音」，模式差异由「整段 / 流式」芯片的副标题说明。
 - **下拉框用自绘组件 `src/select.js`**（`UISelect.create(el, {onChange})`）：原生 `<select>` 在 macOS/Windows 样式不可控。弹层挂 body 上用 fixed 定位，避免被滚动容器裁掉。`setItems` 必须在 `create()` 之后调用，反了拿到 null。
 - Tauri 插件调用面集中在 `src/tauri.js` 解构，其他模块从那里 import。新增插件命令要同步在 `src-tauri/capabilities/default.json` 加权限，否则运行时直接拒绝。
+- **macOS 侧栏的原生材质**：`lib.rs` 的 setup 里 `set_effects(Effect::Sidebar)`（NSVisualEffectView），配合 `style.css` 里 `body.macos` 的透明规则 —— 侧栏不画底色，系统材质从后面透出来，主区自己刷不透明底色。
+  - **不用开 `transparent: true`**：Tauri 内置的 `set_effects` 自己就把 webview 处理成透明了。开了反而更糟 —— 那是全局窗口属性，Windows 也会变 layered 窗口（DWM 投影会没），而 Tauri 没有平台专属的窗口配置（`tauri.windows.conf.json` 的合并是 RFC 7386，数组整体替换，改一个字段得抄整份 window 配置）。
+  - **材质的明暗跟的是窗口外观**（NSWindow.appearance），不是网页的 `data-theme` —— 切主题时必须同步 `setTheme('Dark'|'Light')`（`theme.js` 的 `syncWindowTheme()`），否则系统浅色 + 应用暗色 = 浅色材质配深色字。
+  - **`setTheme` 需要 `core:window:allow-set-theme` 权限**，漏了会被 ACL 直接拒绝，而前端那行 `.catch` 会把错误吞掉 —— 表现是「暗色下材质不变」且毫无提示。失败要 `logEvent` 记进日志。
+  - Liquid Glass（macOS 26+ 的 NSGlassEffectView）试过，效果不如经典材质，已回退。
 - **窗口标题跟界面语言走**：`tauri.conf.json` 的 `title` 只是启动时的默认值（写 `VoiceNotes`，别写死中文），运行时由 `applyLocale()` 调 `getCurrentWindow().setTitle(t('app.title'))` 设置（需要 `core:window:allow-set-title` 权限）。
 - 外壳是「侧边栏 + 主区」：`.app[data-view]` 控制 `[data-view-panel]` 显隐，`switchView()` 统一处理导航高亮/标题，录音中不允许切走。新增页面 = 一个 `[data-view-panel]` + 一个 `.nav-item`。
 
