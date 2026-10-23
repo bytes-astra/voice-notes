@@ -127,16 +127,33 @@ export function fmtBytes(bytes) {
   return `${(bytes / MIB).toFixed(bytes < 100 * MIB ? 1 : 0)} MB`
 }
 
+/// 计时器：不足 1 小时显示 mm:ss，超过 1 小时显示 hh:mm:ss（录音不限时长，会录很久）
 export function fmtClock(seconds) {
   const total = Math.max(0, Math.floor(seconds))
-  const mm = String(Math.floor(total / 60)).padStart(2, '0')
-  const ss = String(total % 60).padStart(2, '0')
-  return `${mm}:${ss}`
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const pad = (n) => String(n).padStart(2, '0')
+  return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`
 }
 
+/// 时长文案：秒 / 分秒 / 时分秒
 export function fmtDuration(seconds) {
-  if (seconds < 60) return t('duration.seconds', { seconds: seconds.toFixed(1) })
-  return t('duration.minutes', { minutes: Math.floor(seconds / 60), seconds: Math.round(seconds % 60) })
+  const total = Math.max(0, seconds)
+  if (total < 60) return t('duration.seconds', { seconds: total.toFixed(1) })
+  let h = Math.floor(total / 3600)
+  let m = Math.floor((total % 3600) / 60)
+  let s = Math.round(total % 60)
+  if (s === 60) {
+    s = 0
+    m += 1
+  }
+  if (m === 60) {
+    m = 0
+    h += 1
+  }
+  if (h > 0) return t('duration.hours', { hours: h, minutes: m, seconds: s })
+  return t('duration.minutes', { minutes: m, seconds: s })
 }
 
 export function toast(message, type = 'info') {

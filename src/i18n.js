@@ -102,7 +102,7 @@
       'result.placeholder': '转写结果会出现在这里，可以直接编辑',
       'result.pickFile': '转写音频 / 视频文件…',
       'result.audio': '音频 {duration}',
-      'result.elapsed': '耗时 {seconds} 秒',
+      'result.elapsed': '耗时 {duration}',
       'result.rtf': '实时率 {rtf}×',
       'result.chars': '{count} 字',
       'result.done': '转写完成',
@@ -173,6 +173,7 @@
 
       'duration.seconds': '{seconds} 秒',
       'duration.minutes': '{minutes} 分 {seconds} 秒',
+      'duration.hours': '{hours} 小时 {minutes} 分 {seconds} 秒',
 
       'common.cancel': '取消',
       'drop.hint': '松开开始转写音频',

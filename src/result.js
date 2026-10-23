@@ -19,7 +19,7 @@ export function showTranscript(transcript, { record = true } = {}) {
   els.meta.innerHTML = ''
   for (const part of [
     t('result.audio', { duration: fmtDuration(audio) }),
-    t('result.elapsed', { seconds: elapsed.toFixed(1) }),
+    t('result.elapsed', { duration: fmtDuration(elapsed) }),
     t('result.rtf', { rtf }),
     t('result.chars', { count: chars }),
   ]) {

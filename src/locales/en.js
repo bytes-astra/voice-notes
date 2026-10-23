@@ -99,7 +99,7 @@ window.I18N_LOCALES['en'] = {
   'result.placeholder': 'The transcript appears here — you can edit it',
   'result.pickFile': 'Transcribe an audio / video file…',
   'result.audio': 'Audio {duration}',
-  'result.elapsed': 'Took {seconds}s',
+  'result.elapsed': 'Took {duration}',
   'result.rtf': 'Realtime factor {rtf}×',
   'result.chars': '{count} chars',
   'result.done': 'Transcription complete',
@@ -172,6 +172,7 @@ window.I18N_LOCALES['en'] = {
 
   'duration.seconds': '{seconds}s',
   'duration.minutes': '{minutes}m {seconds}s',
+  'duration.hours': '{hours}h {minutes}m {seconds}s',
 
   'common.cancel': 'Cancel',
   'drop.hint': 'Drop to transcribe',
