@@ -30,6 +30,8 @@ sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
 dirs = "6"
+# 日志时间戳用本地时间（chrono 已经在 tauri 的依赖树里，不增加编译成本）
+chrono = "0.4"
 tokio = { version = "1", features = ["sync", "time", "rt"] }
 
 [profile.release]

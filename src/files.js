@@ -1,8 +1,8 @@
 /* 文件转写（后端解码 + 逐句出字）与输出目录设置 */
 
-import { els, fmtError, state, t, toast } from './core.js'
-import { invoke, openDialog, openPath } from './tauri.js'
-import { showTranscript } from './result.js'
+import { els, errorText, fmtError, state, t, toast } from './core.js'
+import { invoke, logEvent, openDialog, openPath } from './tauri.js'
+import { clearResult, showTranscript } from './result.js'
 import { renderStatus } from './status.js'
 import { setPhase } from './recorder.js'
 
@@ -34,20 +34,25 @@ export async function transcribeFilePath(path) {
   const name = fileName(path)
   // 新的一次转写：先清掉上一次的结果，否则分句会追加在旧文本后面。
   state.lastTranscript = null
-  els.text.value = ''
-  els.meta.innerHTML = ''
+  clearResult()
   els.hint.textContent = t('result.fileDecoding', { name })
   state.fileSegments = 0
   state.transcribingFile = true
+  // 记下开始时间：进度提示要显示「已用时」。
+  state.fileStartedAt = performance.now()
   try {
     const transcript = await invoke('transcribe_file', { path })
+    // 文件转写完成：时长 + 句数（和录音的最终结果同一套口径）。
+    logEvent('INFO', `文件转写完成 文件=${name} 时长=${(transcript.durationSeconds || 0).toFixed(1)}s 句数=${transcript.segments?.length || 0}`)
     showTranscript(transcript)
     toast(transcript.text ? t('result.fileDone', { name }) : t('result.none'))
   } catch (error) {
+    logEvent('ERROR', `文件转写失败: ${errorText(error)}`)
     toast(t('result.fileFailed', { error: fmtError(error) }), 'error')
   } finally {
     state.transcribingFile = false
     state.fileSegments = 0
+    state.fileStartedAt = 0
     setPhase('idle')
   }
 }

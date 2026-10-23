@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "语音转文字",
+        "title": "VoiceNotes",
         "label": "main",
         "width": 980,
         "height": 760,
@@ -20,7 +20,7 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "backgroundColor": "#f3f4f7",
-        "dragDropEnabled": false
+        "dragDropEnabled": true
       }
     ],
     "security": {

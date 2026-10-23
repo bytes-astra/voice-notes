@@ -12,6 +12,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
+use crate::{code, code_detail};
+
 pub const MODEL_FILE: &str = "model.int8.onnx";
 pub const TOKENS_FILE: &str = "tokens.txt";
 pub const VAD_FILE: &str = "silero_vad.onnx";
@@ -125,10 +127,10 @@ pub fn punctuation_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("无法定位应用数据目录: {e}"))?
+        .map_err(|e| code_detail("error.appDataDirFailed", e))?
         .join("models")
         .join(PUNCT_DIR);
-    fs::create_dir_all(&dir).map_err(|e| format!("无法创建标点模型目录: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| code_detail("error.createPunctDir", e))?;
     Ok(dir)
 }
 
@@ -178,10 +180,10 @@ pub fn streaming_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("无法定位应用数据目录: {e}"))?
+        .map_err(|e| code_detail("error.appDataDirFailed", e))?
         .join("models")
         .join(STREAM_DIR);
-    fs::create_dir_all(&dir).map_err(|e| format!("无法创建流式模型目录: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| code_detail("error.createStreamingDir", e))?;
     Ok(dir)
 }
 
@@ -201,9 +203,10 @@ pub async fn download_streaming(
     if let Err(err) = download_asset(&PUNCT, punct_dir, cancel.clone(), sink).await {
         // 用户按了取消：不能把「取消」当成「标点降级」报成功。
         if cancel.load(Ordering::Relaxed) {
-            return Err("已取消下载".into());
+            return Err(code("setup.cancelled"));
         }
-        eprintln!("[voice-notes] 标点模型下载失败，降级为无标点：{err}");
+        // 标点模型缺失只降级，不算整体失败：记进日志，界面上照常提示。
+        crate::log::warn(format!("标点模型下载失败，降级为无标点：{err}"));
     }
     Ok(())
 }
@@ -311,9 +314,9 @@ pub fn install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("无法定位应用数据目录: {e}"))?
+        .map_err(|e| code_detail("error.appDataDirFailed", e))?
         .join("models");
-    fs::create_dir_all(&dir).map_err(|e| format!("无法创建模型目录: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| code_detail("error.createModelDir", e))?;
     Ok(dir)
 }
 
@@ -323,7 +326,7 @@ pub trait ProgressSink: Send + Sync {
 }
 
 fn hash_file(path: &Path) -> Result<String, String> {
-    let mut file = fs::File::open(path).map_err(|e| format!("无法读取 {path:?}: {e}"))?;
+    let mut file = fs::File::open(path).map_err(|e| code_detail("error.readFileFailed", format!("{path:?}: {e}")))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
@@ -360,7 +363,7 @@ async fn fetch_one(
             .header(reqwest::header::USER_AGENT, "voice-notes/0.1")
             .send()
             .await
-            .map_err(|e| format!("连接失败: {e}"))?;
+            .map_err(|e| code_detail("error.connectFailed", e))?;
 
         let status = resp.status();
         if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
@@ -378,15 +381,15 @@ async fn fetch_one(
                 .write(true)
                 .truncate(!partial)
                 .open(&part)
-                .map_err(|e| format!("无法写入缓存文件: {e}"))?;
+                .map_err(|e| code_detail("error.writeCacheFailed", e))?;
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 if cancel.load(Ordering::Relaxed) {
                     return Err("cancelled".into());
                 }
-                let chunk = chunk.map_err(|e| format!("下载中断: {e}"))?;
+                let chunk = chunk.map_err(|e| code_detail("error.downloadInterrupted", e))?;
                 file.write_all(&chunk)
-                    .map_err(|e| format!("写入失败: {e}"))?;
+                    .map_err(|e| code_detail("error.writeFailed", e))?;
                 done += chunk.len() as u64;
                 if last_emit.elapsed() > Duration::from_millis(120) {
                     last_emit = Instant::now();
@@ -407,7 +410,7 @@ async fn fetch_one(
 
     let size = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     if size != asset.bytes {
-        return Err(format!("大小不符：{size} / {}", asset.bytes));
+        return Err(code_detail("error.sizeMismatch", format!("{size} / {}", asset.bytes)));
     }
 
     sink.report(Progress {
@@ -422,15 +425,15 @@ async fn fetch_one(
     let part_for_hash = part.clone();
     let digest = tauri::async_runtime::spawn_blocking(move || hash_file(&part_for_hash))
         .await
-        .map_err(|e| format!("校验失败: {e}"))??;
+        .map_err(|e| code_detail("error.verifyFailed", e))??;
     if digest != asset.sha256 {
         let _ = fs::remove_file(&part);
-        return Err("sha256 校验失败，文件已丢弃".into());
+        return Err(code("error.shaMismatch"));
     }
     if dest.exists() {
         let _ = fs::remove_file(dest);
     }
-    fs::rename(&part, dest).map_err(|e| format!("落盘失败: {e}"))?;
+    fs::rename(&part, dest).map_err(|e| code_detail("error.writeFileFailed", e))?;
     sink.report(Progress {
         resource: asset.name,
         done: size,
@@ -458,6 +461,10 @@ pub async fn download_asset(
         .map(|m| m.len() == asset.bytes)
         .unwrap_or(false)
     {
+        crate::log::info(format!(
+            "模型已存在，跳过下载：{}（{} 字节）",
+            asset.name, asset.bytes
+        ));
         sink.report(Progress {
             resource: asset.name,
             done: asset.bytes,
@@ -468,12 +475,16 @@ pub async fn download_asset(
         });
         return Ok(());
     }
+    crate::log::info(format!(
+        "开始下载模型：{}（{} 字节）",
+        asset.name, asset.bytes
+    ));
 
     let mut errors = Vec::new();
     // 镜像优先：国内直连 huggingface.co 经常连不上，镜像失败再回官方源
     for base in [MIRROR, HF] {
         if cancel.load(Ordering::Relaxed) {
-            return Err("已取消下载".into());
+            return Err(code("setup.cancelled"));
         }
         sink.report(Progress {
             resource: asset.name,
@@ -484,10 +495,16 @@ pub async fn download_asset(
             message: None,
         });
         match fetch_one(&client, base, asset, &dest, sink, &cancel).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                crate::log::info(format!(
+                    "模型下载完成：{}（{} 字节）",
+                    asset.name, asset.bytes
+                ));
+                return Ok(());
+            }
             Err(err) => {
                 if err == "cancelled" {
-                    return Err("已取消下载".into());
+                    return Err(code("setup.cancelled"));
                 }
                 errors.push(format!("{base}: {err}"));
             }
@@ -502,7 +519,7 @@ pub async fn download_asset(
         source: String::new(),
         message: Some(message.clone()),
     });
-    Err(format!("下载 {} 失败（{message}）", asset.name))
+    Err(code_detail("error.downloadFailed", format!("{}: {message}", asset.name)))
 }
 
 /// 按 MODEL → TOKENS → VAD 的顺序补齐模型文件。

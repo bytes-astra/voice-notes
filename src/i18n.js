@@ -1,192 +1,30 @@
-// 文案集中管理：加一种语言 = 加一个字典，不用改业务代码。
+// 国际化机制：怎么查字典、怎么填 HTML、怎么切语言。
+//
+// 文案本身不在这里 —— 每种语言一个字典文件（src/locales/*.js），
+// 自己在 window.I18N_LOCALES 上注册；这些文件必须在 index.html 里排在
+// 本文件之前加载（`<script src="locales/zh-CN.js"></script>`）。
+// 加语言 = 加一个字典文件 + 加一行 script，不用改这个文件。
 //
 // 用法：
 //   JS  ：t('toast.copied')  /  t('result.chars', { count })
-//   HTML：<span data-i18n="toast.copied"></span>，启动时 applyI18n() 自动填充
+//   HTML：<span data-i18n="toast.copied"></span>，启动时 apply() 自动填充
 //         data-i18n-title / data-i18n-placeholder / data-i18n-aria 同理
 ;(function () {
-  const LOCALES = {
-    'zh-CN': {
-      'app.title': '语音转文字',
-      'app.brand': '语音转文字',
-      'app.startFailed': '启动失败：{error}',
+  /// 基础语言（兜底）：字典没加载上时用它，也决定「跟随系统」的判定。
+  const BASE = 'zh-CN'
 
-      'theme.toDark': '切换到深色',
-      'theme.toLight': '切换到浅色',
-      'nav.new': '开始新转写',
-      'nav.transcribe': '转写',
-      'nav.history': '历史',
-      'nav.settings': '设置',
-      'nav.label': '主导航',
+  // 全部已加载的字典。没有合并特例：每种语言都是独立文件，key 冲突要在
+  // check:i18n 里查出来，不在这里悄悄盖掉。
+  const LOCALES = { ...(window.I18N_LOCALES || {}) }
 
-      'view.transcribe': '转写',
-      'view.history': '历史',
-      'view.settings': '设置',
-
-      'lang.auto': '自动检测',
-      'lang.zh': '中文',
-      'lang.en': 'English',
-      'lang.group': '识别语言',
-      'model.source.app_data': '应用数据',
-      'model.source.custom': '自定义目录',
-      'lang.yue': '粤语',
-      'lang.ja': '日本語',
-      'lang.ko': '한국어',
-
-      'setup.title': '下载模型',
-      'setup.desc':
-        'SenseVoiceSmall 约 228 MB，只需下载一次，之后完全离线运行。',
-      'setup.download': '下载模型',
-      'setup.chooseDir': '选择包含 model.int8.onnx、tokens.txt 和 silero_vad.onnx 的目录',
-      'setup.noModel': '这个目录里没有找到 model.int8.onnx / tokens.txt / silero_vad.onnx',
-      'setup.preparing': '准备中…',
-      'setup.done': '下载完成',
-      'setup.downloadFailed': '下载失败：{error}',
-      'setup.cached': '已缓存的模型：{done} / {total}',
-
-      'record.idle': '点击麦克风开始录音',
-      'record.section': '转写区',
-      'record.preparing': '正在准备麦克风…（首次会弹系统授权框）',
-      'record.recording': '正在录音，点方块或空格结束',
-      'record.transcribing': '正在处理…',
-      'record.transcribingFirst': '正在收尾…',
-      'record.loadingStreaming': '正在加载流式模型…',
-      'record.live': '边录边出字…',
-      'record.empty': '没有识别到内容，换个安静点的环境再试试',
-      'record.micStart': '开始录音',
-      'record.micStop': '结束录音',
-      'record.hint': '空格 开始 / 结束 · Esc 取消 · 也可以把音频文件拖进窗口',
-      'record.device': '设备',
-      'record.micDenied': '没有麦克风权限：{error}',
-      'record.deviceDefault': '系统默认',
-      'record.deviceSystemDefault': '系统默认',
-      'record.deviceChanged': '已切换输入设备：{name}',
-      'record.deviceChangedDefault': '已改用系统默认输入设备',
-
-      'mode.offline': '整段',
-      'mode.group': '转写模式',
-      'mode.offlineDesc': '整句出字 · 多语言',
-      'mode.streaming': '流式',
-      'mode.streamingDesc': '实时出字 · 仅中文',
-      'mode.streamingDownload': '下载流式模型',
-      'mode.streamingTitle': '下载流式模型',
-      'mode.streamingMissing': '流式模型 + 标点模型 · 共约 {size}，下载后可以实时出字。',
-      'mode.streamingOnlyZh': '流式模式只支持中文',
-      'mode.langSwitched': '流式模式只支持中文，语言已切到自动',
-      'mode.streamingDownloadFirst': '先下载流式模型再使用',
-      'mode.switchedBack': '流式模型只支持中文，已切回整段模式',
-
-      'model.badge.streamingReady': '流式模型已就绪',
-      'model.badge.streamingMissing': '流式模型未下载',
-      'model.badge.offlineMissing': '模型未下载',
-      'model.badge.error': '{name}加载失败',
-      'model.badge.loading': '正在加载{name}…',
-      'model.badge.ready': '模型已就绪',
-      'model.badge.checking': '正在检查模型…',
-      'model.label.streaming': '流式模型',
-      'model.label.offline': '模型',
-      'model.name.streaming': 'Zipformer · 仅中文',
-      'model.name.offline': 'SenseVoice · 多语言',
-      'model.streamingMissing': '流式模型还没下载',
-      'model.offlineMissing': '模型还没下载，先点上面的「下载模型」',
-      'model.needStreaming': '需要先下载流式模型',
-      'model.needOffline': '需要先下载模型',
-      'model.ready': '模型已就绪',
-      'model.readyToast': '模型已就绪，可以开始录音了',
-
-      'result.title': '转写结果',
-      'result.copy': '复制',
-      'result.save': '保存',
-      'result.clear': '清空',
-      'result.waiting': '等待转写',
-      'result.placeholder': '转写结果会出现在这里，可以直接编辑',
-      'result.pickFile': '转写音频 / 视频文件…',
-      'result.audio': '音频 {duration}',
-      'result.elapsed': '耗时 {duration}',
-      'result.rtf': '实时率 {rtf}×',
-      'result.chars': '{count} 字',
-      'result.done': '转写完成',
-      'result.none': '没有识别到内容',
-      'result.noCopy': '没有可复制的文字',
-      'result.copied': '已复制到剪贴板',
-      'result.copyFailed': '复制失败',
-      'result.noSave': '没有可保存的文字',
-      'result.saved': '已保存：{path}',
-      'result.readStatusFailed': '读取状态失败：{error}',
-      'result.fileDecoding': '正在解码 {name}…',
-      'result.fileProgress': '正在转写…（已识别 {count} 句）',
-      'result.fileFilter': '音频 / 视频文件',
-      'result.fileDone': '已转写 {name}',
-      'result.fileFailed': '无法转写这个文件：{error}',
-      'result.fileNeedModel': '模型还没下载，先下载模型再转写文件',
-
-      'history.title': '历史记录',
-      'history.empty': '还没有记录，录一段试试。',
-      'history.clear': '清空',
-      'history.load': '载入到结果框',
-      'history.from': '来自历史 · {when}',
-      'history.copy': '复制',
-      'history.save': '保存',
-      'history.delete': '删除',
-      'history.filename': '{head}-{stamp}',
-
-      'settings.interface': '界面语言',
-      'settings.localeSystem': '跟随系统',
-      'settings.localeZh': '简体中文',
-      'settings.localeEn': 'English',
-      'settings.model': '模型目录',
-      'settings.modelDownload': '下载模型',
-      'settings.chooseDir': '选择目录…',
-      'settings.useAppModel': '使用应用内模型',
-      'settings.output': '保存目录',
-      'settings.chooseOutputTitle': '选择保存目录',
-      'settings.openFolder': '打开文件夹',
-      'settings.outputChanged': '保存目录已更新',
-      'settings.recognition': '识别',
-      'settings.itn': '数字与标点（ITN）',
-      'settings.punct': '流式标点',
-      'settings.punctToggle': '流式结果自动加标点',
-      'settings.punctReady': '标点模型已就绪',
-      'settings.punctMissing': '标点模型未下载（约 {size}，下载流式模型时会一起下载）',
-      'settings.punctNeedDownload': '标点模型还没下载，先下载流式模型',
-      'settings.punctAutoOn': '流式结果会自动加标点',
-      'settings.punctAutoOff': '已关闭自动标点',
-      'settings.hotwords': '术语表',
-      'settings.hotwordsHint': '仅流式模式生效；一行一句常用说法，人名、地名也可以。',
-      'settings.hotwordsPlaceholder': '例如：帮我拿一下、好的没问题、老张',
-      'settings.hotwordsExample': '填入示例',
-      'settings.hotwordsSave': '保存术语表',
-      'settings.hotwordsSaved': '已保存 {count} 个术语',
-      'settings.hotwordsCleared': '已清空术语表（流式恢复默认解码）',
-      'settings.hotwordsExampleFilled': '已填入示例，记得点保存',
-      'settings.modelPath': '{source} · {dir}',
-      'settings.modelNotReady': '未就绪 · 需要下载 {size}',
-      'settings.version': 'VoiceNotes {version}',
-      'settings.switchedAppModel': '已切换为应用内模型目录',
-      'settings.switchedAppModelNeedDownload': '已切换为应用内模型目录，需要先下载模型',
-
-      'progress.downloading': '下载中',
-      'progress.verifying': '校验中',
-      'progress.connecting': '连接中',
-      'progress.complete': '完成',
-      'progress.cache': '本地缓存',
-
-      'duration.seconds': '{seconds} 秒',
-      'duration.minutes': '{minutes} 分 {seconds} 秒',
-      'duration.hours': '{hours} 小时 {minutes} 分 {seconds} 秒',
-
-      'common.cancel': '取消',
-      'drop.hint': '松开开始转写音频',
-      'toast.recordingBusy': '先结束当前录音',
-    },
+  if (!LOCALES[BASE]) {
+    // 基础字典没加载成功 = 界面会显示 key 而不是文案。明确报出来，
+    // 别让人以为是逻辑坏了（本地静态服务器偶发加载失败，见 AGENTS.md）。
+    console.error(`[i18n] 缺少基础字典 ${BASE}，界面会显示 key 而不是文案`)
   }
 
-  // 外部字典（src/locales/*.js）合并进来，加语言不用改这个文件
-  for (const [locale, dict] of Object.entries(window.I18N_LOCALES || {})) {
-    LOCALES[locale] = { ...(LOCALES[locale] || {}), ...dict }
-  }
-
-  let current = 'zh-CN'
+  /// 当前语言：一定是字典已加载的那种（否则满屏 key）。
+  let current = LOCALES[BASE] ? BASE : Object.keys(LOCALES)[0] || BASE
 
   function t(key, vars) {
     const dict = LOCALES[current] || {}
@@ -219,9 +57,10 @@
   /// 'system' 表示跟随系统语言。
   function resolveLocale(preference) {
     if (preference && LOCALES[preference]) return preference
-    const wanted = (navigator.language || 'zh-CN').toLowerCase()
-    if (wanted.startsWith('zh')) return 'zh-CN'
-    return Object.keys(LOCALES).find((locale) => locale !== 'zh-CN') || 'zh-CN'
+    const wanted = (navigator.language || BASE).toLowerCase()
+    if (wanted.startsWith('zh') && LOCALES[BASE]) return BASE
+    // 系统语言没有对应字典：用第一个能用的（英文通常就是它）。
+    return Object.keys(LOCALES).find((locale) => locale !== BASE) || current
   }
 
   function setLocale(locale) {

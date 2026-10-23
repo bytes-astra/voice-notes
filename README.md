@@ -120,7 +120,7 @@ npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML/JS �
 
 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 下载对应平台的**预编译静态库**（onnxruntime 等），之后走缓存。
 
-前端是原生 JS + ES Modules，没有打包器、没有框架、不要为 UI 引入构建步骤；界面文案统一放在 `src/i18n.js` 的字典里，改完跑一次 `npm run check:i18n`。
+前端是原生 JS + ES Modules，没有打包器、没有框架、不要为 UI 引入构建步骤；界面文案统一放在 `src/locales/*.js` 的字典里（`src/i18n.js` 只放查字典的机制），改完跑一次 `npm run check:i18n`。
 
 ## 质量探针与语料
 
@@ -149,7 +149,7 @@ bash scripts/gen-tts-corpus.sh             # TTS / 数字 / 长句 / 噪声变�
 src/                     前端（原生 JS，无构建）
   index.html             应用外壳（侧边栏 + 三个视图）
   app.js                 入口：init / bindUI / switchView / applyLocale
-  core.js                全局状态、DOM 引用、常量、格式化、toast、t
+  core.js                全局状态、DOM 引用、常量、格式化、toast、错误码翻译
   tauri.js               Tauri 插件的唯一解构处
   status.js              模型状态、识别模式、语言、输入设备、模型下载
   recorder.js            录音流程：阶段、波形、计时、开始/停止/取消
@@ -160,19 +160,25 @@ src/                     前端（原生 JS，无构建）
   export.js              复制 / 保存文本
   theme.js               深浅色主题、窗口底色、按钮图标
   style.css              深浅色主题样式
-  i18n.js                文案字典 + t() + data-i18n 填充（经典脚本）
+  i18n.js                国际化机制：t() / data-i18n 填充（经典脚本，不放文案）
   select.js              自绘下拉框（原生 select 样式不可控，经典脚本）
-  locales/en.js          英文字典（加语言 = 加一个字典文件）
+  locales/zh-CN.js       中文字典（加语言 = 加一个字典文件 + 一行 script）
+  locales/en.js          英文字典
 src-tauri/
-  src/lib.rs             Tauri 命令、状态、保存
-  src/asr.rs             SenseVoice 推理 + Silero VAD 分句 + 整段/流式会话
-  src/audio.rs           cpal 采集、设备选择、电平、重采样
+  src/lib.rs             Tauri 命令与事件载荷（只放命令层）
+  src/record.rs          录音编排：采集队列 → 识别会话 → 出字（纯逻辑）
+  src/engine.rs          三个引擎的构造与加载 + AppState + Status
+  src/asr.rs             识别会话（整段/流式）+ 转写数据结构 + 文本规则
+  src/audio.rs           cpal 采集、设备选择、电平、重采样、缺口占位符格式
   src/decode.rs          symphonia 后端解码（mp3/wav/flac/ogg/m4a/mp4/mov）
   src/models.rs          模型定位 / 下载 / 校验
+  src/output.rs          转写结果落盘（同名自动加序号）
   src/settings.rs        设置持久化
+  src/log.rs             应用日志（写文件 + stderr 镜像）
+  src/menu.rs            macOS 原生菜单
   assets/hotwords.txt    流式术语表种子
   tests/quality_probe.rs 转写质量对比探针（只打印不断言）
-scripts/                 图标生成、语料拉取与生成
+scripts/                 i18n 体检、图标生成、语料拉取与生成
 docs/research/           转写质量调研与优化方案
 ```
 
@@ -204,3 +210,17 @@ cargo test --test decode_smoke    # 后端解码 + 文件全链路转写
 
 - 音频只在本机处理，不上传；只有下载模型那一次需要联网。
 - 历史记录只存在本地，不做任何同步。
+
+## 日志
+
+应用一直写日志，**不需要配置，也没有开关**：
+
+| 系统 | 位置 |
+|---|---|
+| macOS | `~/Library/Logs/com.hugh.voicenotes/voice-notes.log` |
+| Windows | `%LOCALAPPDATA%\com.hugh.voicenotes\logs\voice-notes.log` |
+
+- 超过 1 MB 会轮转一次，旧文件留成 `voice-notes.log.1`。
+- 里面记的是**技术细节**（错误码、系统错误文本、耗时、丢了几秒音频），界面上的提示只给一句话，原因都在日志里。
+- 反馈问题时把这个文件发过来就行 —— 前端的异常和关键操作也在同一个文件里。
+- 在 Finder 里按 `⌘⇧G` 输入 `~/Library/Logs` 就能找到；或者在终端 `tail -f ~/Library/Logs/com.hugh.voicenotes/voice-notes.log`。

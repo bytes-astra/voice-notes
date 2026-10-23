@@ -5,7 +5,8 @@
 
 use std::path::PathBuf;
 
-use voice_notes_lib::asr::{Engine, OfflineEvent, OfflineSession};
+use voice_notes_lib::asr::{OfflineEvent, OfflineSession};
+use voice_notes_lib::engine::Engine;
 use sherpa_onnx::{SileroVadModelConfig, VadModelConfig};
 use voice_notes_lib::models::ModelPaths;
 
@@ -209,7 +210,7 @@ fn handles_fifteen_minute_recording() {
         source: "test".into(),
     };
     let engine = std::sync::Arc::new(
-        voice_notes_lib::asr::Engine::new(&paths, "zh", true).expect("加载模型"),
+        voice_notes_lib::engine::Engine::new(&paths, "zh", true).expect("加载模型"),
     );
     let vad = engine.vad_config().expect("VAD 配置");
 

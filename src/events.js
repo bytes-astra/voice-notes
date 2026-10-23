@@ -16,8 +16,12 @@ export async function listenEvents() {
   })
 
   await listen('audio:error', (event) => {
-    toast(fmtError(event.payload), 'error')
-    if (state.phase === 'recording') void cancelRecording()
+    const payload = event.payload
+    toast(fmtError(payload), 'error')
+    // 载荷是对象 { code, detail?, seconds?, fatal }：只有致命错误才中断录音。
+    // 缺口提示（fatal:false）只提示、录音继续；没有 fatal 字段时按致命处理。
+    const fatal = payload && typeof payload === 'object' ? payload.fatal !== false : true
+    if (fatal && state.phase === 'recording') void cancelRecording()
   })
 
   await listen('model:progress', (event) => {
@@ -37,7 +41,8 @@ export async function listenEvents() {
     const label = { downloading: t('progress.downloading'), verifying: t('progress.verifying'), connecting: t('progress.connecting'), complete: t('progress.complete') }[progress.phase] || t('progress.downloading')
     const host = progress.source?.startsWith('http') ? new URL(progress.source).host : progress.source === 'cache' ? t('progress.cache') : ''
     els.setupText.textContent = `${label} ${progress.resource}${progress.phase === 'downloading' ? ` · ${fmtBytes(progress.done)} / ${fmtBytes(progress.total)}` : ''}${host ? ` · ${host}` : ''}`
-    if (progress.phase === 'error' && progress.message) toast(progress.message, 'error')
+    // 下载失败的提示也是错误码：查字典翻译，别把 "error.downloadFailed" 显示给用户
+    if (progress.phase === 'error' && progress.message) toast(fmtError(progress.message), 'error')
   })
 
   // 事件是增量载荷：只带新句子，前端自己追加（累计全文在长时间会话下是 O(n²)）
@@ -52,7 +57,12 @@ export async function listenEvents() {
     showPartial('')
     if (state.transcribingFile) {
       state.fileSegments += 1
-      els.hint.textContent = t('result.fileProgress', { count: state.fileSegments })
+      // 进度里带上已用时：第 N 句 / 已用时 mm:ss
+      const elapsed = state.fileStartedAt ? (performance.now() - state.fileStartedAt) / 1000 : 0
+      els.hint.textContent = t('result.fileProgress', {
+        count: state.fileSegments,
+        elapsed: fmtClock(elapsed),
+      })
     }
   })
 

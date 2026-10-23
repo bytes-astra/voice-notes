@@ -5,7 +5,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use voice_notes_lib::asr::{StreamEvent, StreamingEngine, StreamingSession};
+use voice_notes_lib::asr::{StreamEvent, StreamingSession};
+use voice_notes_lib::engine::StreamingEngine;
 use voice_notes_lib::models::StreamingPaths;
 
 fn model_paths() -> Option<StreamingPaths> {

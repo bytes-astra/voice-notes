@@ -1,4 +1,7 @@
 //! 麦克风采集（cpal）与重采样到 16 kHz 单声道。
+//!
+//! 缺口占位符（`[[gap:秒数]]`）的格式也在这里 —— 构造和解析都在这一处，
+//! 别处不要另写一份正则（前端 `core.js` 的 `localizeText()` 负责本地化）。
 
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -9,6 +12,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+
+use crate::{code, code_detail};
 
 /// 未消费音频的上限（秒）。ASR 线程跟不上时丢掉最旧的，并在结果里标记缺口。
 pub const MAX_PENDING_SECONDS: u32 = 60;
@@ -117,12 +122,83 @@ impl LevelRing {
     }
 }
 
-/// 识别跟不上、丢掉了一段音频时插进结果里的标记。
-pub fn gap_marker(dropped_samples: u32, sample_rate: u32) -> String {
+/// 缺口占位符的前缀：识别跟不上、丢掉音频时插进文本里。
+///
+/// 后端只给占位符（`[[gap:秒数]]`），界面语言由前端渲染时决定
+/// （前端 `core.js` 的 `localizeText()` → `t('record.gap', {seconds})`）。
+/// 占位符前后拼句不加空格（后端 `asr::join_segments` 与前端 `joinText()` 一致）。
+pub const GAP_MARKER_PREFIX: &str = "[[gap:";
+
+/// 丢掉音频折算成多少秒（向上取整，至少 1 秒）。
+pub fn gap_seconds(dropped_samples: u32, sample_rate: u32) -> u32 {
     let rate = sample_rate.max(1);
-    let seconds = (dropped_samples as f32 / rate as f32).ceil().max(1.0) as u32;
-    // 用全角括号开头：U+FF08 属于 CJK 范围，拼句时不会多出空格
-    format!("（此处约 {seconds} 秒未识别）")
+    (dropped_samples as f32 / rate as f32).ceil().max(1.0) as u32
+}
+
+/// 识别跟不上、丢掉了一段音频时插进结果里的标记（语言中立占位符）。
+pub fn gap_marker(dropped_samples: u32, sample_rate: u32) -> String {
+    format!("{GAP_MARKER_PREFIX}{}]]", gap_seconds(dropped_samples, sample_rate))
+}
+
+/// `audio:error` 事件的载荷：`code` 是字典 key，`fatal` 表示是否要中断录音。
+///
+/// - `fatal: false` → 前端只弹提示，录音继续（丢掉音频的缺口提示）
+/// - `fatal: true`  → 麦克风坏了之类，前端要停录音
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioErrorPayload {
+    /// 字典 key（如 `record.micError`、`record.gapWarning`、`decode.partial`）
+    pub code: String,
+    /// 技术细节（系统错误文本、原因），不是展示文案
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// 丢掉的秒数（缺口提示用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
+    /// 致命错误：前端要中断录音
+    pub fatal: bool,
+}
+
+impl AudioErrorPayload {
+    /// 只有错误码的提示（致命）。
+    pub fn fatal(code: &str) -> Self {
+        Self {
+            code: code.to_string(),
+            detail: None,
+            seconds: None,
+            fatal: true,
+        }
+    }
+
+    /// 带细节的提示（致命）。
+    pub fn fatal_detail(code: &str, detail: impl std::fmt::Display) -> Self {
+        Self {
+            code: code.to_string(),
+            detail: Some(detail.to_string()),
+            seconds: None,
+            fatal: true,
+        }
+    }
+
+    /// 缺口提示：不致命，录音继续。
+    pub fn gap(seconds: u32) -> Self {
+        Self {
+            code: "record.gapWarning".to_string(),
+            detail: None,
+            seconds: Some(seconds),
+            fatal: false,
+        }
+    }
+
+    /// 解码只完成一部分：不致命，但要把原因报给用户。
+    pub fn partial(code: &str, detail: impl std::fmt::Display) -> Self {
+        Self {
+            code: code.to_string(),
+            detail: Some(detail.to_string()),
+            seconds: None,
+            fatal: false,
+        }
+    }
 }
 
 pub struct Recorder {
@@ -302,7 +378,7 @@ pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Record
                 );
             }
         })
-        .map_err(|e| format!("无法创建录音线程: {e}"))?;
+        .map_err(|e| code_detail("error.recordThreadFailed", e))?;
 
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok((rate, queue))) => Ok(Recorder {
@@ -319,7 +395,7 @@ pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Record
         Err(_) => {
             let _ = tx.send(Cmd::Cancel);
             let _ = join.join();
-            Err("打开麦克风超时（请检查系统麦克风权限）".into())
+            Err(code("record.micTimeout"))
         }
     }
 }
@@ -334,7 +410,7 @@ fn build_stream(
     let device = find_device(&host, wanted)?;
     let supported = device
         .default_input_config()
-        .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
+        .map_err(|e| code_detail("record.micConfigFailed", e))?;
     let sample_rate = supported.sample_rate().0;
     let channels = supported.channels() as usize;
     let format = supported.sample_format();
@@ -378,9 +454,14 @@ fn build_stream(
             error.clone(),
             app.cloned(),
         ),
-        other => return Err(format!("不支持的麦克风采样格式: {other:?}")),
+        other => {
+            return Err(code_detail(
+                "record.micFormatUnsupported",
+                format!("{other:?}"),
+            ))
+        }
     }
-    .map_err(|e| format!("无法打开麦克风（{format:?}）: {e}"))?;
+    .map_err(|e| code_detail("record.micOpenFailed", format!("{format:?}: {e}")))?;
 
     Ok((stream, sample_rate, queue))
 }
@@ -398,10 +479,10 @@ fn find_device(host: &cpal::Host, wanted: Option<&str>) -> Result<cpal::Device, 
             .and_then(|mut devices| {
                 devices.find(|device| device.name().map(|n| n == name).unwrap_or(false))
             })
-            .ok_or_else(|| format!("找不到输入设备：{name}")),
+            .ok_or_else(|| code_detail("record.deviceNotFound", name)),
         None => host
             .default_input_device()
-            .ok_or_else(|| "没有可用的麦克风".to_string()),
+            .ok_or_else(|| code("record.noInputDevice")),
     }
 }
 
@@ -410,12 +491,15 @@ fn stream_error_handler(
     slot: Arc<Mutex<Option<String>>>,
 ) -> impl FnMut(cpal::StreamError) + Send + 'static {
     move |err: cpal::StreamError| {
-        let message = format!("麦克风异常: {err}");
+        // 存进 error 槽的是错误码（前端查字典翻译），细节另存一份给事件载荷。
         if let Ok(mut guard) = slot.lock() {
-            *guard = Some(message.clone());
+            *guard = Some(code_detail("record.micError", &err));
         }
         if let Some(app) = &app {
-            let _ = app.emit("audio:error", message);
+            let _ = app.emit(
+                "audio:error",
+                AudioErrorPayload::fatal_detail("record.micError", err),
+            );
         }
     }
 }
@@ -512,10 +596,12 @@ mod tests {
         assert_eq!(q.take_new().dropped, 0);
     }
 
+    /// 缺口标记是语言中立的占位符：前端渲染时才翻成界面语言。
     #[test]
-    fn gap_marker_mentions_seconds() {
-        assert!(gap_marker(48_000, 48_000).contains('1')); // 48000 @48k = 1 秒
-        assert!(gap_marker(96_000, 48_000).contains('2')); // 2 秒
+    fn gap_marker_is_a_placeholder() {
+        assert_eq!(gap_marker(48_000, 48_000), "[[gap:1]]"); // 48000 @48k = 1 秒
+        assert_eq!(gap_marker(96_000, 48_000), "[[gap:2]]"); // 2 秒
+        assert_eq!(gap_marker(1, 48_000), "[[gap:1]]"); // 不足 1 秒也算 1 秒
     }
 
     #[test]
@@ -564,4 +650,41 @@ mod tests {
         assert!(samples.len() > rate as usize, "录音样本太少");
         assert!(peak <= 1.0, "样本超出 [-1, 1]");
     }
+}
+
+// ──────────────────── 缺口占位符 ────────────────────
+
+pub fn is_gap_marker(text: &str) -> bool {
+    text.starts_with(crate::audio::GAP_MARKER_PREFIX)
+}
+
+pub fn gap_marker_seconds(text: &str) -> Option<u32> {
+    let prefix = crate::audio::GAP_MARKER_PREFIX;
+    let start = text.find(prefix)?;
+    let rest = &text[start + prefix.len()..];
+    let end = rest.find("]]")?;
+    let digits = &rest[..end];
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// 累积文本结尾是不是完整的缺口占位符——和前端 `core.js` 的 `GAP_END_RE` 同一套规则。
+///
+/// 前端是 `/\[\[gap:\d+\]\]$/`：占位符必须整段落在结尾，中间只能是数字。
+pub fn ends_with_gap_marker(text: &str) -> bool {
+    let prefix = crate::audio::GAP_MARKER_PREFIX;
+    let Some(start) = text.rfind(prefix) else {
+        return false;
+    };
+    let rest = &text[start + prefix.len()..];
+    let Some(end) = rest.find("]]") else {
+        return false;
+    };
+    if end + 2 != rest.len() {
+        return false;
+    }
+    let digits = &rest[..end];
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }

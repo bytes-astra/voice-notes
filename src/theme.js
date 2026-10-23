@@ -1,11 +1,16 @@
 /* 主题：浅色/深色、窗口底色、按钮图标 */
 
 import { $, THEME_KEY, t } from './core.js'
+import { getCurrentWindow } from './tauri.js'
 
 /// 窗口底色跟着主题走：否则 webview 重载（系统权限弹窗、应用重启）时会闪白。
+///
+/// 用十六进制字符串：Tauri 2 的 `set_background_color` 收的是 `InnerColor`
+/// 枚举，只认 hex 字符串或 {r,g,b,a} 且分量是 u8 —— 传浮点对象会被拒
+/// （"data did not match any variant of untagged enum InnerColor"）。
 const WINDOW_BG = {
-  light: { r: 243, g: 244, b: 247, a: 1 },
-  dark: { r: 11, g: 13, b: 16, a: 1 },
+  light: '#f3f4f7',
+  dark: '#0b0d10',
 }
 
 export function currentTheme() {
@@ -16,8 +21,7 @@ export function currentTheme() {
 
 export function syncWindowBackground() {
   try {
-    const win = window.__TAURI__?.window?.getCurrentWindow?.()
-    win?.setBackgroundColor?.(WINDOW_BG[currentTheme()])
+    getCurrentWindow()?.setBackgroundColor?.(WINDOW_BG[currentTheme()])?.catch?.(() => {})
   } catch {
     /* 忽略 */
   }

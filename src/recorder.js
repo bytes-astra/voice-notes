@@ -1,9 +1,9 @@
 /* 录音流程：阶段、波形、计时、开始 / 停止 / 取消 */
 
-import { $, BARS, IDLE_WAVE, els, fmtClock, fmtError, idleHint, state, t, toast } from './core.js'
-import { invoke } from './tauri.js'
+import { $, BARS, IDLE_WAVE, els, errorText, fmtClock, fmtError, idleHint, state, t, toast } from './core.js'
+import { invoke, logEvent } from './tauri.js'
 import { renderMode } from './status.js'
-import { showTranscript } from './result.js'
+import { clearResult, showTranscript } from './result.js'
 
 const HINTS = {
   requesting: 'record.preparing',
@@ -102,6 +102,7 @@ export async function startRecording() {
   } catch (error) {
     if (requestId === state.requestId) {
       setPhase('idle')
+      logEvent('ERROR', `启动录音失败: ${errorText(error)}`)
       toast(fmtError(error), 'error')
     }
   } finally {
@@ -118,6 +119,7 @@ async function runStart(requestId) {
   } catch (error) {
     if (requestId !== state.requestId) return
     setPhase('idle')
+    logEvent('ERROR', `麦克风不可用: ${errorText(error)}`)
     toast(t('record.micDenied', { error: fmtError(error) }), 'error')
     return
   }
@@ -134,14 +136,15 @@ async function runStart(requestId) {
     els.timer.textContent = '00:00'
     // 两种模式都是边录边出字：先把结果区清空
     state.lastTranscript = null
-    els.text.value = ''
-    els.meta.innerHTML = '<span>' + t('record.live') + '</span>'
+    clearResult('record.live')
     startTimer()
     setPhase('recording')
+    logEvent('INFO', `开始录音 mode=${state.status?.mode || 'offline'}`)
   } catch (error) {
     // 过期的请求失败了不能影响新请求的阶段和提示。
     if (requestId !== state.requestId) return
     setPhase('idle')
+    logEvent('ERROR', `启动录音失败: ${errorText(error)}`)
     toast(fmtError(error), 'error')
   }
 }
@@ -155,9 +158,12 @@ export async function stopRecording() {
   els.hint.textContent = t('record.transcribingFirst')
   try {
     const transcript = await invoke('stop_recording')
+    // 录音的最终结果：时长 + 句数，和文件转写一样记一条。
+    logEvent('INFO', `停止录音，转写完成 时长=${(transcript.durationSeconds || 0).toFixed(1)}s 句数=${transcript.segments?.length || 0}`)
     showTranscript(transcript)
     toast(transcript.text ? t('result.done') : t('result.none'))
   } catch (error) {
+    logEvent('ERROR', `停止录音失败: ${errorText(error)}`)
     toast(fmtError(error), 'error')
   } finally {
     setPhase('idle')
@@ -167,6 +173,7 @@ export async function stopRecording() {
 export async function cancelRecording() {
   if (state.phase !== 'recording' && state.phase !== 'requesting') return
   const wasRecording = state.phase === 'recording'
+  logEvent('INFO', `取消录音 phase=${state.phase}`)
   // 让还在 await 的启动流程放弃后续步骤（它可能在等权限或等后端启动）。
   state.requestId += 1
   stopTimer()
@@ -180,8 +187,7 @@ export async function cancelRecording() {
   els.timer.textContent = '00:00'
   if (wasRecording) {
     // 取消就是不要这段：清掉已经实时上屏的文字。
-    els.text.value = ''
-    els.meta.innerHTML = '<span>' + t('result.waiting') + '</span>'
+    clearResult()
   }
   setPhase('idle')
 }

@@ -53,6 +53,8 @@ export const state = {
   /// 正在转写文件（用于显示「第 N 句」进度）
   transcribingFile: false,
   fileSegments: 0,
+  /// 文件转写的开始时刻（performance.now()）：用来显示「已用时」
+  fileStartedAt: 0,
 }
 
 export const els = {
@@ -117,9 +119,51 @@ export const els = {
 
 /* ── 基础工具 ─────────────────────────────────────────── */
 
+/// 后端错误 → 界面文案。
+///
+/// 后端只返回字典 key，不返回展示文案（AGENTS.md）：
+///   字符串 "record.empty" / "record.micError:打开失败"
+///   事件载荷对象 { code, detail?, seconds?, fatal? }
+///
+/// **界面只显示字典里的干净文案**：技术细节（系统错误文本、路径、格式名）
+/// 由后端写进日志，不往界面上贴。字典里能填的只有用户看得懂的参数：
+/// `{value}`（一个具体值）和 `{seconds}`（秒数）。
+/// 字典里没有这个 key → 显示「未知错误」，同样不把原文漏给用户。
 export function fmtError(error) {
-  const text = typeof error === 'string' ? error : error?.message || String(error)
-  return text.replace(/^Error:\s*/, '')
+  if (error && typeof error === 'object' && !Array.isArray(error)) {
+    const vars = {}
+    if (error.seconds != null) vars.seconds = error.seconds
+    const text = translateCode(error.code, vars)
+    if (text) return text
+    if (isErrorCode(error.code)) return t('error.unknown')
+    return error.detail || error.message || String(error)
+  }
+  const raw = (typeof error === 'string' ? error : error?.message || String(error)).replace(/^Error:\s*/, '')
+  const cut = raw.indexOf(':')
+  const key = cut > 0 ? raw.slice(0, cut) : raw
+  const detail = cut > 0 ? raw.slice(cut + 1) : ''
+  // 细节只填 {value} / {seconds} 这类「用户看得懂的参数」。
+  const vars = detail ? { value: detail, seconds: detail } : undefined
+  const text = translateCode(key, vars)
+  if (text) return text
+  // 是个错误码但字典里没有 → 未知错误（别把码和细节原样甩给用户）。
+  // 不是错误码（系统 / 第三方库原文）→ 照旧显示原文。
+  return isErrorCode(key) ? t('error.unknown') : raw
+}
+
+/// 像不像我们自己的错误码（`record.micError` 这种带点的）。
+const ERROR_CODE_RE = /^[a-z][A-Za-z0-9]*(\.[A-Za-z0-9]+)+$/
+
+function isErrorCode(key) {
+  return typeof key === 'string' && ERROR_CODE_RE.test(key)
+}
+
+/// 字典里有这个 key 就返回译文，没有就返回 null（让调用方回退到原文）。
+function translateCode(key, vars) {
+  if (!key) return null
+  const dict = I18N.locales[I18N.locale] || {}
+  if (!(key in dict)) return null
+  return t(key, vars)
 }
 
 export function fmtBytes(bytes) {
@@ -168,8 +212,20 @@ export function toast(message, type = 'info') {
   }, type === 'error' ? 4200 : 2400)
 }
 
+/// 把异常对象变成日志里的一行文字：message + stack。
+/// stack 是诊断信息，只进日志文件，永远不到用户眼前。
+export function errorText(error, fallback) {
+  if (!error) return fallback || '(无详情)'
+  if (typeof error === 'string') return error
+  const message = error.message || fallback || String(error)
+  const stack = error.stack
+  if (!stack) return message
+  // stack 开头通常已经带着 message，别重复两遍。
+  return stack.includes(message) ? stack : `${message}\n${stack}`
+}
+
 /// 判断是不是 CJK 字符（和后端 asr::is_cjk 同一套范围）。
-function isCjk(ch) {
+export function isCjk(ch) {
   const code = ch.codePointAt(0);
   return (
     (code >= 0x3000 && code <= 0x303f) ||
@@ -182,13 +238,38 @@ function isCjk(ch) {
   )
 }
 
+/// 缺口占位符：后端丢掉音频时只给 `[[gap:秒数]]`，界面语言在渲染时才决定。
+const GAP_RE = /\[\[gap:(\d+)\]\]/g
+const GAP_END_RE = /\[\[gap:\d+\]\]$/
+
+/// 是不是缺口占位符（和后端 audio::is_gap_marker 同一套规则）。
+export function isGapMarker(text) {
+  return typeof text === 'string' && text.startsWith('[[gap:')
+}
+
+/// 缺口标记的文案：全角括号（中文）本身是 CJK，前后不用空格；
+/// 半角括号（英文）要补空格，否则会粘在句子中间。
+export function gapText(seconds) {
+  const label = t('record.gap', { seconds })
+  if (!label) return label
+  const cjk = isCjk(label[0]) && isCjk(label[label.length - 1])
+  return cjk ? label : ` ${label} `
+}
+
+/// 把后端文本里的缺口占位符换成当前语言的标记。
+export function localizeText(text) {
+  if (!text) return text || ''
+  return text.replace(GAP_RE, (_, seconds) => gapText(Number(seconds)))
+}
+
 /// 拼接两段文本：中日韩之间直接连，其余用空格。
 ///
 /// 规则必须和后端 asr::join_segments 一致 —— 实时出字是逐句追加的，
-/// 前端拼出来的全文要和最终结果一模一样。
+/// 前端拼出来的全文要和最终结果一模一样。缺口占位符前后不加空格。
 export function joinText(left, right) {
   if (!left) return right
   if (!right) return left
+  if (isGapMarker(right) || GAP_END_RE.test(left)) return `${left}${right}`
   const needSpace = !isCjk(left[left.length - 1]) || !isCjk(right[0])
   return needSpace ? `${left} ${right}` : `${left}${right}`
 }

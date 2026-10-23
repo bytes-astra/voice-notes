@@ -1,61 +1,21 @@
-//! SenseVoiceSmall INT8 推理：Silero VAD 切句 + sherpa-onnx 离线识别。
+//! 识别会话与转写数据结构：整段（Silero VAD 切句 + SenseVoice）和流式
+//! （Zipformer transducer）的会话、Transcript / Segment、以及文本规则
+//! （拼句、超长句切窗、pre-roll 回扩）。
+//!
+//! **模型怎么构造在 engine.rs**（三个引擎 + 加载 + AppState），这里只管
+//! 「拿着引擎怎么把音频变成文字」。
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Serialize;
-use sherpa_onnx::{
-    OfflinePunctuation, OfflinePunctuationConfig, OfflinePunctuationModelConfig, OfflineRecognizer,
-    OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, SileroVadModelConfig, VadModelConfig,
-    VoiceActivityDetector,
-};
+use sherpa_onnx::OnlineStream;
+use sherpa_onnx::{VadModelConfig, VoiceActivityDetector};
 
-use crate::models::ModelPaths;
+use crate::audio::{ends_with_gap_marker, is_gap_marker};
+use crate::engine::{Engine, PunctuationEngine, StreamingEngine};
 
 pub const SAMPLE_RATE: i32 = 16_000;
-const VAD_WINDOW: usize = 512;
-/// 单次送入模型的音频上限（SenseVoice 训练长度 30s）。
-const MAX_SEGMENT_SECONDS: f32 = 30.0;
-/// 流式输入分片：3200 样本 = 200ms，与官方示例一致。
-const STREAM_CHUNK: usize = 3_200;
-/// 收尾时补的静音长度（300ms）：让解码器把句尾最后一个字冲出来。
-const TAIL_SILENCE_SAMPLES: usize = 4_800;
-/// 段起点落在音频开头附近时，段前往回扩的最大距离（0.4s）。
-///
-/// sherpa 的 VAD 内部 padding 只有 ≈314ms（`2×window + min_speech`）；起音偏软时
-/// VAD 会把开头当成静音，padding 追不回来，第一个字就被切掉了。实测 TTS / 剪辑过的
-/// 文件（开头直接是语音）每条都会丢首字。
-const PRE_ROLL_SAMPLES: usize = 6_400;
-/// 只有段起点早于这个位置才考虑回扩（0.6s）；更靠后的段前面有真实音频，padding 够用。
-const PRE_ROLL_MAX_START: usize = 9_600;
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Segment {
-    pub text: String,
-    pub start: f32,
-    pub end: f32,
-}
-
-fn rms(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
-}
-
-/// 第一段是否值得把起点回扩：起点在开头附近，且段前音频有语音级能量。
-///
-/// 纯静音/底噪不回扩 —— 否则会把开头的噪声当语音塞进结果（实测真人样本
-/// real-05 会多出「您好」）。
-fn should_pre_roll(start: usize, pre: &[f32], segment: &[f32]) -> bool {
-    if start == 0 || start > PRE_ROLL_MAX_START {
-        return false;
-    }
-    let pre_rms = rms(pre);
-    let seg_rms = rms(segment);
-    pre_rms > 0.005 && pre_rms > seg_rms * 0.3
-}
 
 #[derive(Clone, Debug, Serialize)]
 // 前端读的是 transcript.durationSeconds / elapsedMs：这里必须是 camelCase，
@@ -69,153 +29,55 @@ pub struct Transcript {
     pub language: String,
 }
 
-pub struct Engine {
-    pub language: String,
-    pub itn: bool,
-    recognizer: OfflineRecognizer,
-    vad: Option<VadModelConfig>,
+/// VAD 的窗口大小（512 样本 = 32 ms @16k）：引擎配 VAD 和会话切句都要用。
+/// 段起点落在音频开头附近时，段前往回扩的最大距离（0.4s）。
+///
+/// sherpa 的 VAD 内部 padding 只有 ≈314ms（`2×window + min_speech`）；起音偏软时
+/// VAD 会把开头当成静音，padding 追不回来，第一个字就被切掉了。实测 TTS / 剪辑过的
+/// 文件（开头直接是语音）每条都会丢首字。
+pub const PRE_ROLL_SAMPLES: usize = 6_400;
+
+/// 只有段起点早于这个位置才考虑回扩（0.6s）；更靠后的段前面有真实音频，padding 够用。
+pub const PRE_ROLL_MAX_START: usize = 9_600;
+
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
-impl Engine {
-    pub fn new(paths: &ModelPaths, language: &str, itn: bool) -> Result<Self, String> {
-        let mut config = OfflineRecognizerConfig::default();
-        config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
-            model: Some(paths.model.clone()),
-            language: Some(language.to_string()),
-            use_itn: itn,
-        };
-        config.model_config.tokens = Some(paths.tokens.clone());
-        config.model_config.num_threads = threads();
-        config.model_config.provider = Some("cpu".into());
-        config.model_config.debug = false;
-
-        let recognizer = OfflineRecognizer::create(&config)
-            .ok_or_else(|| "无法加载 SenseVoice 模型（文件可能损坏，建议重新下载）".to_string())?;
-
-        let vad = paths.vad.as_ref().and_then(|_| {
-            Some(VadModelConfig {
-                silero_vad: SileroVadModelConfig {
-                    model: paths.vad.clone(),
-                    threshold: 0.5,
-                    min_silence_duration: 0.5,
-                    min_speech_duration: 0.25,
-                    window_size: VAD_WINDOW as i32,
-                    max_speech_duration: MAX_SEGMENT_SECONDS,
-                },
-                sample_rate: SAMPLE_RATE,
-                num_threads: 1,
-                provider: Some("cpu".into()),
-                debug: false,
-                ..Default::default()
-            })
-        });
-
-        Ok(Self {
-            language: language.to_string(),
-            itn,
-            recognizer,
-            vad,
-        })
+/// 第一段是否值得把起点回扩：起点在开头附近，且段前音频有语音级能量。
+///
+/// 纯静音/底噪不回扩 —— 否则会把开头的噪声当语音塞进结果（实测真人样本
+/// real-05 会多出「您好」）。
+pub fn should_pre_roll(start: usize, pre: &[f32], segment: &[f32]) -> bool {
+    if start == 0 || start > PRE_ROLL_MAX_START {
+        return false;
     }
-
-    /// VAD 配置：整段模式「边录边识别」要用同一套参数（同样的断句行为）。
-    pub fn vad_config(&self) -> Option<VadModelConfig> {
-        self.vad.clone()
-    }
-
-    /// 对一段已经切好的句子直接解码（**不再跑 VAD**）。
-    ///
-    /// 边录边识别的路径下 VAD 在外层切句，这里再切一次会改变句子内部的边界，
-    /// 所以单独提供一个「直接解码」的入口。
-    pub fn recognize(&self, samples: &[f32]) -> String {
-        decode(&self.recognizer, samples)
-    }
-
-    /// 转写 16 kHz 单声道样本；VAD 可用时按语音段切分，否则按 30s 窗口兜底。
-    pub fn transcribe(&self, samples: &[f32]) -> Transcript {
-        let started = Instant::now();
-        let duration = samples.len() as f32 / SAMPLE_RATE as f32;
-        let mut segments = Vec::new();
-
-        if let Some(vad_config) = &self.vad {
-            if let Some(detector) =
-                VoiceActivityDetector::create(vad_config, 60.0)
-            {
-                detector.reset();
-                let mut first = true;
-                for chunk in samples.chunks(VAD_WINDOW) {
-                    detector.accept_waveform(chunk);
-                    while let Some(segment) = detector.front() {
-                        let raw = segment.samples();
-                        let start_samples = segment.start() as usize;
-                        let mut from = start_samples;
-                        if first && should_pre_roll(start_samples, &samples[..start_samples.min(samples.len())], raw) {
-                            from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
-                        }
-                        first = false;
-                        let audio = &samples[from..(start_samples + raw.len()).min(samples.len())];
-                        let text = decode(&self.recognizer, audio);
-                        let start = from as f32 / SAMPLE_RATE as f32;
-                        let end = start + audio.len() as f32 / SAMPLE_RATE as f32;
-                        if !text.is_empty() {
-                            segments.push(Segment { text, start, end });
-                        }
-                        detector.pop();
-                    }
-                }
-                detector.flush();
-                while let Some(segment) = detector.front() {
-                    let raw = segment.samples();
-                    let start_samples = segment.start() as usize;
-                    let mut from = start_samples;
-                    if first && should_pre_roll(start_samples, &samples[..start_samples.min(samples.len())], raw) {
-                        from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
-                    }
-                    first = false;
-                    let audio = &samples[from..(start_samples + raw.len()).min(samples.len())];
-                    let text = decode(&self.recognizer, audio);
-                    let start = from as f32 / SAMPLE_RATE as f32;
-                    let end = start + audio.len() as f32 / SAMPLE_RATE as f32;
-                    if !text.is_empty() {
-                        segments.push(Segment { text, start, end });
-                    }
-                    detector.pop();
-                }
-            }
-        }
-
-        if segments.is_empty() && !samples.is_empty() {
-            // VAD 没切出内容（太短、太轻或纯噪音）时，直接按 30s 窗口兜底识别一次。
-            let limit = (MAX_SEGMENT_SECONDS * SAMPLE_RATE as f32) as usize;
-            for (index, window) in samples.chunks(limit).enumerate() {
-                let text = decode(&self.recognizer, window);
-                if !text.is_empty() {
-                    let start = (index * limit) as f32 / SAMPLE_RATE as f32;
-                    segments.push(Segment {
-                        text,
-                        start,
-                        end: start + window.len() as f32 / SAMPLE_RATE as f32,
-                    });
-                }
-            }
-        }
-
-        let text = join_segments(segments.iter().map(|s| s.text.as_str()));
-        Transcript {
-            text,
-            segments,
-            duration_seconds: duration,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-            language: self.language.clone(),
-        }
-    }
+    let pre_rms = rms(pre);
+    let seg_rms = rms(segment);
+    pre_rms > 0.005 && pre_rms > seg_rms * 0.3
 }
 
-fn threads() -> i32 {
-    std::thread::available_parallelism()
-        .map(|n| (n.get() / 2).clamp(1, 4) as i32)
-        .unwrap_or(2)
+pub const VAD_WINDOW: usize = 512;
+
+/// 流式输入分片：3200 样本 = 200ms，与官方示例一致。
+const STREAM_CHUNK: usize = 3_200;
+
+/// 收尾时补的静音长度（300ms）：让解码器把句尾最后一个字冲出来。
+const TAIL_SILENCE_SAMPLES: usize = 4_800;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Segment {
+    pub text: String,
+    pub start: f32,
+    pub end: f32,
 }
+
+
+
 
 
 /// 超过这个长度的句子才改用重叠窗口（秒）。
@@ -226,6 +88,18 @@ fn threads() -> i32 {
 ///
 /// 但输入越长，编码器的注意力越吃显存（帧数平方级），所以留一个上限：
 /// 超过 90 秒就切成 30 秒窗口 + 2 秒重叠，避免极端情况下把内存吃光。
+
+/// 后一段开头应该从哪里切掉（返回**字节**下标，0 = 不切）。
+///
+/// 找前一段结尾和后一段开头的最长公共部分（比较时忽略标点），
+/// 返回后一段里重复部分的结束位置。
+
+/// 合并重叠窗口识别出来的文本：删掉相邻两段重复的部分。
+
+
+/// 把「缺口」标记按时间插进句子列表，并重拼文本。
+///
+// ── 超长句切窗：超过 90 秒切成 30 秒窗口 + 2 秒重叠再合并 ──
 const MAX_SINGLE_SHOT_SECONDS: usize = 90;
 
 /// 超长句的窗口参数：30 秒窗口 + 2 秒重叠 + 28 秒步进。
@@ -246,10 +120,6 @@ fn is_merge_punct(c: char) -> bool {
             .contains(c)
 }
 
-/// 后一段开头应该从哪里切掉（返回**字节**下标，0 = 不切）。
-///
-/// 找前一段结尾和后一段开头的最长公共部分（比较时忽略标点），
-/// 返回后一段里重复部分的结束位置。
 fn overlap_cut(previous: &str, next: &str) -> usize {
     let prev: Vec<char> = previous.chars().filter(|c| !is_merge_punct(*c)).collect();
     // next 的非标点字符 + 它们在原始字符串里的字节位置
@@ -271,7 +141,6 @@ fn overlap_cut(previous: &str, next: &str) -> usize {
     0
 }
 
-/// 合并重叠窗口识别出来的文本：删掉相邻两段重复的部分。
 pub fn merge_transcripts(texts: &[String]) -> String {
     let mut result = String::new();
     for (index, text) in texts.iter().enumerate() {
@@ -285,18 +154,7 @@ pub fn merge_transcripts(texts: &[String]) -> String {
     result
 }
 
-fn decode(recognizer: &OfflineRecognizer, samples: &[f32]) -> String {
-    let stream = recognizer.create_stream();
-    stream.accept_waveform(SAMPLE_RATE, samples);
-    recognizer.decode(&stream);
-    stream
-        .get_result()
-        .map(|r| clean(&r.text))
-        .unwrap_or_default()
-}
 
-/// 把「缺口」标记按时间插进句子列表，并重拼文本。
-///
 /// 识别跟不上时会丢掉一段音频，丢掉的地方必须在结果里留个记号 ——
 /// 静默丢一段音频，用户根本不知道结果缺了一块。
 pub fn insert_gaps(transcript: &mut Transcript, gaps: Vec<Segment>) {
@@ -313,7 +171,7 @@ pub fn insert_gaps(transcript: &mut Transcript, gaps: Vec<Segment>) {
 }
 
 /// 去掉 SenseVoice 的 <|zh|><|NEUTRAL|> 之类控制标记，压平空白。
-fn clean(text: &str) -> String {
+pub fn clean(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_tag = false;
     for ch in text.chars() {
@@ -339,7 +197,18 @@ fn is_cjk(ch: char) -> bool {
     )
 }
 
+/// 是不是缺口占位符（`[[gap:秒数]]`）——和前端 `core.js` 的 `isGapMarker()` 同一套规则。
+///
+/// 缺口是「丢掉了一段音频」的位置标记，不是句子：它前后都不加空格。
+
+/// 从缺口占位符里取出秒数（`[[gap:3]]` → 3）；不是占位符就返回 None。
+///
+/// 和前端 `core.js` 的 `GAP_RE`（`/\[\[gap:(\d+)\]\]/`）同一套规则。
+
+
 /// 中文/日文/韩文之间直接拼接，其余用空格——与 DSH 的 `join(" ")` 相比更贴近书写习惯。
+///
+/// 缺口占位符（`[[gap:秒数]]`）前后都不加空格，规则与前端 `core.js` 的 `joinText()` 一致。
 pub fn join_segments<'a>(parts: impl Iterator<Item = &'a str>) -> String {
     let mut out = String::new();
     for part in parts {
@@ -347,8 +216,18 @@ pub fn join_segments<'a>(parts: impl Iterator<Item = &'a str>) -> String {
         if part.is_empty() {
             continue;
         }
+        // 规则和前端 `joinText()` 逐条对应：
+        // 1. 右边是占位符 → 不加空格
+        // 2. 左边（已拼好的文本）以占位符结尾 → 不加空格
+        // 3. 否则中日韩之间直接连，其余加空格
         let need_space = match (out.chars().last(), part.chars().next()) {
-            (Some(left), Some(right)) => !is_cjk(left) || !is_cjk(right),
+            (Some(left), Some(right)) => {
+                if is_gap_marker(part) || ends_with_gap_marker(&out) {
+                    false
+                } else {
+                    !is_cjk(left) || !is_cjk(right)
+                }
+            }
             _ => false,
         };
         if need_space {
@@ -401,114 +280,10 @@ mod tests {
 
 // ────────────────────────── 流式识别 ──────────────────────────
 
-use sherpa_onnx::{
-    OnlineRecognizer, OnlineRecognizerConfig, OnlineStream, OnlineTransducerModelConfig,
-};
-
-use crate::models::StreamingPaths;
-
-impl StreamingEngine {
-    /// 加载流式 Zipformer（中英双语，+ 可选的术语表热词）。
-    ///
-    /// 热词要求 `modified_beam_search`（greedy 不支持 context graph），没配词表时
-    /// 保持 greedy，避免给不用热词的人平白加解码延迟。
-    pub fn new(paths: &StreamingPaths, hotwords: &[String]) -> Result<Self, String> {
-        let words = hotwords.join("\n");
-        let use_hotwords = !words.trim().is_empty();
-        let mut config = OnlineRecognizerConfig::default();
-        config.model_config.transducer = OnlineTransducerModelConfig {
-            encoder: Some(paths.encoder.clone()),
-            decoder: Some(paths.decoder.clone()),
-            joiner: Some(paths.joiner.clone()),
-        };
-        config.model_config.tokens = Some(paths.tokens.clone());
-        config.model_config.num_threads = threads();
-        config.model_config.provider = Some("cpu".into());
-        config.decoding_method = Some(
-            if use_hotwords {
-                "modified_beam_search"
-            } else {
-                "greedy_search"
-            }
-            .into(),
-        );
-        if use_hotwords {
-            // 用 config 级 hotwords_buf：per-stream 的 create_stream_with_hotwords 在本机
-            // 实测对 cjkchar 模型不生效（文本不变），buf 方式可以。
-            config.hotwords_buf = Some(words.as_bytes().to_vec());
-            config.hotwords_score = 1.5;
-        }
-        config.enable_endpoint = true;
-        config.rule1_min_trailing_silence = 2.4;
-        config.rule2_min_trailing_silence = 1.2;
-        // rule3 是「超过这个长度强制断句」：20 秒会把连续说话硬切一刀（实测 24.5s
-        // 连续语音在 20.368s 触发）。真正的断句由 VAD 门控负责，这里只留兜底。
-        config.rule3_min_utterance_length = 60.0;
-
-        let recognizer = OnlineRecognizer::create(&config)
-            .ok_or_else(|| "无法加载流式模型（文件可能损坏，建议重新下载）".to_string())?;
-        let vad = paths.vad.as_ref().map(|path| VadModelConfig {
-            silero_vad: SileroVadModelConfig {
-                model: Some(path.clone()),
-                threshold: 0.5,
-                min_silence_duration: 0.5,
-                min_speech_duration: 0.25,
-                window_size: 512,
-                max_speech_duration: 20.0,
-            },
-            sample_rate: SAMPLE_RATE,
-            num_threads: 1,
-            provider: Some("cpu".into()),
-            debug: false,
-            ..Default::default()
-        });
-        Ok(Self { recognizer, vad })
-    }
-
-    /// 静音门控用的 VAD 配置（模型缺失时为 None，退化为全量喂入）。
-    pub fn vad(&self) -> Option<&VadModelConfig> {
-        self.vad.as_ref()
-    }
-
-    pub fn new_stream(&self) -> OnlineStream {
-        self.recognizer.create_stream()
-    }
-}
 
 /// 标点模型（CT-Transformer），给流式定稿句补标点。
-pub struct PunctuationEngine {
-    punct: OfflinePunctuation,
-}
-
-impl PunctuationEngine {
-    pub fn new(model: &str) -> Result<Self, String> {
-        let config = OfflinePunctuationConfig {
-            model: OfflinePunctuationModelConfig {
-                ct_transformer: Some(model.to_string()),
-                num_threads: 1,
-                debug: false,
-                provider: Some("cpu".into()),
-            },
-        };
-        let punct = OfflinePunctuation::create(&config)
-            .ok_or_else(|| "无法加载标点模型（文件可能损坏）".to_string())?;
-        Ok(Self { punct })
-    }
-
-    /// 加标点；失败时原样返回，不影响主流程。
-    pub fn apply(&self, text: &str) -> String {
-        self.punct
-            .add_punctuation(text)
-            .filter(|out| !out.trim().is_empty())
-            .unwrap_or_else(|| text.to_string())
-    }
-}
 
 /// 流式模型句柄。
-pub struct StreamingEngine {
-    pub recognizer: OnlineRecognizer,
-    vad: Option<VadModelConfig>,
-}
 
 
 /// 整段模式的「边录边按句识别」会话。
@@ -807,6 +582,7 @@ impl StreamingSession {
 #[cfg(test)]
 mod gap_tests {
     use super::*;
+    use crate::audio::gap_marker_seconds;
 
     fn seg(text: &str, start: f32) -> Segment {
         Segment {
@@ -825,13 +601,60 @@ mod gap_tests {
             elapsed_ms: 100,
             language: "zh".into(),
         };
-        insert_gaps(
-            &mut transcript,
-            vec![seg("（此处约 3 秒未识别）", 1.0)],
-        );
+        insert_gaps(&mut transcript, vec![seg("[[gap:3]]", 1.0)]);
         assert_eq!(transcript.segments.len(), 3);
-        assert_eq!(transcript.segments[1].text, "（此处约 3 秒未识别）");
-        assert_eq!(transcript.text, "第一句。（此处约 3 秒未识别）第二句。");
+        assert_eq!(transcript.segments[1].text, "[[gap:3]]");
+        // 占位符前后不加空格（和前端 core.js 的 joinText 规则一致）
+        assert_eq!(transcript.text, "第一句。[[gap:3]]第二句。");
+    }
+
+    /// 缺口占位符前后都不加空格（前端 `core.js` 的 `joinText()` 同一套规则）。
+    #[test]
+    fn gap_placeholder_joins_without_spaces() {
+        assert_eq!(
+            join_segments(["第一句。", "[[gap:3]]", "第二句。"].into_iter()),
+            "第一句。[[gap:3]]第二句。"
+        );
+        // 占位符在中间：两侧都不加空格
+        assert_eq!(
+            join_segments(["hello", "[[gap:12]]", "world"].into_iter()),
+            "hello[[gap:12]]world"
+        );
+        // 占位符开头 / 结尾
+        assert_eq!(
+            join_segments(["[[gap:2]]", "后面一句"].into_iter()),
+            "[[gap:2]]后面一句"
+        );
+        assert_eq!(
+            join_segments(["前面一句", "[[gap:2]]"].into_iter()),
+            "前面一句[[gap:2]]"
+        );
+        // 不是占位符的普通文本仍然按 CJK 规则拼
+        assert_eq!(join_segments(["你好", "world"].into_iter()), "你好 world");
+    }
+
+    /// 占位符只在结尾时才算「前一段是占位符」：中间夹了别的文字就按普通规则拼。
+    #[test]
+    fn only_ends_with_placeholder_skips_the_space() {
+        assert_eq!(
+            join_segments(["[[gap:3]]", "第二句。"].into_iter()),
+            "[[gap:3]]第二句。"
+        );
+        // 结尾不是占位符（后面还有别的字）→ 走普通规则
+        assert_eq!(
+            join_segments(["[[gap:3]]x", "第二句。"].into_iter()),
+            "[[gap:3]]x 第二句。"
+        );
+    }
+
+    /// 从占位符里取秒数（前端拿它填 `record.gapWarning` 的 {seconds}）。
+    #[test]
+    fn parses_gap_seconds() {
+        assert_eq!(gap_marker_seconds("[[gap:3]]"), Some(3));
+        assert_eq!(gap_marker_seconds("[[gap:12]]"), Some(12));
+        assert_eq!(gap_marker_seconds("普通句子"), None);
+        assert_eq!(gap_marker_seconds("[[gap:]]"), None);
+        assert_eq!(gap_marker_seconds("[[gap:abc]]"), None);
     }
 
     #[test]
@@ -892,6 +715,8 @@ mod merge_tests {
 #[cfg(test)]
 mod pre_roll_tests {
     use super::*;
+    use std::path::PathBuf;
+    use crate::models;
 
     #[test]
     fn pre_roll_only_for_speech_like_prefix() {
@@ -905,5 +730,55 @@ mod pre_roll_tests {
         assert!(!should_pre_roll(0, &speech, &segment));
         // 2s 处起句：前面有真实音频，sherpa 的 padding 够用
         assert!(!should_pre_roll(32_000, &speech, &segment));
+    }
+
+    #[test]
+    fn punctuates_sentences() {
+        let Some(model) = std::env::var("VOICE_NOTES_PUNCT_MODEL").ok() else {
+            eprintln!("跳过：未设置 VOICE_NOTES_PUNCT_MODEL");
+            return;
+        };
+        let engine = PunctuationEngine::new(&model).expect("加载标点模型");
+        let out = engine.apply("开放时间早上九点至下午五点");
+        println!("标点结果：{out}");
+        assert!(
+            out.contains('。') || out.contains('，'),
+            "没有补出标点: {out}"
+        );
+    }
+
+    #[test]
+    fn streams_with_punctuation() {
+        let (Some(model_dir), Some(punct_model)) = (
+            std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR").ok(),
+            std::env::var("VOICE_NOTES_PUNCT_MODEL").ok(),
+        ) else {
+            eprintln!("跳过：缺少流式模型或标点模型环境变量");
+            return;
+        };
+        let dir = PathBuf::from(model_dir);
+        let paths = models::StreamingPaths {
+            dir: dir.display().to_string(),
+            encoder: dir.join("encoder.int8.onnx").display().to_string(),
+            decoder: dir.join("decoder.onnx").display().to_string(),
+            joiner: dir.join("joiner.int8.onnx").display().to_string(),
+            tokens: dir.join("tokens.txt").display().to_string(),
+            vad: None,
+        };
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
+        let punctuator = Arc::new(PunctuationEngine::new(&punct_model).expect("加载标点模型"));
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+        let mut session = StreamingSession::new(engine, Some(punctuator));
+        for chunk in wave.samples().chunks(1_600) {
+            session.push(chunk);
+        }
+        session.finish();
+        let transcript = session.transcript();
+        println!("带标点结果：{}", transcript.text);
+        assert!(
+            transcript.text.contains('。') || transcript.text.contains('，'),
+            "流式结果没有标点: {}",
+            transcript.text
+        );
     }
 }

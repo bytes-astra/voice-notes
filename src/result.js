@@ -1,14 +1,26 @@
 /* 结果区：转写结果 + 实时中间结果 */
 
-import { els, fmtDuration, joinText, state, t } from './core.js'
+import { els, fmtDuration, joinText, localizeText, state, t } from './core.js'
 import { addHistory } from './history.js'
+
+/// 清空结果区：文本框清空，元信息区只留一条提示。
+export function clearResult(label = 'result.waiting') {
+  els.text.value = ''
+  els.meta.innerHTML = ''
+  const span = document.createElement('span')
+  span.textContent = t(label)
+  els.meta.appendChild(span)
+}
 
 /// 渲染一次转写结果。`record: false` 只重绘、不写历史（切语言时用）。
 export function showTranscript(transcript, { record = true } = {}) {
+  // 存原文：切语言时要按新语言重新本地化缺口占位符。
   state.lastTranscript = transcript
-  const text = (transcript.text || '').trim()
+  const raw = (transcript.text || '').trim()
+  // 缺口占位符（[[gap:N]]）在这里换成本地化文案：历史与存盘里也是本地化的。
+  const text = localizeText(raw)
   els.text.value = text
-  if (!text) {
+  if (!raw) {
     els.meta.innerHTML = '<span>' + t('record.empty') + '</span>'
     return
   }
@@ -35,7 +47,7 @@ export function showTranscript(transcript, { record = true } = {}) {
 export function appendSegment(text) {
   // 取消 / 收尾结束之后迟到的句子不再追加，否则结果框会冒出被取消的内容。
   if (state.phase !== 'recording' && state.phase !== 'transcribing') return
-  const piece = (text || '').trim()
+  const piece = localizeText(text || '').trim()
   if (!piece) return
   els.text.value = joinText(els.text.value, piece)
 }

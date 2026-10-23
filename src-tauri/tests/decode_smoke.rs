@@ -99,7 +99,7 @@ fn transcribes_file_end_to_end() {
         source: "test".into(),
     };
     let engine = std::sync::Arc::new(
-        voice_notes_lib::asr::Engine::new(&paths, "zh", true).expect("加载模型"),
+        voice_notes_lib::engine::Engine::new(&paths, "zh", true).expect("加载模型"),
     );
     let vad = engine.vad_config().expect("VAD 配置");
     let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad);

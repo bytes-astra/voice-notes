@@ -1,6 +1,6 @@
 /* 历史记录：本地存储 + 列表渲染 */
 
-import { HISTORY_KEY, I18N, els, fmtDuration, historyStorageSet, state, t } from './core.js'
+import { I18N, els, fmtDuration, historyStorageSet, state, t } from './core.js'
 import { copyText, saveText } from './export.js'
 
 export function saveHistory() {
@@ -102,5 +102,3 @@ export function saveIcon() {
 export function trashIcon() {
   return '<svg viewBox="0 0 24 24" width="15" height="15"><path d="M5 7h14M10 7V5h4v2m-7 0 .8 12h8.4L17 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 }
-
-export { HISTORY_KEY }

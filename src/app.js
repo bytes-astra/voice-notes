@@ -2,11 +2,11 @@
 
 import {
   $, I18N, LOCALE_KEY, THEME_KEY,
-  els, fmtError, state, t, toast,
+  els, errorText, fmtError, state, t, toast,
 } from './core.js'
-import { invoke } from './tauri.js'
+import { getCurrentWindow, getCurrentWebview, invoke, logEvent } from './tauri.js'
 import { renderHistory, saveHistory } from './history.js'
-import { showTranscript } from './result.js'
+import { clearResult, showTranscript } from './result.js'
 import {
   downloadModel, downloadStreamingModel, loadDevices,
   localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
@@ -22,6 +22,8 @@ import { renderThemeIcon, syncWindowBackground, toggleTheme } from './theme.js'
 
 let deviceSelect = null
 let localeSelect = null
+// 界面语言是否已经初始化过：第一次 applyLocale 是启动时的初始化，不算「切换」。
+let localeReady = false
 
 // 视图标题存 key、文案在渲染时取：模块顶层就 t() 的话切语言后标题不会更新
 const VIEW_KEYS = { transcribe: 'view.transcribe', history: 'view.history', settings: 'view.settings' }
@@ -30,12 +32,43 @@ function viewTitle(view) {
   return t(VIEW_KEYS[view])
 }
 
+/* ── 异常捕获 ─────────────────────────────────────────── */
+
+/// 装一次全局异常捕获：JS 异常和没被接住的 Promise 拒绝都送进日志文件。
+/// 启动时立刻装（在 init() 之前），这样后面任何一处抛错都能记下来。
+/// 这里只记日志，不弹窗、不改界面行为 —— 界面上的提示各有各的通路。
+function installErrorLogging() {
+  window.addEventListener('error', (event) => {
+    try {
+      if (event.error || event.message) {
+        logEvent('ERROR', `JS 异常: ${errorText(event.error, event.message)}`)
+        return
+      }
+      // 资源加载失败（script / img 等）：没有 error 对象，只有 target。
+      const target = event.target
+      logEvent('WARN', `资源加载失败: ${target?.src || target?.href || 'unknown'}`)
+    } catch {
+      /* 记日志失败也不能影响界面 */
+    }
+  })
+  window.addEventListener('unhandledrejection', (event) => {
+    try {
+      logEvent('ERROR', `未处理的 Promise 拒绝: ${errorText(event.reason)}`)
+    } catch {
+      /* 忽略 */
+    }
+  })
+}
+
+installErrorLogging()
+
 export function switchView(view) {
   if (!VIEW_KEYS[view]) return
   if (state.phase === 'recording' && view !== 'transcribe') {
     toast(t('toast.recordingBusy'))
     return
   }
+  const changed = state.view !== view
   state.view = view
   els.app.dataset.view = view
   for (const panel of document.querySelectorAll('[data-view-panel]')) {
@@ -45,12 +78,16 @@ export function switchView(view) {
     item.setAttribute('aria-current', item.dataset.view === view ? 'page' : 'false')
   }
   els.viewTitle.textContent = viewTitle(view)
+  // 只记真的切换了视图的那一次（启动时的初始视图不算）。
+  if (changed) logEvent('INFO', `视图切换: ${view}`)
 }
 
 /// 切换界面语言：存到 localStorage，然后重绘所有动态文案。
 export function applyLocale(preference) {
   const stored = preference || localStorage.getItem(LOCALE_KEY) || 'system'
+  const before = I18N.locale
   I18N.setLocale(stored)
+  const after = I18N.locale
   if (preference) localStorage.setItem(LOCALE_KEY, preference)
   renderLang()
   renderHistory()
@@ -60,8 +97,17 @@ export function applyLocale(preference) {
   renderHint()
   refreshSelectItems(stored)
   els.viewTitle.textContent = viewTitle(state.view)
+  // 原生窗口标题也跟着界面语言走（tauri.conf.json 里的只是启动默认值）。
+  try {
+    void getCurrentWindow().setTitle(t('app.title')).catch(() => {})
+  } catch {
+    /* 标题失败不能影响界面 */
+  }
   // 只重绘，不写历史：否则每切一次语言就多一条重复记录。
   if (state.lastTranscript) showTranscript(state.lastTranscript, { record: false })
+  // 启动时的初始化不算「切换」，只记用户真的改了语言的那一次。
+  if (localeReady && after !== before) logEvent('INFO', `界面语言已切换: ${after}`)
+  localeReady = true
 }
 
 /* ── 事件绑定 ─────────────────────────────────────────── */
@@ -76,8 +122,7 @@ export function bindUI() {
   els.saveBtn.addEventListener('click', () => saveText(els.text.value))
   els.clearBtn.addEventListener('click', () => {
     state.lastTranscript = null
-    els.text.value = ''
-    els.meta.innerHTML = '<span>' + t('result.waiting') + '</span>'
+    clearResult()
     els.text.focus()
   })
 
@@ -112,8 +157,7 @@ export function bindUI() {
     }
     switchView('transcribe')
     state.lastTranscript = null
-    els.text.value = ''
-    els.meta.innerHTML = '<span>' + t('result.waiting') + '</span>'
+    clearResult()
     els.timer.textContent = '00:00'
     els.text.focus()
   })
@@ -263,7 +307,7 @@ export function bindUI() {
 /// 用 Tauri 的拖放事件而不是 HTML5 的 drop：Tauri v2 默认拦截系统拖放
 /// （`dragDropEnabled`），HTML5 的 drag/drop 事件在真实应用里根本不会触发。
 function bindFileDrop() {
-  const webview = window.__TAURI__?.webview?.getCurrentWebview?.()
+  const webview = getCurrentWebview()
   if (!webview?.onDragDropEvent) return
   webview.onDragDropEvent((event) => {
     const payload = event.payload || {}
@@ -319,5 +363,6 @@ async function init() {
 
 init().catch((error) => {
   console.error(error)
+  logEvent('ERROR', `启动失败: ${errorText(error)}`)
   toast(t('app.startFailed', { error: fmtError(error) }), 'error')
 })

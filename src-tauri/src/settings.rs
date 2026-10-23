@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::{code, code_detail};
+
 pub const LANGUAGES: [&str; 6] = ["auto", "zh", "en", "yue", "ja", "ko"];
 /// 术语表上限：条数太多会明显增加热词误插与解码耗时。
 pub const MAX_HOTWORDS: usize = 100;
@@ -78,12 +80,12 @@ pub fn load(app: &AppHandle) -> Settings {
 }
 
 pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
-    let path = config_path(app).ok_or("无法定位应用配置目录")?;
+    let path = config_path(app).ok_or_else(|| code("error.appConfigDir"))?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("无法创建设置目录: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| code_detail("error.createSettingsDir", e))?;
     }
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    fs::write(&path, text).map_err(|e| format!("保存设置失败: {e}"))
+    fs::write(&path, text).map_err(|e| code_detail("error.saveSettingsFailed", e))
 }
 
 /// 默认输出目录：文档/语音转文字。
@@ -137,5 +139,19 @@ mod hotword_tests {
     fn caps_hotword_count() {
         let many: Vec<String> = (0..MAX_HOTWORDS + 20).map(|i| format!("词{i}")).collect();
         assert_eq!(clean_hotwords(many).len(), MAX_HOTWORDS);
+    }
+
+    #[test]
+    fn settings_round_trip() {
+        let raw = r#"{"language":"zh","itn":false,"output_dir":"/tmp/out","model_dir":null}"#;
+        let settings: Settings = serde_json::from_str(raw).unwrap();
+        assert_eq!(settings.language, "zh");
+        assert!(!settings.itn);
+        let normalized = Settings {
+            language: "klingon".into(),
+            ..settings
+        }
+        .normalize();
+        assert_eq!(normalized.language, "auto");
     }
 }

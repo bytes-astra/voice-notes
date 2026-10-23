@@ -24,7 +24,7 @@ use sherpa_onnx::{
     OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, OnlineRecognizer,
     OnlineRecognizerConfig, OnlineTransducerModelConfig,
 };
-use voice_notes_lib::asr::Engine;
+use voice_notes_lib::engine::Engine;
 use voice_notes_lib::models::ModelPaths;
 
 fn model_dir() -> Option<PathBuf> {
@@ -550,7 +550,7 @@ fn probe_corpus_preroll() {
         let wave = sherpa_onnx::Wave::read(file.to_str().unwrap()).expect("读取音频");
         let mut samples = vec![0.0f32; 8000]; // 0.5s 前导静音
         samples.extend_from_slice(wave.samples());
-        let Some(mut detector) = VoiceActivityDetector::create(&vad, 62.0) else {
+        let Some(detector) = VoiceActivityDetector::create(&vad, 62.0) else {
             eprintln!("VAD 创建失败");
             return;
         };
@@ -612,7 +612,7 @@ fn probe_corpus_preroll_buffer() {
     for (name, file) in &files {
         let wave = sherpa_onnx::Wave::read(file.to_str().unwrap()).expect("读取音频");
         let samples = wave.samples().to_vec();
-        let Some(mut detector) = VoiceActivityDetector::create(&vad, 62.0) else {
+        let Some(detector) = VoiceActivityDetector::create(&vad, 62.0) else {
             eprintln!("VAD 创建失败");
             return;
         };
@@ -706,7 +706,7 @@ fn probe_offline_session_first_word() {
 /// 生产路径（StreamingEngine）验证：术语表真的进了识别器
 #[test]
 fn probe_streaming_engine_hotwords() {
-    use voice_notes_lib::asr::StreamingEngine;
+    use voice_notes_lib::engine::StreamingEngine;
     use voice_notes_lib::models::StreamingPaths;
     let Some(dir) = stream_dir() else {
         eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");

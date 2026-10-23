@@ -1,7 +1,7 @@
 /* 模型状态、识别模式、语言、输入设备、模型下载、设置项 */
 
-import { $, LANGS, STREAM_LANGS, els, fmtBytes, fmtError, idleHint, state, t, toast } from './core.js'
-import { invoke, openDialog } from './tauri.js'
+import { $, LANGS, STREAM_LANGS, els, errorText, fmtBytes, fmtError, idleHint, state, t, toast } from './core.js'
+import { invoke, logEvent, openDialog } from './tauri.js'
 
 /* 下拉框实例由入口创建后交给这里（status 不该认识 applyLocale，否则会和入口互相依赖） */
 let deviceSelect = null
@@ -206,70 +206,102 @@ export function refreshSelectItems(localeValue) {
   if (localeSelect) localeSelect.setItems(localeItems(), localeValue)
 }
 
+/// 百分比：两个进度条共用一份算法。
+const pctOf = (done, total) => (total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0)
+
 export function setProgress(done, total) {
-  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0
+  const pct = pctOf(done, total)
   els.setupFill.style.width = `${pct}%`
   els.setupPct.textContent = `${pct}%`
 }
 
 export function setStreamProgress(done, total) {
-  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0
+  const pct = pctOf(done, total)
   els.streamProgressFill.style.width = `${pct}%`
   els.streamProgressPct.textContent = `${pct}%`
 }
 
-export async function downloadStreamingModel() {
-  if (state.downloadingStreaming) return
-  state.downloadingStreaming = true
-  els.streamDownload.disabled = true
-  els.streamCancel.classList.remove('hidden')
-  els.streamProgress.classList.remove('hidden')
-  setStreamProgress(0, state.status?.streamingTotalBytes || 0)
-  els.streamProgressText.textContent = t('setup.preparing')
+/// 下载模型：整段与流式的流程完全一样，只有命令名、字节数、
+/// 文案、额外步骤和预热方式不同，统一走这里。
+async function runDownload({
+  isBusy, setBusy, button, cancelButton, progressBox, progressText, setProgress,
+  command, totalBytes, afterDownload, readyToast, warm, label,
+}) {
+  if (isBusy()) return
+  logEvent('INFO', `开始下载模型: ${label}`)
+  setBusy(true)
+  button.disabled = true
+  cancelButton.classList.remove('hidden')
+  progressBox.classList.remove('hidden')
+  setProgress(0, totalBytes)
+  progressText.textContent = t('setup.preparing')
   try {
-    // 标点模型和流式模型一起下载：标点下失败只是降级为无标点，
-    // 所以只有它确实就绪时才自动开启，否则开关别装作打开。
-    state.status = await invoke('download_streaming_model')
-    if (state.status.punctReady) {
-      state.status = await invoke('set_punct', { enabled: true })
-    }
-    els.streamProgressText.textContent = t('setup.done')
-    toast(t('model.badge.streamingReady'))
+    state.status = await invoke(command)
+    if (afterDownload) await afterDownload()
+    progressText.textContent = t('setup.done')
+    toast(t(readyToast))
     renderStatus()
     // 和整段模型一样：下载完先把引擎加载起来，第一次录音不用等
-    void invoke('warm_up_streaming').catch(() => {})
+    warm()
   } catch (error) {
+    logEvent('ERROR', `模型下载失败: ${errorText(error)}`)
     toast(fmtError(error), 'error')
-    els.streamProgressText.textContent = t('setup.downloadFailed', { error: fmtError(error) })
+    progressText.textContent = t('setup.downloadFailed', { error: fmtError(error) })
   } finally {
-    state.downloadingStreaming = false
-    els.streamDownload.disabled = false
-    els.streamCancel.classList.add('hidden')
+    setBusy(false)
+    button.disabled = false
+    cancelButton.classList.add('hidden')
   }
 }
 
+export async function downloadStreamingModel() {
+  await runDownload({
+    isBusy: () => state.downloadingStreaming,
+    setBusy: (value) => {
+      state.downloadingStreaming = value
+    },
+    button: els.streamDownload,
+    cancelButton: els.streamCancel,
+    progressBox: els.streamProgress,
+    progressText: els.streamProgressText,
+    setProgress: setStreamProgress,
+    command: 'download_streaming_model',
+    totalBytes: state.status?.streamingTotalBytes || 0,
+    // 标点模型和流式模型一起下载：标点下失败只是降级为无标点，
+    // 所以只有它确实就绪时才自动开启，否则开关别装作打开。
+    afterDownload: async () => {
+      if (state.status.punctReady) {
+        state.status = await invoke('set_punct', { enabled: true })
+      }
+    },
+    readyToast: 'model.badge.streamingReady',
+    label: '流式模型',
+    warm: () => {
+      void invoke('warm_up_streaming').catch(() => {})
+    },
+  })
+}
+
 export async function downloadModel() {
-  if (state.downloading) return
-  state.downloading = true
-  els.downloadBtn.disabled = true
-  els.cancelDownloadBtn.classList.remove('hidden')
-  els.setupProgress.classList.remove('hidden')
-  setProgress(0, state.status?.totalBytes || 0)
-  els.setupText.textContent = t('setup.preparing')
-  try {
-    state.status = await invoke('download_model')
-    els.setupText.textContent = t('setup.done')
-    toast(t('model.readyToast'))
-    renderStatus()
-    warmUp()
-  } catch (error) {
-    toast(fmtError(error), 'error')
-    els.setupText.textContent = t('setup.downloadFailed', { error: fmtError(error) })
-  } finally {
-    state.downloading = false
-    els.downloadBtn.disabled = false
-      els.cancelDownloadBtn.classList.add('hidden')
-  }
+  await runDownload({
+    isBusy: () => state.downloading,
+    setBusy: (value) => {
+      state.downloading = value
+    },
+    button: els.downloadBtn,
+    cancelButton: els.cancelDownloadBtn,
+    progressBox: els.setupProgress,
+    progressText: els.setupText,
+    setProgress,
+    command: 'download_model',
+    totalBytes: state.status?.totalBytes || 0,
+    afterDownload: null,
+    readyToast: 'model.readyToast',
+    label: '整段模型',
+    warm: () => {
+      warmUp()
+    },
+  })
 }
 
 export async function pickModelDir() {

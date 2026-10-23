@@ -228,6 +228,8 @@
   <div class="drop-overlay hidden" id="drop-overlay"><div data-i18n="drop.hint">松开开始转写音频</div></div>
   <div class="toast hidden" id="toast" role="status"></div>
 
+  <!-- 字典文件必须排在 i18n.js 之前：i18n.js 启动时读 window.I18N_LOCALES -->
+  <script src="locales/zh-CN.js"></script>
   <script src="locales/en.js"></script>
   <script src="select.js"></script>
   <script src="i18n.js"></script>

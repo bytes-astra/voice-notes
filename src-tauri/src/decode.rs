@@ -13,30 +13,49 @@ use std::path::Path;
 use sherpa_onnx::LinearResampler;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 use crate::asr::SAMPLE_RATE;
+use crate::{code, code_detail};
 
 /// 解码结果的基本信息。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct DecodeInfo {
     /// 输出采样率（固定 16 kHz）
     pub sample_rate: u32,
     /// 输出的采样总数
     pub samples: u64,
+    /// 部分解码失败时的警告（已经解出一些音频，但有包出错）。
+    ///
+    /// `None` = 整个文件干净地解完了。调用方要把警告报给用户（前端 `decode.partial`），
+    /// 不能静默截断。
+    pub warning: Option<String>,
+}
+
+/// 正常读到文件末尾：symphonia 用 `UnexpectedEof` 表示「没有更多包了」。
+fn is_end_of_stream(err: &SymphoniaError) -> bool {
+    matches!(
+        err,
+        SymphoniaError::IoError(io) if io.kind() == std::io::ErrorKind::UnexpectedEof
+    )
 }
 
 /// 从磁盘流式解码音频，逐块回调 16 kHz 单声道 f32。
 ///
 /// 回调返回 Err 会立刻中止解码（用来打断识别线程）。
+///
+/// 解码出错不静默：
+/// - 一个包都没解出来 → 返回 `Err`（`decode.failed`）
+/// - 解出了一部分 → 返回 `Ok`，并在 `DecodeInfo::warning` 里带上原因
 pub fn decode_to_16k(
     path: &Path,
     mut on_chunk: impl FnMut(&[f32]) -> Result<(), String>,
 ) -> Result<DecodeInfo, String> {
-    let file = File::open(path).map_err(|e| format!("无法打开文件：{e}"))?;
+    let file = File::open(path).map_err(|e| code_detail("decode.openFailed", e))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -49,31 +68,52 @@ pub fn decode_to_16k(
             &FormatOptions::default(),
             &MetadataOptions::default(),
         )
-        .map_err(|e| format!("无法识别这个文件的格式：{e}"))?;
+        .map_err(|e| code_detail("decode.unknownFormat", e))?;
     let mut format = probed.format;
 
     let track = format
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or("这个文件里没有找到音频轨道")?;
+        .ok_or_else(|| code("decode.noAudioTrack"))?;
     let track_id = track.id;
     let source_rate = track.codec_params.sample_rate.unwrap_or(0).max(1) as i32;
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|e| format!("无法解码这个文件：{e}"))?;
+        .map_err(|e| code_detail("decode.failed", e))?;
 
     let mut resampler = LinearResampler::create(source_rate, SAMPLE_RATE);
     let mut total = 0u64;
+    // 中途出错的原因（读包失败）
+    let mut stream_error: Option<String> = None;
+    // 单个包解码失败的次数与最后一次的原因（末尾垃圾数据很常见，但也不能完全无视）
+    let mut codec_errors: u32 = 0;
+    let mut last_codec_error: Option<String> = None;
+    // 容器声明的帧数：用来发现「文件被截断」——读包时不会报错，但内容少了。
+    let declared_frames = track.codec_params.n_frames;
 
-    while let Ok(packet) = format.next_packet() {
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(e) => {
+                // UnexpectedEof = 文件正常读完；其他错误 = 中途出错，记下来。
+                if !is_end_of_stream(&e) {
+                    stream_error = Some(e.to_string());
+                }
+                break;
+            }
+        };
         if packet.track_id() != track_id {
             continue;
         }
         let decoded = match decoder.decode(&packet) {
             Ok(decoded) => decoded,
-            // 解码器有时会对个别包报错，跳过即可（末尾的垃圾数据很常见）
-            Err(_) => continue,
+            // 解码器有时会对个别包报错，跳过即可（末尾的垃圾数据很常见），但要计数。
+            Err(e) => {
+                codec_errors += 1;
+                last_codec_error = Some(e.to_string());
+                continue;
+            }
         };
         let spec = *decoded.spec();
         let channels = spec.channels.count().max(1) as u64;
@@ -108,8 +148,120 @@ pub fn decode_to_16k(
         }
     }
 
+    // 一个采样都没解出来：不能当成成功（前端会显示空结果，用户以为文件是空的）。
+    if total == 0 {
+        let reason = stream_error
+            .or(last_codec_error)
+            .unwrap_or_else(|| "no audio data".to_string());
+        return Err(code_detail("decode.failed", reason));
+    }
+
+    // 解出了一部分：把原因带回去，调用方要报给用户，不能静默截断。
+    let mut problems: Vec<String> = Vec::new();
+    if codec_errors > 0 {
+        problems.push(format!("{codec_errors} packet(s) failed to decode"));
+    }
+    if let Some(err) = &last_codec_error {
+        problems.push(err.clone());
+    }
+    if let Some(err) = &stream_error {
+        problems.push(err.clone());
+    }
+    // 文件被截断：读包一路正常结束，但解出来的帧比容器声明的少。
+    // 不报的话用户只会看到一段残缺的转写，完全不知道文件缺了内容。
+    if let Some(declared) = declared_frames {
+        let expected = declared
+            .saturating_mul(SAMPLE_RATE as u64)
+            .checked_div(source_rate as u64)
+            .unwrap_or(declared);
+        // 留一点余量：重采样和编解码器的延迟/填充会造成少量差异。
+        let tolerance = SAMPLE_RATE as u64;
+        if expected > tolerance && total + tolerance < expected {
+            problems.push(format!(
+                "truncated: decoded {total} of {expected} samples"
+            ));
+        }
+    }
+    let warning = if problems.is_empty() {
+        None
+    } else {
+        Some(problems.join("; "))
+    };
+
     Ok(DecodeInfo {
         sample_rate: SAMPLE_RATE as u32,
         samples: total,
+        warning,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> Option<std::path::PathBuf> {
+        let path = std::path::Path::new("tests/fixtures").join(name);
+        if path.exists() {
+            Some(path)
+        } else {
+            eprintln!("跳过：缺少 {name}");
+            None
+        }
+    }
+
+    /// 干净的文件不该有警告（否则每次转写都会弹一条没用的提示）。
+    #[test]
+    fn clean_file_has_no_warning() {
+        let Some(path) = fixture("zh.wav") else { return };
+        let mut total = 0usize;
+        let result = decode_to_16k(&path, |chunk| {
+            total += chunk.len();
+            Ok(())
+        });
+        let Ok(info) = result else {
+            panic!("解码 wav 应该成功");
+        };
+        assert_eq!(info.samples as usize, total);
+        assert!(total > 16_000, "至少应该解出 1 秒");
+        assert!(info.warning.is_none(), "不该有警告: {:?}", info.warning);
+    }
+
+    /// 一个采样都没解出来 → 报错，不能当成「文件是空的」糊弄过去。
+    #[test]
+    fn empty_result_is_an_error() {
+        let Some(path) = fixture("broken.mp4") else { return };
+        let Err(err) = decode_to_16k(&path, |_| Ok(())) else {
+            panic!("解不出内容应该报错");
+        };
+        assert!(err.starts_with("decode."), "错误应该是字典 key: {err}");
+    }
+
+    /// 文件被截断 → 解出一部分 + 警告，不能静默截断。
+    #[test]
+    fn truncated_file_warns_but_returns_partial() {
+        let Some(path) = fixture("zh.wav") else { return };
+        let Ok(bytes) = std::fs::read(&path) else {
+            eprintln!("跳过：读不到 fixture");
+            return;
+        };
+        if bytes.len() < 60_000 {
+            eprintln!("跳过：fixture 太小");
+            return;
+        }
+        let cut = std::env::temp_dir().join(format!("vn-trunc-{}.wav", std::process::id()));
+        if std::fs::write(&cut, &bytes[..40_000]).is_err() {
+            eprintln!("跳过：写不了临时文件");
+            return;
+        }
+        let result = decode_to_16k(&cut, |_| Ok(()));
+        let _ = std::fs::remove_file(&cut);
+        let Ok(info) = result else {
+            panic!("截断文件应该解出一部分");
+        };
+        assert!(info.samples > 0, "应该解出一些内容");
+        assert!(
+            info.warning.is_some(),
+            "截断文件必须带警告，不能静默截断"
+        );
+    }
 }
