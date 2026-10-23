@@ -1,7 +1,7 @@
 /* 主题：浅色/深色、窗口底色、按钮图标 */
 
 import { $, THEME_KEY, t } from './core.js'
-import { getCurrentWindow } from './tauri.js'
+import { getCurrentWindow, logEvent } from './tauri.js'
 
 /// 窗口底色跟着主题走：否则 webview 重载（系统权限弹窗、应用重启）时会闪白。
 ///
@@ -36,9 +36,12 @@ export function syncWindowBackground() {
 export function syncWindowTheme() {
   try {
     const theme = currentTheme() === 'dark' ? 'Dark' : 'Light'
-    getCurrentWindow()?.setTheme?.(theme)?.catch?.(() => {})
-  } catch {
-    /* 忽略 */
+    // 失败要记日志：命令被 ACL 拒掉时不会有任何界面提示，静默吞掉等于没调。
+    getCurrentWindow()
+      ?.setTheme?.(theme)
+      ?.catch?.((e) => logEvent('ERROR', `设置窗口外观失败: ${e}`))
+  } catch (e) {
+    logEvent('ERROR', `设置窗口外观失败: ${e}`)
   }
 }
 
