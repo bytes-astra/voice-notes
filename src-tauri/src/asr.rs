@@ -462,11 +462,7 @@ impl StreamingEngine {
             debug: false,
             ..Default::default()
         });
-        Ok(Self {
-            recognizer,
-            vad,
-            hotwords: use_hotwords.then_some(words),
-        })
+        Ok(Self { recognizer, vad })
     }
 
     /// 静音门控用的 VAD 配置（模型缺失时为 None，退化为全量喂入）。
@@ -512,8 +508,6 @@ impl PunctuationEngine {
 pub struct StreamingEngine {
     pub recognizer: OnlineRecognizer,
     vad: Option<VadModelConfig>,
-    /// 非空表示当前识别器是 beam search + 热词
-    hotwords: Option<String>,
 }
 
 
