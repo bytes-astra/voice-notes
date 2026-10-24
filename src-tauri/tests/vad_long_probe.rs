@@ -14,6 +14,9 @@
 
 use std::path::PathBuf;
 
+mod common;
+use common::trim_silence;
+
 /// 模型目录（同其他冒烟测试）
 fn model_dir() -> Option<PathBuf> {
     let dir = std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(PathBuf::from)?;
@@ -25,24 +28,10 @@ fn fixture(name: &str) -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
-/// 去掉首尾静音，让多段语音拼起来是「连续说话」
-fn trim_silence(samples: &[f32], threshold: f32) -> Vec<f32> {
-    let loud = |w: &[f32]| w.iter().fold(0.0f32, |a, b| a.max(b.abs())) > threshold;
-    let win = 160usize; // 10 ms
-    let first = samples
-        .chunks(win)
-        .position(loud)
-        .map(|i| i * win)
-        .unwrap_or(0);
-    let last = samples
-        .chunks(win)
-        .rposition(loud)
-        .map(|i| (i + 1) * win)
-        .unwrap_or(samples.len());
-    samples[first..last.min(samples.len())].to_vec()
-}
-
 /// VAD 配置：跟应用里 engine.rs 的完全一样（阈值 0.5 / 静音 0.5s / 最长语音 30s）
+///
+/// 这个探针只加载 silero_vad.onnx（不加载 161 MB 的 SenseVoice），
+/// 所以拿不到 `Engine::vad_config()` —— 只能自己抄一份。**改了 engine.rs 要回来同步**。
 fn vad_config(vad_path: &std::path::Path) -> sherpa_onnx::VadModelConfig {
     sherpa_onnx::VadModelConfig {
         silero_vad: sherpa_onnx::SileroVadModelConfig {
@@ -118,14 +107,14 @@ fn probe_long_continuous_speech() {
 
     // 场景 A：连续语音（段与段之间不留静音）
     // 场景 B：说话 → 静音 → 说话 → 静音 …（用户反馈的丢字场景）
-    let silence = vec![0.0f32; 16_000 * 2]; // 2 秒静音
-    for (label, gap) in [("连续语音", 0usize), ("说话+2秒静音+说话", silence.len())] {
+    // gap 是采样数，按它插静音 —— 别只当布尔用，否则改标签会静默量同一段音频。
+    for (label, gap) in [("连续语音", 0usize), ("说话+2秒静音+说话", 16_000 * 2)] {
         let repeat = 4usize;
         let mut long = Vec::new();
         for i in 0..repeat {
             long.extend_from_slice(&speech);
             if gap > 0 && i + 1 < repeat {
-                long.extend_from_slice(&silence);
+                long.extend(std::iter::repeat(0.0f32).take(gap));
             }
         }
         let seconds = long.len() as f32 / 16000.0;

@@ -27,6 +27,9 @@ use sherpa_onnx::{
 use voice_notes_lib::engine::Engine;
 use voice_notes_lib::models::ModelPaths;
 
+mod common;
+use common::edit_distance;
+
 fn model_dir() -> Option<PathBuf> {
     std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(PathBuf::from)
 }
@@ -104,20 +107,6 @@ fn norm(text: &str) -> String {
                 && !"，。！？、；：“”‘’（）《》…—～·「」".contains(*c)
         })
         .collect()
-}
-
-fn edit_distance(a: &[char], b: &[char]) -> usize {
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut cur = vec![0usize; b.len() + 1];
-    for i in 1..=a.len() {
-        cur[0] = i;
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    prev[b.len()]
 }
 
 fn reference_for(file: &Path) -> Option<String> {

@@ -152,7 +152,7 @@ bash scripts/gen-tts-corpus.sh             # TTS 20 句 + 数字句 + 长句 + �
 
 当前基线（zh + ITN 整段，含 pre-roll 修复；40 条真人语料）：真人 **11.41%** / 真人+噪声 **1.39%** / TTS **15.55%**（修复前 26.47%）/ 长句 **15.00%**。**别拿 TTS 的绝对 CER 当质量结论** —— 它主要暴露「VAD 切字头」这类相对差异。
 
-**怀疑「录音丢了」先跑探针，别猜**（三个探针在 `src-tauri/tests/`，只打印不断言）：
+**怀疑「录音丢了」先跑探针，别猜**（四个探针在 `src-tauri/tests/`，只打印不断言；共用的小工具在 `src-tauri/tests/common/mod.rs`，探针里写 `mod common;` 引入）：
 
 ```bash
 VOICE_NOTES_MODEL_DIR=... cargo test --test vad_long_probe -- --nocapture      # VAD 吞不吞音频

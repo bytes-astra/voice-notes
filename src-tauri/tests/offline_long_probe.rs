@@ -13,57 +13,11 @@
 //! 运行：
 //!   VOICE_NOTES_MODEL_DIR=... cargo test --test offline_long_probe -- --nocapture
 
-use std::path::PathBuf;
-
 use voice_notes_lib::asr::{OfflineEvent, OfflineSession};
 use voice_notes_lib::engine::Engine;
-use voice_notes_lib::models::ModelPaths;
-use sherpa_onnx::{SileroVadModelConfig, VadModelConfig};
 
-fn model_paths() -> Option<ModelPaths> {
-    let dir = std::env::var("VOICE_NOTES_MODEL_DIR")
-        .ok()
-        .map(PathBuf::from)?;
-    let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
-        .into_iter()
-        .find(|path| path.is_file())?;
-    let tokens = dir.join("tokens.txt");
-    if !tokens.is_file() {
-        return None;
-    }
-    let vad = [
-        dir.parent().map(|p| p.join("silero/silero_vad.onnx")),
-        Some(dir.join("silero_vad.onnx")),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|path| path.is_file());
-
-    Some(ModelPaths {
-        dir: dir.display().to_string(),
-        model: model.display().to_string(),
-        tokens: tokens.display().to_string(),
-        vad: vad.map(|path| path.display().to_string()),
-        source: "test".into(),
-    })
-}
-
-/// 去掉首尾静音，让多段语音拼起来是「连续说话」
-fn trim_silence(samples: &[f32], threshold: f32) -> Vec<f32> {
-    let loud = |w: &[f32]| w.iter().fold(0.0f32, |a, b| a.max(b.abs())) > threshold;
-    let win = 160usize;
-    let first = samples
-        .chunks(win)
-        .position(loud)
-        .map(|i| i * win)
-        .unwrap_or(0);
-    let last = samples
-        .chunks(win)
-        .rposition(loud)
-        .map(|i| (i + 1) * win)
-        .unwrap_or(samples.len());
-    samples[first..last.min(samples.len())].to_vec()
-}
+mod common;
+use common::{model_paths, trim_silence};
 
 #[test]
 fn probe_long_recording_loss() {
@@ -73,28 +27,12 @@ fn probe_long_recording_loss() {
     };
     let engine = std::sync::Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
 
-    // 和应用一样的 VAD 配置
-    let vad_path = paths.vad.clone().expect("需要 VAD 模型");
-    let vad = VadModelConfig {
-        silero_vad: SileroVadModelConfig {
-            model: Some(vad_path),
-            threshold: 0.5,
-            min_silence_duration: 0.5,
-            min_speech_duration: 0.25,
-            window_size: 512,
-            max_speech_duration: 30.0,
-        },
-        sample_rate: 16_000,
-        num_threads: 1,
-        provider: Some("cpu".into()),
-        debug: false,
-        ..Default::default()
-    };
+    // VAD 配置直接问引擎要 —— 和应用跑的是同一份参数
+    let vad = engine.vad_config().expect("需要 VAD 模型");
 
     let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取音频");
     let speech = trim_silence(wave.samples(), 0.02);
 
-    // gap 是采样数，按它插静音 —— 只当布尔用的话，换个标签会静默量成同一段音频。
     for (label, gap) in [
         ("连续语音", 0usize),
         ("说话+2秒静音+说话", 16_000 * 2),

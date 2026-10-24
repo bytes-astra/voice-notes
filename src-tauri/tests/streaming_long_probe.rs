@@ -21,6 +21,9 @@ use voice_notes_lib::engine::StreamingEngine;
 use voice_notes_lib::models::StreamingPaths;
 use voice_notes_lib::record;
 
+mod common;
+use common::trim_silence;
+
 fn model_paths() -> Option<StreamingPaths> {
     let dir = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
         .ok()
@@ -43,23 +46,6 @@ fn model_paths() -> Option<StreamingPaths> {
             .find(|path| path.is_file())
             .map(|path| path.display().to_string()),
     })
-}
-
-/// 去掉首尾静音，让多段语音拼起来是「连续说话」
-fn trim_silence(samples: &[f32], threshold: f32) -> Vec<f32> {
-    let loud = |w: &[f32]| w.iter().fold(0.0f32, |a, b| a.max(b.abs())) > threshold;
-    let win = 160usize;
-    let first = samples
-        .chunks(win)
-        .position(loud)
-        .map(|i| i * win)
-        .unwrap_or(0);
-    let last = samples
-        .chunks(win)
-        .rposition(loud)
-        .map(|i| (i + 1) * win)
-        .unwrap_or(samples.len());
-    samples[first..last.min(samples.len())].to_vec()
 }
 
 #[test]
@@ -87,7 +73,6 @@ fn probe_streaming_long_recording() {
         let producer = {
             let queue = queue.clone();
             let stop = stop.clone();
-            let long = long.clone();
             std::thread::spawn(move || {
                 for chunk in long.chunks(4800) {
                     if stop.load(Ordering::Relaxed) {

@@ -10,41 +10,16 @@
 //! 运行：
 //!   VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture
 
-use std::path::PathBuf;
-
 use voice_notes_lib::engine::Engine;
-use voice_notes_lib::models::ModelPaths;
 
-fn model_paths() -> Option<ModelPaths> {
-    let dir = std::env::var("VOICE_NOTES_MODEL_DIR")
-        .ok()
-        .map(PathBuf::from)?;
-    let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
-        .into_iter()
-        .find(|path| path.is_file())?;
-    let tokens = dir.join("tokens.txt");
-    if !tokens.is_file() {
-        return None;
-    }
-    let vad = [
-        dir.parent().map(|p| p.join("silero/silero_vad.onnx")),
-        Some(dir.join("silero_vad.onnx")),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|path| path.is_file());
-    Some(ModelPaths {
-        dir: dir.display().to_string(),
-        model: model.display().to_string(),
-        tokens: tokens.display().to_string(),
-        vad: vad.map(|path| path.display().to_string()),
-        source: "test".into(),
-    })
-}
+mod common;
+use common::{edit_distance, model_paths};
 
 /// 16 kHz → 48 kHz：3 倍线性插值（模拟 48 kHz 设备采到的信号）
 ///
 /// 注意：比例必须是 3 倍（48/16），写错会让音频变慢，识别结果就没法比了。
+/// 这里**故意不用** `LinearResampler`：它带 0.99×Nyquist 的低通，会把频谱镜像滤掉，
+/// 而这个探针要测的就是「镜像折回语音频段」的混叠。
 fn upsample_16k_to_48k(samples: &[f32]) -> Vec<f32> {
     let mut out = Vec::with_capacity(samples.len() * 3);
     for i in 0..samples.len() {
@@ -64,17 +39,7 @@ fn cer(reference: &str, hypothesis: &str) -> f32 {
     if r.is_empty() {
         return 0.0;
     }
-    let mut prev: Vec<usize> = (0..=h.len()).collect();
-    let mut cur = vec![0usize; h.len() + 1];
-    for i in 1..=r.len() {
-        cur[0] = i;
-        for j in 1..=h.len() {
-            let cost = usize::from(r[i - 1] != h[j - 1]);
-            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    prev[h.len()] as f32 / r.len() as f32
+    edit_distance(&r, &h) as f32 / r.len() as f32
 }
 
 #[test]
@@ -123,9 +88,8 @@ fn probe_resample_quality() {
         );
         // 拿原始的识别结果当参考（不是标准答案，但能看出退化）
         println!(
-            "  两者 CER（以原始识别为参考）：{:.1}% / {:.1}%",
-            cer(&direct.text, &resampled.text) * 100.0,
-            0.0
+            "  两者 CER（以原始识别为参考）：{:.1}%",
+            cer(&direct.text, &resampled.text) * 100.0
         );
     }
 }
