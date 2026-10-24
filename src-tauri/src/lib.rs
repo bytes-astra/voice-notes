@@ -145,9 +145,7 @@ struct PartialPayload {
 
 #[tauri::command]
 fn status(app: AppHandle, state: State<AppState>) -> Status {
-    let mut status = status_of(&app, &state.settings());
-    status.downloading = state.downloading.load(Ordering::Relaxed);
-    status
+    status_of(&app, &state)
 }
 
 #[tauri::command]
@@ -168,7 +166,7 @@ fn set_language(
     }
     persist(&app, &state)?;
     log::info(format!("设置变更：语言 = {language}"));
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 #[tauri::command]
@@ -182,7 +180,7 @@ fn set_itn(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Stat
     }
     persist(&app, &state)?;
     log::info(format!("设置变更：ITN = {}", on_off(enabled)));
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 #[tauri::command]
@@ -191,22 +189,21 @@ fn set_output_dir(
     state: State<AppState>,
     dir: Option<String>,
 ) -> Result<Status, String> {
+    // 先校验再建目录：失败时不改设置（改了也没落盘，内存和磁盘会对不上）。
+    let dir = settings::prepare_output_dir(dir)?;
     {
         let mut guard = state
             .settings
             .lock()
             .map_err(|_| code("error.settingsState"))?;
-        guard.output_dir = dir.filter(|d| !d.trim().is_empty());
-    }
-    if let Some(dir) = state.settings().output_dir {
-        fs::create_dir_all(&dir).map_err(|e| code_detail("error.createDirFailed", format!("{dir}: {e}")))?;
+        guard.output_dir = dir;
     }
     persist(&app, &state)?;
     log::info(format!(
         "设置变更：输出目录 = {}",
         output_dir(&app, &state.settings()).display()
     ));
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 #[tauri::command]
@@ -239,7 +236,7 @@ async fn set_model_dir(
         }
     })
     .await;
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 /// 边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
@@ -311,7 +308,7 @@ async fn set_mode(
         }
     })
     .await;
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 /// 保存流式术语表。
@@ -343,7 +340,7 @@ async fn set_hotwords(
         }
     })
     .await;
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 /// 示例术语表（内置，供设置页「填入示例」按钮用）。
@@ -382,7 +379,7 @@ async fn set_punct(
     }
     persist(&app, &state)?;
     log::info(format!("设置变更：标点 = {}", on_off(enabled)));
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 /// 列出系统里的输入设备（麦克风）。
@@ -425,7 +422,7 @@ fn set_input_device(
             .clone()
             .unwrap_or_else(|| "默认".to_string())
     ));
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 #[tauri::command]
@@ -457,7 +454,7 @@ async fn download_streaming_model(
     result?;
     log::info("流式模型下载完成");
     let _ = ensure_streaming_engine(&app, &state).await;
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 #[tauri::command]
@@ -826,7 +823,7 @@ async fn download_model(app: AppHandle, state: State<'_, AppState>) -> Result<St
     if state.settings().mode == "offline" {
         let _ = load_engine(&app, &state).await;
     }
-    Ok(status_of(&app, &state.settings()))
+    Ok(status_of(&app, &state))
 }
 
 /// 打开转写结果的保存目录。

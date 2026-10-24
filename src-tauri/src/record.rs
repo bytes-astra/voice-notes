@@ -89,7 +89,8 @@ where
         sherpa_onnx::LinearResampler::create(rate as i32, asr::SAMPLE_RATE)
     };
     let mut session = asr::OfflineSession::new(engine.clone(), vad);
-    let mut parts: Vec<String> = Vec::new();
+    // 识别跟不上时丢掉的音频：在结果里留个可见的缺口（按时间插进句子列表）。
+    let mut gaps: Vec<asr::Segment> = Vec::new();
     // 已经喂给识别器的 16 kHz 采样数（给缺口标记标时间；不能用设备采样率）
     let mut fed_16k = 0usize;
     let discarded = || discard.load(Ordering::Relaxed);
@@ -102,8 +103,12 @@ where
             let seconds = audio::gap_seconds(new_audio.dropped, rate);
             log::warn(format!("离线识别跟不上，丢掉 {seconds} 秒音频"));
             let marker = audio::gap_marker(new_audio.dropped, rate);
-            parts.push(marker.clone());
             let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
+            gaps.push(asr::Segment {
+                text: marker.clone(),
+                start: at,
+                end: at,
+            });
             if !discarded() {
                 emit(OfflineEvent::Segment(asr::Segment {
                     text: marker,
@@ -120,7 +125,6 @@ where
             fed_16k += samples.len();
             for event in session.push(&samples) {
                 let OfflineEvent::Segment(segment) = event;
-                parts.push(segment.text.clone());
                 log_segment("识别出一句", &segment);
                 if !discarded() {
                     emit(OfflineEvent::Segment(segment));
@@ -135,22 +139,56 @@ where
 
     // 取消录音：不冲 VAD 尾巴、不识别 —— 被取消的内容不该再出现在结果里。
     if !discarded() {
+        // 收尾取样：循环里是「取音频 → 识别 → 看停止标志」，停止标志在识别期间
+        // 被置位时循环会直接跳出，那段「识别期间麦克风采到」的音频就永远留在
+        // 队列里 —— 必须补这一把，否则句尾会被切掉（流式路径也有同样的收尾）。
+        let last = queue.take_new();
+        if last.dropped > 0 {
+            // 识别跟不上：丢掉了一段音频，要在结果里留下可见的缺口。
+            let seconds = audio::gap_seconds(last.dropped, rate);
+            log::warn(format!("离线收尾丢掉 {seconds} 秒音频"));
+            let marker = audio::gap_marker(last.dropped, rate);
+            let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
+            gaps.push(asr::Segment {
+                text: marker.clone(),
+                start: at,
+                end: at,
+            });
+            emit(OfflineEvent::Segment(asr::Segment {
+                text: marker,
+                start: at,
+                end: at,
+            }));
+        }
+        let samples = match &resampler {
+            Some(resampler) => resampler.resample(&last.samples, true),
+            None => last.samples,
+        };
+        if !samples.is_empty() {
+            for event in session.push(&samples) {
+                let OfflineEvent::Segment(segment) = event;
+                log_segment("收尾识别出一句", &segment);
+                emit(OfflineEvent::Segment(segment));
+            }
+        }
         for event in session.finish() {
             let OfflineEvent::Segment(segment) = event;
-            parts.push(segment.text.clone());
             log_segment("收尾识别出一句", &segment);
             emit(OfflineEvent::Segment(segment));
         }
     }
 
-    // 文本用 parts 拼（含缺口标记）；segments 只放真正的句子
-    Transcript {
-        text: asr::join_segments(parts.iter().map(|s| s.as_str())),
+    // 文本和 segments 都从同一份句子列表来（缺口标记按时间插进去）——
+    // 和流式路径同一个做法，两种模式的 segments 语义才一致。
+    let mut transcript = Transcript {
+        text: asr::join_segments(session.segments().iter().map(|s| s.text.as_str())),
         segments: session.segments().to_vec(),
         duration_seconds: session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
         elapsed_ms: session.elapsed_ms(),
         language: engine.language.clone(),
-    }
+    };
+    asr::insert_gaps(&mut transcript, gaps);
+    transcript
 }
 
 /// 边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
@@ -311,8 +349,35 @@ mod tests {
     use std::path::PathBuf;
     use crate::models;
 
-        #[test]
-        fn streams_from_buffer_with_resampling() {
+    /// 测试用的整段引擎 + VAD 配置（没有模型就跳过）。
+    fn offline_engine() -> Option<(Arc<Engine>, sherpa_onnx::VadModelConfig)> {
+        let dir = std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(PathBuf::from)?;
+        let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
+            .into_iter()
+            .find(|path| path.is_file())?;
+        let tokens = dir.join("tokens.txt");
+        if !tokens.is_file() {
+            return None;
+        }
+        let mut vad_candidates = vec![dir.join("silero_vad.onnx")];
+        if let Some(parent) = dir.parent() {
+            vad_candidates.push(parent.join("silero_vad.onnx"));
+        }
+        let vad_model = vad_candidates.into_iter().find(|path| path.is_file())?;
+        let paths = models::ModelPaths {
+            dir: dir.display().to_string(),
+            model: model.display().to_string(),
+            tokens: tokens.display().to_string(),
+            vad: Some(vad_model.display().to_string()),
+            source: "test".into(),
+        };
+        let engine = Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
+        let vad = engine.vad_config().expect("VAD 配置");
+        Some((engine, vad))
+    }
+
+    #[test]
+    fn streams_from_buffer_with_resampling() {
             let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
                 .ok()
                 .map(PathBuf::from)
@@ -440,41 +505,10 @@ mod tests {
         /// 拼，标记被丢掉了。
         #[test]
         fn offline_gap_marker_reaches_transcript() {
-            let Some(dir) = std::env::var("VOICE_NOTES_MODEL_DIR")
-                .ok()
-                .map(PathBuf::from)
-            else {
-                eprintln!("跳过：未设置 VOICE_NOTES_MODEL_DIR");
-                return;
-            };
-            let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
-                .into_iter()
-                .find(|path| path.is_file());
-            let (Some(model), tokens) = (model, dir.join("tokens.txt")) else {
+            let Some((engine, vad)) = offline_engine() else {
                 eprintln!("跳过：找不到 SenseVoice 模型");
                 return;
             };
-            if !tokens.is_file() {
-                eprintln!("跳过：找不到 tokens.txt");
-                return;
-            }
-            let mut vad_candidates = vec![dir.join("silero_vad.onnx")];
-            if let Some(parent) = dir.parent() {
-                vad_candidates.push(parent.join("silero_vad.onnx"));
-            }
-            let vad_model = vad_candidates.into_iter().find(|path| path.is_file());
-            let Some(vad_model) = vad_model else {
-                eprintln!("跳过：找不到 VAD 模型");
-                return;
-            };
-            let paths = models::ModelPaths {
-                dir: dir.display().to_string(),
-                model: model.display().to_string(),
-                tokens: tokens.display().to_string(),
-                vad: Some(vad_model.display().to_string()),
-                source: "test".into(),
-            };
-            let engine = Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
             let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
 
             // 上限调到 1000 个采样：音频远超上限 → 一定会触发丢弃
@@ -482,7 +516,6 @@ mod tests {
             queue.push(wave.samples());
             let stop = Arc::new(AtomicBool::new(true));
 
-            let vad = engine.vad_config().expect("VAD 配置");
             let mut events = Vec::new();
             let transcript = run_offline(
                 engine,
@@ -505,5 +538,70 @@ mod tests {
                 }),
                 "也应该实时发一个缺口事件"
             );
+            assert!(
+                transcript.segments.iter().any(|s| s.text.contains("[[gap:")),
+                "segments 里也该有缺口标记（流式路径就是这样的）"
+            );
         }
+
+    /// 停止录音时，识别期间麦克风采到的那段音频不能被丢掉。
+    ///
+    /// 回归测试：run_offline 的循环是「取音频 → 识别 → 看停止标志」，
+    /// 停止标志在识别期间被置位时循环直接跳出，那段音频就永远留在队列里
+    /// （流式路径在循环后有收尾取样，整段原来没有）。
+    #[test]
+    fn offline_stop_keeps_the_tail() {
+        let Some((engine, vad)) = offline_engine() else {
+            eprintln!("跳过：找不到 SenseVoice 模型");
+            return;
+        };
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+
+        // 尾部补 1 秒静音：VAD 要靠静音断句，不然句子要等到 flush 才出来，
+        // 循环里就不会有事件了。
+        let mut speech = wave.samples().to_vec();
+        speech.extend(std::iter::repeat(0.0f32).take(16_000));
+
+        let queue = audio::SampleQueue::with_limit(None);
+        queue.push(&speech);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let q = queue.clone();
+        let tail = vec![0.0f32; 1_600]; // 100ms 的尾巴
+        let mut emitted = 0usize;
+
+        // 看门狗：万一没识别出句子，10 秒后也让循环退出（不能把测试挂死）。
+        let watchdog = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(10));
+            watchdog.store(true, Ordering::SeqCst);
+        });
+
+        let _transcript = run_offline(
+            engine,
+            vad,
+            queue.clone(),
+            16_000,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            |event| {
+                let OfflineEvent::Segment(_) = event;
+                emitted += 1;
+                if emitted == 1 {
+                    // 模拟「识别这句的工夫里麦克风又采到一段，然后用户点了停止」
+                    q.push(&tail);
+                    stop2.store(true, Ordering::SeqCst);
+                }
+            },
+        );
+
+        assert!(emitted > 0, "没识别出句子，测不到停止那一刻的收尾");
+        assert_eq!(
+            queue.pending(),
+            0,
+            "停止录音后队列里还剩 {} 个采样没被识别 —— 这段音频被静默丢掉了",
+            queue.pending()
+        );
+    }
 }

@@ -22,6 +22,7 @@ const BASE_STATUS = {
   mode: 'offline',
   itn: true,
   downloading: false,
+  downloadingStreaming: false,
   installedBytes: 241_357_257,
   totalBytes: 241_357_257,
   streamingReady: true,
@@ -139,7 +140,6 @@ async function makePage({ status = {}, locale = 'zh-CN', theme = null, history =
         },
         dialog: { open: async () => null },
         clipboardManager: { writeText: async () => {} },
-        opener: { openPath: async () => {}, openUrl: async () => {} },
         window: { getCurrentWindow: () => ({ setBackgroundColor() {}, startDragging() {} }) },
         webview: { getCurrentWebview: () => ({ onDragDropEvent() {} }) },
       }

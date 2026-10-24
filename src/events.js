@@ -6,6 +6,15 @@ import { modelBadgeText, renderStatus, setProgress, setStreamProgress } from './
 import { cancelRecording, pushLevel } from './recorder.js'
 import { appendSegment, showPartial } from './result.js'
 
+/// 后端错误消息 → 界面文案。
+///
+/// 后端只给字典 key（可能带 `:细节`），这里查字典翻译；没有消息时退回徽标文案。
+/// 一定要走 fmtError：后端消息里常带着模型路径之类的技术细节，
+/// 直接弹出来就是「model.loadFailed:/Users/…/model.int8.onnx」。
+function errorMessage(message) {
+  return message ? fmtError(message) : modelBadgeText('error')
+}
+
 export async function listenEvents() {
   await listen('audio:level', (event) => {
     const payload = event.payload || {}
@@ -43,8 +52,9 @@ export async function listenEvents() {
     const label = { downloading: t('progress.downloading'), verifying: t('progress.verifying'), connecting: t('progress.connecting'), complete: t('progress.complete') }[progress.phase] || t('progress.downloading')
     const host = progress.source?.startsWith('http') ? new URL(progress.source).host : progress.source === 'cache' ? t('progress.cache') : ''
     els.setupText.textContent = `${label} ${progress.resource}${progress.phase === 'downloading' ? ` · ${fmtBytes(progress.done)} / ${fmtBytes(progress.total)}` : ''}${host ? ` · ${host}` : ''}`
-    // 下载失败的提示也是错误码：查字典翻译，别把 "error.downloadFailed" 显示给用户
-    if (progress.phase === 'error' && progress.message) toast(fmtError(progress.message), 'error')
+    // 下载失败的提示由命令本身的错误给出（status.js 的 runDownload 会弹「下载失败」）。
+    // 这里不再拿进度事件里的 message 弹 toast —— 那是技术细节（镜像地址 / HTTP 状态），
+    // 不是给用户看的文案。后端那边 message 也只放字典 key。
   })
 
   // 事件是增量载荷：只带新句子，前端自己追加（累计全文在长时间会话下是 O(n²)）
@@ -80,7 +90,7 @@ export async function listenEvents() {
     } else if (payload.phase === 'error') {
       state.engine = 'error'
       renderStatus()
-      toast(payload.message || modelBadgeText('error'), 'error')
+      toast(errorMessage(payload.message), 'error')
     }
   })
 
@@ -91,7 +101,7 @@ export async function listenEvents() {
       els.dot.dataset.state = 'error'
       els.badge.className = 'badge danger'
       els.badge.textContent = modelBadgeText('error')
-      toast(event.payload?.message || modelBadgeText('error'), 'error')
+      toast(errorMessage(event.payload?.message), 'error')
     } else if (phase === 'loading') {
       els.dot.dataset.state = 'loading'
       els.badge.className = 'badge'

@@ -33,6 +33,7 @@ await context.addInitScript(() => {
     mode: 'offline',
     itn: true,
     downloading: false,
+    downloadingStreaming: false,
     installedBytes: 241_357_257,
     totalBytes: 241_357_257,
     streamingReady: true,
@@ -106,7 +107,6 @@ await context.addInitScript(() => {
     },
     dialog: { open: async () => null },
     clipboardManager: { writeText: async () => {} },
-    opener: { openPath: async () => {}, openUrl: async () => {} },
     window: { getCurrentWindow: () => ({ setBackgroundColor() {}, startDragging() {} }) },
     webview: { getCurrentWebview: () => ({ onDragDropEvent() {} }) },
   }
@@ -322,6 +322,40 @@ const setupText2 = await page.locator('#setup-progress-text').innerText()
 const streamText2 = await page.locator('#stream-progress-text').innerText()
 check('整段进度显示在整段面板', setupText2.includes('model.int8.onnx'), setupText2.slice(0, 40))
 check('整段进度不串到流式面板', !streamText2.includes('model.int8.onnx'), streamText2.slice(0, 40))
+
+// ── 错误提示：只能显示字典文案，不能把错误码 / 本地路径原样弹给用户 ──
+await page.evaluate(() =>
+  window.__emit('engine:state', {
+    phase: 'error',
+    message: 'model.loadFailed:/Users/someone/Library/Application Support/models/model.int8.onnx',
+  }),
+)
+await page.waitForTimeout(200)
+const engineErrorToast = await page.locator('#toast').innerText()
+check('模型加载失败显示字典文案', engineErrorToast === '模型加载失败', engineErrorToast)
+check(
+  '错误提示不泄露错误码和本地路径',
+  !engineErrorToast.includes('model.loadFailed') && !engineErrorToast.includes('/Users/'),
+  engineErrorToast,
+)
+
+// ── 下载失败：不能把镜像地址 / HTTP 状态原样弹给用户 ──
+// 下载按钮在「模型已就绪」时是隐藏的，直接在页面里点它的 click 事件。
+await page.evaluate(() => document.getElementById('download-btn').click())
+await page.waitForTimeout(200)
+await page.evaluate(() =>
+  window.__emit('model:progress', {
+    kind: 'offline',
+    resource: 'model.int8.onnx',
+    done: 0,
+    total: 1,
+    phase: 'error',
+    message: 'https://hf-mirror.com: HTTP 500',
+  }),
+)
+await page.waitForTimeout(200)
+const downloadErrorToast = await page.locator('#toast').innerText()
+check('下载失败不弹原始错误串', !downloadErrorToast.includes('hf-mirror'), downloadErrorToast)
 
 // ── 结果 ────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)

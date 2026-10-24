@@ -5,7 +5,7 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use std::sync::{Arc, Mutex};
 
@@ -84,7 +84,10 @@ pub struct Status {
     pub language: String,
     pub mode: String,
     pub itn: bool,
+    /// 整段模型正在下载
     pub downloading: bool,
+    /// 流式模型正在下载（两个下载各用各的标志，可以同时跑）
+    pub downloading_streaming: bool,
     pub installed_bytes: u64,
     pub total_bytes: u64,
     pub streaming_ready: bool,
@@ -108,7 +111,8 @@ pub fn output_dir(app: &AppHandle, settings: &Settings) -> PathBuf {
         .unwrap_or_else(|| settings::default_output_dir(app))
 }
 
-pub fn status_of(app: &AppHandle, settings: &Settings) -> Status {
+pub fn status_of(app: &AppHandle, state: &AppState) -> Status {
+    let settings = state.settings();
     let paths = models::resolve(app, settings.model_dir.as_deref());
     let installed_bytes = models::install_dir(app)
         .ok()
@@ -138,11 +142,13 @@ pub fn status_of(app: &AppHandle, settings: &Settings) -> Status {
         model_source: paths.as_ref().map(|p| p.source.clone()),
         model_dir: paths.as_ref().map(|p| p.dir.clone()),
         model_dir_custom: settings.model_dir.is_some(),
-        output_dir: output_dir(app, settings).to_string_lossy().into_owned(),
+        output_dir: output_dir(app, &settings).to_string_lossy().into_owned(),
         language: settings.language.clone(),
         mode: settings.mode.clone(),
         itn: settings.itn,
-        downloading: false,
+        // 两个下载各用各的标志：整段在下载时不该把流式也标成忙。
+        downloading: state.downloading.load(Ordering::Relaxed),
+        downloading_streaming: state.downloading_streaming.load(Ordering::Relaxed),
         installed_bytes,
         total_bytes,
         streaming_ready: streaming.is_some(),

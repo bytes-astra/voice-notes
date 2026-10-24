@@ -511,15 +511,18 @@ pub async fn download_asset(
         }
     }
     let message = errors.join("; ");
+    // 进度事件里的 message 也是给界面看的：只能是字典 key。
+    // 细节（镜像地址 / HTTP 状态）进日志，不往界面上贴。
+    let failure = code_detail("error.downloadFailed", format!("{}: {message}", asset.name));
     sink.report(Progress {
         resource: asset.name,
         done: 0,
         total: asset.bytes,
         phase: "error",
         source: String::new(),
-        message: Some(message.clone()),
+        message: Some(failure.clone()),
     });
-    Err(code_detail("error.downloadFailed", format!("{}: {message}", asset.name)))
+    Err(failure)
 }
 
 /// 按 MODEL → TOKENS → VAD 的顺序补齐模型文件。

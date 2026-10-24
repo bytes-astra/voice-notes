@@ -98,6 +98,22 @@ pub fn default_output_dir(app: &AppHandle) -> PathBuf {
 }
 
 
+/// 校验输出目录：能建出来才算数。
+///
+/// 返回清洗后的目录（`None` = 用默认目录）。建不出来就返回 Err。
+///
+/// 调用方必须**先校验再改设置**：先写进设置再校验的话，失败时内存里的设置
+/// 已经指向一个用不了的目录（还没落盘，界面显示的还是旧值），
+/// 真正的报错会推迟到「保存转写」时才出现。
+pub fn prepare_output_dir(dir: Option<String>) -> Result<Option<String>, String> {
+    let Some(dir) = dir.filter(|d| !d.trim().is_empty()) else {
+        return Ok(None);
+    };
+    fs::create_dir_all(&dir)
+        .map_err(|e| code_detail("error.createDirFailed", format!("{dir}: {e}")))?;
+    Ok(Some(dir))
+}
+
 /// 一次性迁移：旧版本的默认输出目录是中文的「语音转文字」，现在改成 ASCII 的
 /// `VoiceNotes`（中文目录名在终端、脚本、跨平台工具里处处要转义）。
 ///
@@ -173,5 +189,31 @@ mod hotword_tests {
         }
         .normalize();
         assert_eq!(normalized.language, "auto");
+    }
+
+    /// 输出目录必须先校验再落设置：建不出来的目录不能写进设置里。
+    #[test]
+    fn rejects_an_unusable_output_dir() {
+        // 在文件底下建目录 → 必然失败
+        let file = std::env::temp_dir().join(format!("vn-out-file-{}", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        let bad = file.join("sub");
+        assert!(
+            prepare_output_dir(Some(bad.display().to_string())).is_err(),
+            "建不出来的目录不能通过校验"
+        );
+
+        // 正常目录：能建出来才算数
+        let good = std::env::temp_dir().join(format!("vn-out-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&good);
+        let prepared = prepare_output_dir(Some(good.display().to_string())).expect("应该能建出目录");
+        assert_eq!(prepared, Some(good.display().to_string()));
+
+        // 空目录 = 用默认目录
+        assert_eq!(prepare_output_dir(None).unwrap(), None);
+        assert_eq!(prepare_output_dir(Some("   ".into())).unwrap(), None);
+
+        let _ = std::fs::remove_dir_all(&good);
+        let _ = std::fs::remove_file(&file);
     }
 }
