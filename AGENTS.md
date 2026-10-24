@@ -152,6 +152,21 @@ bash scripts/gen-tts-corpus.sh             # TTS 20 句 + 数字句 + 长句 + �
 
 当前基线（zh + ITN 整段，含 pre-roll 修复；40 条真人语料）：真人 **11.41%** / 真人+噪声 **1.39%** / TTS **15.55%**（修复前 26.47%）/ 长句 **15.00%**。**别拿 TTS 的绝对 CER 当质量结论** —— 它主要暴露「VAD 切字头」这类相对差异。
 
+**怀疑「录音丢了」先跑探针，别猜**（三个探针在 `src-tauri/tests/`，只打印不断言）：
+
+```bash
+VOICE_NOTES_MODEL_DIR=... cargo test --test vad_long_probe -- --nocapture      # VAD 吞不吞音频
+VOICE_NOTES_MODEL_DIR=... cargo test --test offline_long_probe -- --nocapture   # 整段会话覆盖率
+VOICE_NOTES_STREAMING_MODEL_DIR=... cargo test --test streaming_long_probe -- --nocapture
+VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       # 48k→16k 重采样
+```
+
+2026-10-24 实测结论（176 秒连续语音）：**VAD、整段会话、流式会话、重采样四条路都不丢音频**
+（覆盖 175.6/176.0 秒，误差只有句边界）。**队列上限 60 秒是唯一的丢失点** —— 超了会丢**最旧**的
+（`SampleQueue::take_new` 里 `drain(..excess)`），并留缺口标记；日志里会打「识别跟不上，丢掉 X 秒音频」。
+识别是同步阻塞在消费线程里的（`record.rs` 的 `run_offline` → `asr.rs` 的 `drain()`），但 RTF 只有 0.01，
+实际落后不到 1 秒，**离 60 秒上限差得很远** —— 所以「加 buffer」不是解法。
+
 **改 UI 要在浏览器里验**（Playwright + 假 `window.__TAURI__`）：
 
 ```bash
