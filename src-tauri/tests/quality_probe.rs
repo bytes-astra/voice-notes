@@ -352,6 +352,84 @@ fn probe_streaming_hotwords() {
     }
 }
 
+/// 流式 blank_penalty 对比：在同一批流式语料上换 blank_penalty 看 CER 变化。
+///
+/// 只对 transducer 生效（blank id 硬编码 0）。默认 0.0；调大倾向于多吐空/多吐字，
+/// 调小倾向于少吐。用来判断「P1-6 流式 blank_penalty 微调」到底有没有收益。
+#[test]
+fn probe_streaming_blank_penalty() {
+    let Some(dir) = stream_dir() else {
+        eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+        return;
+    };
+    let files = all_corpus();
+    if files.is_empty() {
+        eprintln!("跳过：没有语料");
+        return;
+    }
+    for blank_penalty in [0.0f32, -0.5, -1.0, 0.5, 1.0] {
+        let mut config = OnlineRecognizerConfig::default();
+        config.model_config.transducer = OnlineTransducerModelConfig {
+            encoder: Some(dir.join("encoder.int8.onnx").display().to_string()),
+            decoder: Some(dir.join("decoder.onnx").display().to_string()),
+            joiner: Some(dir.join("joiner.int8.onnx").display().to_string()),
+        };
+        config.model_config.tokens = Some(dir.join("tokens.txt").display().to_string());
+        config.model_config.num_threads = 2;
+        config.model_config.provider = Some("cpu".into());
+        config.decoding_method = Some("greedy_search".into());
+        config.enable_endpoint = false;
+        config.blank_penalty = blank_penalty;
+        let Some(recognizer) = OnlineRecognizer::create(&config) else {
+            eprintln!("跳过：流式模型加载失败");
+            return;
+        };
+        let mut stats: std::collections::BTreeMap<&str, (usize, usize, usize)> = Default::default();
+        for (name, file) in &files {
+            let wave = sherpa_onnx::Wave::read(file.to_str().unwrap()).expect("读取音频");
+            let stream = recognizer.create_stream();
+            for chunk in wave.samples().chunks(3200) {
+                stream.accept_waveform(16_000, chunk);
+                while recognizer.is_ready(&stream) {
+                    recognizer.decode(&stream);
+                }
+            }
+            stream.input_finished();
+            while recognizer.is_ready(&stream) {
+                recognizer.decode(&stream);
+            }
+            let text = recognizer
+                .get_result(&stream)
+                .map(|r| r.text)
+                .unwrap_or_default();
+            let cat = category(name);
+            let entry = stats.entry(cat).or_insert((0, 0, 0));
+            entry.0 += 1;
+            if let Some(reference) = reference_for(file) {
+                let hyp: Vec<char> = norm(&text).chars().collect();
+                let refc: Vec<char> = norm(&reference).chars().collect();
+                entry.1 += edit_distance(&hyp, &refc);
+                entry.2 += refc.len();
+            }
+        }
+        let mut line = format!("[blank_penalty {blank_penalty:>4.1}]");
+        for (cat, (files, dist, chars)) in &stats {
+            if *chars > 0 {
+                line.push_str(&format!(
+                    " {cat}={:.2}%",
+                    *dist as f64 / *chars as f64 * 100.0
+                ));
+            } else {
+                line.push_str(&format!(" {cat}=-{files}"));
+            }
+        }
+        let total: usize = stats.values().map(|(_, d, _)| d).sum();
+        let chars: usize = stats.values().map(|(_, _, c)| c).sum();
+        line.push_str(&format!("  总={total}/{chars}"));
+        println!("{line}");
+    }
+}
+
 /// VAD：不同模型 / 不同静音阈值下的切句（默认只看噪声样本）
 #[test]
 fn probe_vad_variants() {
