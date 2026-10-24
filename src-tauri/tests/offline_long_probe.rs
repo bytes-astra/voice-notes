@@ -94,10 +94,10 @@ fn probe_long_recording_loss() {
     let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取音频");
     let speech = trim_silence(wave.samples(), 0.02);
 
-    let silence = vec![0.0f32; 16_000 * 2]; // 2 秒静音
+    // gap 是采样数，按它插静音 —— 只当布尔用的话，换个标签会静默量成同一段音频。
     for (label, gap) in [
         ("连续语音", 0usize),
-        ("说话+2秒静音+说话", silence.len()),
+        ("说话+2秒静音+说话", 16_000 * 2),
         ("说话+10秒静音+说话", 16_000 * 10),
     ] {
         let repeat = 3usize;
@@ -105,7 +105,7 @@ fn probe_long_recording_loss() {
         for i in 0..repeat {
             long.extend_from_slice(&speech);
             if gap > 0 && i + 1 < repeat {
-                long.extend_from_slice(&silence);
+                long.extend(std::iter::repeat(0.0f32).take(gap));
             }
         }
         let seconds = long.len() as f32 / 16000.0;
