@@ -61,7 +61,6 @@ impl SampleQueue {
         }
     }
 
-
     pub fn push(&self, samples: &[f32]) {
         let Ok(mut guard) = self.samples.lock() else { return };
         guard.extend_from_slice(samples);
@@ -561,6 +560,49 @@ impl Capture {
     }
 }
 
+// ──────────────────── 缺口占位符 ────────────────────
+
+/// 是不是缺口占位符（`[[gap:秒数]]`）——和前端 `core.js` 的 `isGapMarker()` 同一套规则。
+///
+/// 缺口是「丢掉了一段音频」的位置标记，不是句子：它前后都不加空格。
+pub fn is_gap_marker(text: &str) -> bool {
+    text.starts_with(crate::audio::GAP_MARKER_PREFIX)
+}
+
+/// 从缺口占位符里取出秒数（`[[gap:3]]` → 3）；不是占位符就返回 None。
+///
+/// 和前端 `core.js` 的 `GAP_RE`（`/\[\[gap:(\d+)\]\]/`）同一套规则。
+pub fn gap_marker_seconds(text: &str) -> Option<u32> {
+    let prefix = crate::audio::GAP_MARKER_PREFIX;
+    let start = text.find(prefix)?;
+    let rest = &text[start + prefix.len()..];
+    let end = rest.find("]]")?;
+    let digits = &rest[..end];
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// 累积文本结尾是不是完整的缺口占位符——和前端 `core.js` 的 `GAP_END_RE` 同一套规则。
+///
+/// 前端是 `/\[\[gap:\d+\]\]$/`：占位符必须整段落在结尾，中间只能是数字。
+pub fn ends_with_gap_marker(text: &str) -> bool {
+    let prefix = crate::audio::GAP_MARKER_PREFIX;
+    let Some(start) = text.rfind(prefix) else {
+        return false;
+    };
+    let rest = &text[start + prefix.len()..];
+    let Some(end) = rest.find("]]") else {
+        return false;
+    };
+    if end + 2 != rest.len() {
+        return false;
+    }
+    let digits = &rest[..end];
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,7 +621,8 @@ mod tests {
     fn take_new_drops_oldest_when_over_limit() {
         let q = SampleQueue::new(48_000);
         let limit = MAX_PENDING_SECONDS as usize * 48_000;
-        q.push(&vec![0.0; limit + 100]);
+        let zeros = vec![0.0; limit + 100];
+        q.push(&zeros);
         let got = q.take_new();
         assert_eq!(got.dropped, 100);
         assert_eq!(got.samples.len(), limit);
@@ -590,9 +633,10 @@ mod tests {
         // 16 kHz 的设备上限应该按 16k 算，不能拿 48k 的样本数去卡
         let q = SampleQueue::new(16_000);
         let limit = MAX_PENDING_SECONDS as usize * 16_000;
-        q.push(&vec![0.0; limit]);
+        let zeros = vec![0.0; limit];
+        q.push(&zeros);
         assert_eq!(q.take_new().dropped, 0);
-        q.push(&vec![0.0; 1]);
+        q.push(&[0.0; 1]);
         assert_eq!(q.take_new().dropped, 0);
     }
 
@@ -650,41 +694,4 @@ mod tests {
         assert!(samples.len() > rate as usize, "录音样本太少");
         assert!(peak <= 1.0, "样本超出 [-1, 1]");
     }
-}
-
-// ──────────────────── 缺口占位符 ────────────────────
-
-pub fn is_gap_marker(text: &str) -> bool {
-    text.starts_with(crate::audio::GAP_MARKER_PREFIX)
-}
-
-pub fn gap_marker_seconds(text: &str) -> Option<u32> {
-    let prefix = crate::audio::GAP_MARKER_PREFIX;
-    let start = text.find(prefix)?;
-    let rest = &text[start + prefix.len()..];
-    let end = rest.find("]]")?;
-    let digits = &rest[..end];
-    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    digits.parse().ok()
-}
-
-/// 累积文本结尾是不是完整的缺口占位符——和前端 `core.js` 的 `GAP_END_RE` 同一套规则。
-///
-/// 前端是 `/\[\[gap:\d+\]\]$/`：占位符必须整段落在结尾，中间只能是数字。
-pub fn ends_with_gap_marker(text: &str) -> bool {
-    let prefix = crate::audio::GAP_MARKER_PREFIX;
-    let Some(start) = text.rfind(prefix) else {
-        return false;
-    };
-    let rest = &text[start + prefix.len()..];
-    let Some(end) = rest.find("]]") else {
-        return false;
-    };
-    if end + 2 != rest.len() {
-        return false;
-    }
-    let digits = &rest[..end];
-    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }

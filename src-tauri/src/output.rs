@@ -64,7 +64,7 @@ mod tests {
 
         #[test]
         fn sanitizes_dangerous_file_names() {
-            assert_eq!(sanitize_name("../../etc/passwd").is_some(), true);
+            assert!(sanitize_name("../../etc/passwd").is_some());
             assert!(sanitize_name("/tmp/x").unwrap().contains("tmp"));
             assert_eq!(sanitize_name("   "), None);
             assert!(sanitize_name("会议记录: 周一").is_some());

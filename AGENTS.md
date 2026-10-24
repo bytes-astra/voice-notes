@@ -9,7 +9,12 @@ npm install
 npm run dev              # 开发模式
 npm run build            # 打包 → src-tauri/target/release/bundle/
 npm run check:i18n       # 改文案后必跑：各语言 key 对齐 + HTML/JS 引用的 key 存在
+npm run check            # 门禁：i18n → clippy（-D warnings）→ cargo test --lib
+npm run check:ui         # 界面检查：真实 WebKit + 假 __TAURI__，40 项
+npm run shots            # 重出 README 的 9 张截图
 ```
+
+**门禁在 CI 里**（`.github/workflows/check.yml`，推 main / 提 PR 都跑）：前端 job 用 ubuntu（i18n + 界面检查），Rust job 用 macOS（clippy + 单元测试）—— 这个项目的 Rust 端在 Linux 上没验证过（cpal 要 ALSA 头文件），别把没支持的平台塞进 CI。
 
 ```bash
 cd src-tauri
@@ -150,11 +155,13 @@ bash scripts/gen-tts-corpus.sh             # TTS 20 句 + 数字句 + 长句 + �
 **改 UI 要在浏览器里验**（Playwright + 假 `window.__TAURI__`）：
 
 ```bash
-PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-browsers node /tmp/vn-ui/browser.mjs   # 36 项检查
-PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-browsers node /tmp/vn-ui/shots.mjs     # 重出 README 9 张截图
+npm run check:ui     # 40 项检查
+npm run shots        # 重出 README 9 张截图
 ```
 
-- 静态服务器用 Node 起，**别用 `python -m http.server`**：那个会偶发 `ERR_CONNECTION_RESET`（app.js / i18n.js 加载失败），表现是 `state is not defined` 或半渲染，很容易误判成代码问题。截图脚本里加一行 `page.on('requestfailed', ...)` 就能立刻看出是服务器抖了。
+- 脚本在 `scripts/ui/`（`check.mjs` / `shots.mjs` / `server.mjs`），假 `window.__TAURI__` 在 `check.mjs` 里。**浏览器不在默认位置时要设 `PLAYWRIGHT_BROWSERS_PATH`**（本机是 `/tmp/pw-browsers`）。
+- 静态服务器用 Node 起（`scripts/ui/server.mjs`），**别用 `python -m http.server`**：那个会偶发 `ERR_CONNECTION_RESET`（app.js / i18n.js 加载失败），表现是 `state is not defined` 或半渲染，很容易误判成代码问题。脚本里已经加了 `page.on('requestfailed', ...)`，服务器一抖立刻就能看出来。
+- 假 Tauri 的 `event.listen` 会把回调存起来，页面里用 `window.__emit('model:progress', {...})` 主动发事件 —— **后端事件的行为（比如进度按 kind 分流）要靠它测**。
 - 截图要**等页面渲染完再截**，否则会截到半成品（语言芯片、下拉框还没画出来）。
 - 深色截图用应用自己的主题切换按钮（`#theme-btn`）出，WebKit 里 `prefers-color-scheme` 不可靠。
 - 调研与优化方案在 `docs/research/`（先看 `2026-10-23-asr-quality-roadmap.md`）。

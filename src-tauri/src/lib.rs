@@ -43,7 +43,6 @@ pub fn code(key: &str) -> String {
     key.to_string()
 }
 
-
 /// 带细节的错误码：细节是技术信息（路径、系统错误文本、格式名）。
 ///
 /// **细节只进日志，不进界面**：用户看到的是字典里的干净文案
@@ -86,7 +85,6 @@ impl models::ProgressSink for EventSink {
         let _ = self.app.emit("model:progress", payload);
     }
 }
-
 
 /// 把流式事件转成 UI 事件，并维护已定稿文本。
 struct StreamEmitter {
@@ -144,8 +142,6 @@ struct SegmentPayload {
 struct PartialPayload {
     partial: String,
 }
-
-
 
 #[tauri::command]
 fn status(app: AppHandle, state: State<AppState>) -> Status {
@@ -246,9 +242,6 @@ async fn set_model_dir(
     Ok(status_of(&app, &state.settings()))
 }
 
-
-
-
 /// 边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
 fn run_streaming(
     app: &AppHandle,
@@ -264,7 +257,6 @@ fn run_streaming(
         emitter.apply(events)
     })
 }
-
 
 #[tauri::command]
 async fn warm_up(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
@@ -435,7 +427,6 @@ fn set_input_device(
     ));
     Ok(status_of(&app, &state.settings()))
 }
-
 
 #[tauri::command]
 async fn download_streaming_model(
@@ -647,7 +638,6 @@ async fn start_offline_recording(
     Ok(())
 }
 
-
 #[tauri::command]
 async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<Transcript, String> {
     let recorder = {
@@ -715,9 +705,6 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     log_transcript("整段", &transcript);
     Ok(transcript)
 }
-
-
-
 
 /// 转写一个音频 / 视频文件。
 ///
@@ -874,6 +861,7 @@ fn cancel_download(state: State<AppState>, kind: Option<String>) {
 }
 
 #[tauri::command]
+/// 把文本写进目录；同名文件依次加序号，绝不覆盖。
 fn save_text(
     app: AppHandle,
     state: State<AppState>,
@@ -901,11 +889,6 @@ fn save_text(
         name,
     })
 }
-
-
-/// 把文本写进目录；同名文件依次加序号，绝不覆盖。
-
-
 
 /// 前端（webview）那边的事件也记进同一个日志文件。
 ///

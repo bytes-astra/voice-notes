@@ -334,8 +334,8 @@ impl Engine {
         let recognizer = OfflineRecognizer::create(&config)
             .ok_or_else(|| code_detail("model.loadFailed", &paths.model))?;
 
-        let vad = paths.vad.as_ref().and_then(|_| {
-            Some(VadModelConfig {
+        let vad = paths.vad.as_ref().map(|_| {
+            VadModelConfig {
                 silero_vad: SileroVadModelConfig {
                     model: paths.vad.clone(),
                     threshold: 0.5,
@@ -349,7 +349,7 @@ impl Engine {
                 provider: Some("cpu".into()),
                 debug: false,
                 ..Default::default()
-            })
+            }
         });
 
         Ok(Self {
@@ -534,6 +534,7 @@ impl StreamingEngine {
     }
 }
 
+/// 标点模型（CT-Transformer），给流式定稿句补标点。
 pub struct PunctuationEngine {
     punct: OfflinePunctuation,
 }
@@ -562,6 +563,7 @@ impl PunctuationEngine {
     }
 }
 
+/// 流式模型句柄。
 pub struct StreamingEngine {
     pub recognizer: OnlineRecognizer,
     vad: Option<VadModelConfig>,

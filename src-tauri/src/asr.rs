@@ -76,10 +76,8 @@ pub struct Segment {
     pub end: f32,
 }
 
-
-
-
-
+///
+// ── 超长句切窗：超过 90 秒切成 30 秒窗口 + 2 秒重叠再合并 ──
 /// 超过这个长度的句子才改用重叠窗口（秒）。
 ///
 /// 实测（65 秒 / 130 秒连续 TTS）：SenseVoice 直接吃 55 秒或 130 秒的音频，
@@ -88,18 +86,6 @@ pub struct Segment {
 ///
 /// 但输入越长，编码器的注意力越吃显存（帧数平方级），所以留一个上限：
 /// 超过 90 秒就切成 30 秒窗口 + 2 秒重叠，避免极端情况下把内存吃光。
-
-/// 后一段开头应该从哪里切掉（返回**字节**下标，0 = 不切）。
-///
-/// 找前一段结尾和后一段开头的最长公共部分（比较时忽略标点），
-/// 返回后一段里重复部分的结束位置。
-
-/// 合并重叠窗口识别出来的文本：删掉相邻两段重复的部分。
-
-
-/// 把「缺口」标记按时间插进句子列表，并重拼文本。
-///
-// ── 超长句切窗：超过 90 秒切成 30 秒窗口 + 2 秒重叠再合并 ──
 const MAX_SINGLE_SHOT_SECONDS: usize = 90;
 
 /// 超长句的窗口参数：30 秒窗口 + 2 秒重叠 + 28 秒步进。
@@ -120,6 +106,10 @@ fn is_merge_punct(c: char) -> bool {
             .contains(c)
 }
 
+/// 后一段开头应该从哪里切掉（返回**字节**下标，0 = 不切）。
+///
+/// 找前一段结尾和后一段开头的最长公共部分（比较时忽略标点），
+/// 返回后一段里重复部分的结束位置。
 fn overlap_cut(previous: &str, next: &str) -> usize {
     let prev: Vec<char> = previous.chars().filter(|c| !is_merge_punct(*c)).collect();
     // next 的非标点字符 + 它们在原始字符串里的字节位置
@@ -141,6 +131,7 @@ fn overlap_cut(previous: &str, next: &str) -> usize {
     0
 }
 
+/// 合并重叠窗口识别出来的文本：删掉相邻两段重复的部分。
 pub fn merge_transcripts(texts: &[String]) -> String {
     let mut result = String::new();
     for (index, text) in texts.iter().enumerate() {
@@ -154,9 +145,9 @@ pub fn merge_transcripts(texts: &[String]) -> String {
     result
 }
 
-
 /// 识别跟不上时会丢掉一段音频，丢掉的地方必须在结果里留个记号 ——
 /// 静默丢一段音频，用户根本不知道结果缺了一块。
+/// 把「缺口」标记按时间插进句子列表，并重拼文本。
 pub fn insert_gaps(transcript: &mut Transcript, gaps: Vec<Segment>) {
     if gaps.is_empty() {
         return;
@@ -196,15 +187,6 @@ fn is_cjk(ch: char) -> bool {
         | 0xFF00..=0xFFEF // 全角
     )
 }
-
-/// 是不是缺口占位符（`[[gap:秒数]]`）——和前端 `core.js` 的 `isGapMarker()` 同一套规则。
-///
-/// 缺口是「丢掉了一段音频」的位置标记，不是句子：它前后都不加空格。
-
-/// 从缺口占位符里取出秒数（`[[gap:3]]` → 3）；不是占位符就返回 None。
-///
-/// 和前端 `core.js` 的 `GAP_RE`（`/\[\[gap:(\d+)\]\]/`）同一套规则。
-
 
 /// 中文/日文/韩文之间直接拼接，其余用空格——与 DSH 的 `join(" ")` 相比更贴近书写习惯。
 ///
@@ -279,12 +261,6 @@ mod tests {
 }
 
 // ────────────────────────── 流式识别 ──────────────────────────
-
-
-/// 标点模型（CT-Transformer），给流式定稿句补标点。
-
-/// 流式模型句柄。
-
 
 /// 整段模式的「边录边按句识别」会话。
 ///

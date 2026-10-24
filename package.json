@@ -7,9 +7,14 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "icon": "tauri icon src-tauri/icon-source.png",
-    "check:i18n": "node scripts/check-i18n.mjs"
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "check:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --lib",
+    "check:ui": "node scripts/ui/check.mjs",
+    "shots": "node scripts/ui/shots.mjs",
+    "check": "npm run check:i18n && npm run check:rust"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "playwright": "^1.64.1"
   }
 }

@@ -104,6 +104,15 @@ fn timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
+/// 布尔开关在日志里写「开 / 关」。
+pub fn on_off(value: bool) -> &'static str {
+    if value {
+        "开"
+    } else {
+        "关"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,14 +139,5 @@ mod tests {
         assert!(!current.contains('x'), "轮转后当前文件还是旧内容");
 
         let _ = fs::remove_dir_all(&dir);
-    }
-}
-
-/// 布尔开关在日志里写「开 / 关」。
-pub fn on_off(value: bool) -> &'static str {
-    if value {
-        "开"
-    } else {
-        "关"
     }
 }

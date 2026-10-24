@@ -125,5 +125,5 @@ fn transcribes_file_end_to_end() {
     let text = voice_notes_lib::asr::join_segments(session.segments().iter().map(|s| s.text.as_str()));
     println!("识别结果：{text}（{:.2}s 音频，{} 句）", info.samples as f32 / 16000.0, session.segments().len());
     assert!(!text.trim().is_empty(), "识别结果为空");
-    assert!(session.segments().len() >= 1);
+    assert!(!session.segments().is_empty());
 }
