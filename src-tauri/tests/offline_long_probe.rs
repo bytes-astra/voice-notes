@@ -94,10 +94,19 @@ fn probe_long_recording_loss() {
     let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取音频");
     let speech = trim_silence(wave.samples(), 0.02);
 
-    for repeat in [1usize, 8, 20, 40] {
-        let mut long = Vec::with_capacity(speech.len() * repeat);
-        for _ in 0..repeat {
+    let silence = vec![0.0f32; 16_000 * 2]; // 2 秒静音
+    for (label, gap) in [
+        ("连续语音", 0usize),
+        ("说话+2秒静音+说话", silence.len()),
+        ("说话+10秒静音+说话", 16_000 * 10),
+    ] {
+        let repeat = 3usize;
+        let mut long = Vec::new();
+        for i in 0..repeat {
             long.extend_from_slice(&speech);
+            if gap > 0 && i + 1 < repeat {
+                long.extend_from_slice(&silence);
+            }
         }
         let seconds = long.len() as f32 / 16000.0;
 
@@ -120,7 +129,7 @@ fn probe_long_recording_loss() {
             - segments.iter().map(|(start, _, _)| *start).sum::<f32>();
         let chars: usize = segments.iter().map(|(_, _, t)| t.chars().count()).sum();
 
-        println!("\n════ 连续语音 {seconds:.1}s ════");
+        println!("\n════ {label}：{seconds:.1}s ════");
         println!(
             "  喂进 {fed:.1}s → 切出 {} 段，覆盖 {covered:.1}s，**没覆盖 {:.1}s**",
             segments.len(),

@@ -116,15 +116,21 @@ fn probe_long_continuous_speech() {
 
     let config = vad_config(&vad_path);
 
-    // 拼成 N 段连续语音（段与段之间不留静音 → VAD 找不到静音点）
-    for repeat in [1usize, 4, 12, 24] {
-        let mut long = Vec::with_capacity(speech.len() * repeat);
-        for _ in 0..repeat {
+    // 场景 A：连续语音（段与段之间不留静音）
+    // 场景 B：说话 → 静音 → 说话 → 静音 …（用户反馈的丢字场景）
+    let silence = vec![0.0f32; 16_000 * 2]; // 2 秒静音
+    for (label, gap) in [("连续语音", 0usize), ("说话+2秒静音+说话", silence.len())] {
+        let repeat = 4usize;
+        let mut long = Vec::new();
+        for i in 0..repeat {
             long.extend_from_slice(&speech);
+            if gap > 0 && i + 1 < repeat {
+                long.extend_from_slice(&silence);
+            }
         }
         let seconds = long.len() as f32 / 16000.0;
-        println!("\n════ 连续语音 {seconds:.1}s（{repeat} 段拼接）════");
-        for buffer in [60.0f32, 120.0, 300.0] {
+        println!("\n════ {label}：{seconds:.1}s（{repeat} 段）════");
+        for buffer in [60.0f32] {
             let (fed, out, segments) = measure(&config, buffer, &long);
             let lost = fed.saturating_sub(out);
             println!(

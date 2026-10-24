@@ -48,6 +48,7 @@ await context.addInitScript(() => {
     appVersion: '0.1.1',
   }
   window.__mockCalls = []
+  window.__mockTranscript = ''
   window.__mockStatus = { ...base }
   const clone = (value) => JSON.parse(JSON.stringify(value))
   const result = { text: '浏览器结果', segments: [], durationSeconds: 2, elapsedMs: 100, language: 'zh' }
@@ -87,7 +88,8 @@ await context.addInitScript(() => {
           case 'list_input_devices':
             return [{ name: 'Mock Mic', isDefault: true }]
           case 'stop_recording':
-            return clone(result)
+            // 跟真后端一致：返回这次会话累积出来的全文
+            return { ...clone(result), text: window.__mockTranscript || result.text }
           case 'save_text':
             return { path: '/out/x.txt', name: 'x.txt' }
           default:
@@ -249,6 +251,45 @@ check(
 await page.locator('.mode-chip[data-mode="offline"]').click()
 await page.waitForTimeout(300)
 check('切回整段', (await page.locator('.mode-chip[data-mode="offline"]').getAttribute('aria-pressed')) === 'true')
+
+// ── 整段录音：一段话 → 静音 → 再说，句子不能丢 ──
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(200)
+check('录音中', (await page.locator('.app').getAttribute('data-phase')) === 'recording')
+
+const say = async (text) => {
+  await page.evaluate((t) => {
+    // 模拟后端：先累积到 parts，再发事件
+    window.__mockTranscript = window.__mockTranscript ? window.__mockTranscript + t : t
+    window.__emit('stream:segment', { segment: t, start: 0, end: 1 })
+  }, text)
+}
+await say('第一句')
+await page.waitForTimeout(100)
+await say('第二句')
+await page.waitForTimeout(100)
+// 静音一段（前端这段时间什么都不该做）
+await page.waitForTimeout(600)
+await say('第三句')
+await page.waitForTimeout(200)
+
+const live = await page.locator('#text').inputValue()
+check(
+  '说话→静音→再说话：三句都在',
+  ['第一句', '第二句', '第三句'].every((t) => live.includes(t)),
+  live.slice(0, 60)
+)
+
+// 停止录音：后端返回全文，前端要用它替换结果框
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(400)
+const final = await page.locator('#text').inputValue()
+check(
+  '停止后结果框是后端返回的全文',
+  ['第一句', '第二句', '第三句'].every((t) => final.includes(t)),
+  final.slice(0, 60)
+)
+check('停止后回到空闲', (await page.locator('.app').getAttribute('data-phase')) === 'idle')
 
 // ── 下载进度分流：两个下载可以同时跑，进度事件同名，靠 kind 区分 ──
 await page.evaluate(() =>
