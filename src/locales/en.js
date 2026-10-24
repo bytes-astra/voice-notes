@@ -204,6 +204,7 @@ window.I18N_LOCALES['en'] = {
   'settings.output': 'Save folder',
   'settings.chooseOutputTitle': 'Choose the save folder',
   'settings.openFolder': 'Open folder',
+  'settings.openDirFailed': 'Could not open the folder',
   'settings.outputChanged': 'Save folder updated',
   'settings.recognition': 'Recognition',
   'settings.itn': 'Numbers and punctuation (ITN)',

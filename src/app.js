@@ -132,7 +132,7 @@ export function bindUI() {
   els.streamDownload.addEventListener('click', () => void downloadStreamingModel())
   els.streamCancel.addEventListener('click', async () => {
     try {
-      await invoke('cancel_download')
+      await invoke('cancel_download', { kind: 'streaming' })
     } catch {
       /* 忽略 */
     }
@@ -141,7 +141,7 @@ export function bindUI() {
   els.downloadBtn.addEventListener('click', () => void downloadModel())
   els.cancelDownloadBtn.addEventListener('click', async () => {
     try {
-      await invoke('cancel_download')
+      await invoke('cancel_download', { kind: 'offline' })
     } catch {
       /* 忽略 */
     }
@@ -160,6 +160,14 @@ export function bindUI() {
     clearResult()
     els.timer.textContent = '00:00'
     els.text.focus()
+    // 反馈：录音卡片描边闪一下。已经停在转写页时点击几乎没变化，
+    // 用户会以为按钮坏了 —— 这一下让「新的转写开始了」看得见。
+    const recorder = document.querySelector('.recorder')
+    if (recorder) {
+      recorder.classList.remove('flash')
+      void recorder.offsetWidth // 重启动画
+      recorder.classList.add('flash')
+    }
   })
   $('theme-btn').addEventListener('click', toggleTheme)
   els.settingsDownload.addEventListener('click', () => {

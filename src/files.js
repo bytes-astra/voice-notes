@@ -1,7 +1,7 @@
 /* 文件转写（后端解码 + 逐句出字）与输出目录设置 */
 
 import { els, errorText, fmtError, state, t, toast } from './core.js'
-import { invoke, logEvent, openDialog, openPath } from './tauri.js'
+import { invoke, logEvent, openDialog } from './tauri.js'
 import { clearResult, showTranscript } from './result.js'
 import { renderStatus } from './status.js'
 import { setPhase } from './recorder.js'
@@ -82,10 +82,10 @@ export async function pickOutputDir() {
 }
 
 export async function openOutputDir() {
-  const dir = state.status?.outputDir
-  if (!dir) return
+  if (!state.status?.outputDir) return
   try {
-    await openPath(dir)
+    // 用后端命令而不是 opener 插件：插件要静态 scope，而保存目录用户可以改
+    await invoke('open_output_dir')
   } catch (error) {
     toast(fmtError(error), 'error')
   }

@@ -90,12 +90,32 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
 
 /// 默认输出目录：文档/语音转文字。
 pub fn default_output_dir(app: &AppHandle) -> PathBuf {
+    // 目录名用 ASCII：中文目录名在终端、脚本、跨平台工具里处处要转义。
     app.path()
         .document_dir()
-        .map(|dir| dir.join("语音转文字"))
-        .unwrap_or_else(|_| PathBuf::from(".").join("语音转文字"))
+        .map(|dir| dir.join("VoiceNotes"))
+        .unwrap_or_else(|_| PathBuf::from(".").join("VoiceNotes"))
 }
 
+
+/// 一次性迁移：旧版本的默认输出目录是中文的「语音转文字」，现在改成 ASCII 的
+/// `VoiceNotes`（中文目录名在终端、脚本、跨平台工具里处处要转义）。
+///
+/// 只在旧目录还在、新的不存在时才搬 —— 不覆盖、不删除任何已有数据。
+pub fn migrate_output_dir(app: &AppHandle) {
+    let Some(dir) = app.path().document_dir().ok() else {
+        return;
+    };
+    let old = dir.join("语音转文字");
+    let new = dir.join("VoiceNotes");
+    if old.is_dir() && !new.exists() {
+        if let Err(err) = std::fs::rename(&old, &new) {
+            crate::log::warn(format!("迁移输出目录失败：{err}"));
+        } else {
+            crate::log::info(format!("输出目录已迁移到 {}", new.display()));
+        }
+    }
+}
 
 /// 清洗术语表：去空白/空行/重复，单条 ≤ 32 字，最多 100 条。
 ///

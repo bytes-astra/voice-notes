@@ -38,6 +38,10 @@ pub struct AppState {
     pub offline_session: Mutex<Option<OfflineRun>>,
     pub cancel_download: Arc<AtomicBool>,
     pub downloading: Arc<AtomicBool>,
+    /// 流式模型下载有自己的一套标志：整段在下载时不该把流式也挡住
+    /// （两个下载可以同时跑，进度靠事件载荷里的 kind 区分）。
+    pub cancel_download_streaming: Arc<AtomicBool>,
+    pub downloading_streaming: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -52,6 +56,8 @@ impl AppState {
             offline_session: Mutex::new(None),
             cancel_download: Arc::new(AtomicBool::new(false)),
             downloading: Arc::new(AtomicBool::new(false)),
+            cancel_download_streaming: Arc::new(AtomicBool::new(false)),
+            downloading_streaming: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -573,6 +579,21 @@ fn decode(recognizer: &OfflineRecognizer, samples: &[f32]) -> String {
 
 // ──────────────────── 识别规则（pre-roll）────────────────────
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
 
-
-
+    /// 整段在下载时，流式的下载按钮不该被判成 busy —— 两个下载各用各的标志。
+    #[test]
+    fn 下载标志互不阻塞() {
+        let state = AppState::new(Settings::default());
+        // 整段开始下载
+        assert!(!state.downloading.swap(true, Ordering::SeqCst));
+        // 流式照样能开始
+        assert!(!state.downloading_streaming.swap(true, Ordering::SeqCst));
+        // 但同一个下载不能重复进入
+        assert!(state.downloading.swap(true, Ordering::SeqCst));
+        assert!(state.downloading_streaming.swap(true, Ordering::SeqCst));
+    }
+}

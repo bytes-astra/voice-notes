@@ -26,7 +26,9 @@ export async function listenEvents() {
 
   await listen('model:progress', (event) => {
     const progress = event.payload || {}
-    if (state.downloadingStreaming) {
+    // 两个下载可以同时跑，事件同名 —— 按载荷里的 kind 分流，
+    // 别看当前状态（那样会把整段的进度显示到流式面板里，反之亦然）。
+    if (progress.kind === 'streaming') {
       els.streamProgress.classList.remove('hidden')
       setStreamProgress(progress.done || 0, progress.total || 0)
       const label =

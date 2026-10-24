@@ -201,6 +201,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.output': '保存目录',
   'settings.chooseOutputTitle': '选择保存目录',
   'settings.openFolder': '打开文件夹',
+  'settings.openDirFailed': '无法打开文件夹',
   'settings.outputChanged': '保存目录已更新',
   'settings.recognition': '识别',
   'settings.itn': '数字与标点（ITN）',

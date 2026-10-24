@@ -58,11 +58,32 @@ pub fn code_detail(key: &str, detail: impl std::fmt::Display) -> String {
     format!("{key}:{detail}")
 }
 
-struct EventSink(AppHandle);
+/// 进度事件的接收端。
+///
+/// 整段和流式的下载**可以同时跑**，而进度事件是同一个名字（`model:progress`），
+/// 所以载荷里必须带 `kind` 标明这是哪个下载 —— 否则两个面板会互相显示对方的进度。
+struct EventSink {
+    app: AppHandle,
+    /// "offline"（整段） / "streaming"（流式）
+    kind: &'static str,
+}
+
+impl EventSink {
+    fn new(app: AppHandle, kind: &'static str) -> Self {
+        Self { app, kind }
+    }
+}
 
 impl models::ProgressSink for EventSink {
     fn report(&self, progress: models::Progress) {
-        let _ = self.0.emit("model:progress", progress);
+        let mut payload = serde_json::to_value(progress).unwrap_or_default();
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "kind".to_string(),
+                serde_json::Value::String(self.kind.to_string()),
+            );
+        }
+        let _ = self.app.emit("model:progress", payload);
     }
 }
 
@@ -421,10 +442,10 @@ async fn download_streaming_model(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Status, String> {
-    if state.downloading.swap(true, Ordering::SeqCst) {
+    if state.downloading_streaming.swap(true, Ordering::SeqCst) {
         return Err(code("setup.busy"));
     }
-    state.cancel_download.store(false, Ordering::SeqCst);
+    state.cancel_download_streaming.store(false, Ordering::SeqCst);
     let dir = models::streaming_install_dir(&app)?;
     // 标点模型和流式模型一起下载
     let punct_dir = models::punctuation_install_dir(&app)?;
@@ -433,10 +454,15 @@ async fn download_streaming_model(
         dir.display(),
         punct_dir.display()
     ));
-    let sink = EventSink(app.clone());
-    let result =
-        models::download_streaming(&dir, &punct_dir, state.cancel_download.clone(), &sink).await;
-    state.downloading.store(false, Ordering::SeqCst);
+    let sink = EventSink::new(app.clone(), "streaming");
+    let result = models::download_streaming(
+        &dir,
+        &punct_dir,
+        state.cancel_download_streaming.clone(),
+        &sink,
+    )
+    .await;
+    state.downloading_streaming.store(false, Ordering::SeqCst);
     result?;
     log::info("流式模型下载完成");
     let _ = ensure_streaming_engine(&app, &state).await;
@@ -804,7 +830,7 @@ async fn download_model(app: AppHandle, state: State<'_, AppState>) -> Result<St
     state.cancel_download.store(false, Ordering::SeqCst);
     let dir = models::install_dir(&app)?;
     log::info(format!("开始下载离线模型：{}", dir.display()));
-    let sink = EventSink(app.clone());
+    let sink = EventSink::new(app.clone(), "offline");
     let result = models::download_all(&dir, state.cancel_download.clone(), &sink).await;
     state.downloading.store(false, Ordering::SeqCst);
     result?;
@@ -816,9 +842,35 @@ async fn download_model(app: AppHandle, state: State<'_, AppState>) -> Result<St
     Ok(status_of(&app, &state.settings()))
 }
 
+/// 打开转写结果的保存目录。
+///
+/// **不用 opener 插件**：那个要靠 capability 的 scope 限定允许打开的路径，而保存
+/// 目录是用户可改的（`settings.output_dir`），静态 scope 盖不全 —— 表现就是
+/// 「Not allowed to open path」。后端自己解析出真实路径再交给系统打开。
 #[tauri::command]
-fn cancel_download(state: State<AppState>) {
-    state.cancel_download.store(true, Ordering::SeqCst);
+fn open_output_dir(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    let dir = engine::output_dir(&app, &state.settings());
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = std::process::Command::new("explorer");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| code_detail("settings.openDirFailed", e))
+}
+
+#[tauri::command]
+fn cancel_download(state: State<AppState>, kind: Option<String>) {
+    // 两个下载可以同时跑，所以取消也要指明取消哪一个。
+    match kind.as_deref() {
+        Some("streaming") => state
+            .cancel_download_streaming
+            .store(true, Ordering::SeqCst),
+        _ => state.cancel_download.store(true, Ordering::SeqCst),
+    }
 }
 
 #[tauri::command]
@@ -890,6 +942,8 @@ pub fn run() {
                 on_off(loaded.punct),
             ));
             app.manage(AppState::new(loaded));
+            // 旧版默认输出目录是中文的「语音转文字」，一次性搬成 ASCII 的 VoiceNotes
+            settings::migrate_output_dir(app.handle());
             // macOS 原生材质（NSVisualEffectView）：窗口是透明的，侧栏不画底色，
             // 系统材质从后面透出来；主区自己刷不透明底色。
             #[cfg(target_os = "macos")]
@@ -925,6 +979,7 @@ pub fn run() {
             download_model,
             download_streaming_model,
             cancel_download,
+            open_output_dir,
             save_text,
             client_log,
         ])

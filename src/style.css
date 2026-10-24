@@ -864,6 +864,16 @@ body.macos .sidebar-top {
   transition: filter 0.15s;
 }
 .new-btn:hover { filter: brightness(1.05); }
+/* 按下去要有手感：缩一下 + 压暗 */
+.new-btn:active { transform: scale(0.975); filter: brightness(0.93); }
+.new-btn { transition: transform 90ms ease, filter 120ms ease; }
+
+/* 「开始新转写」点击后录音卡片闪一下 —— 给点击一个明确反馈 */
+.recorder.flash { animation: recorder-flash 700ms ease-out; }
+@keyframes recorder-flash {
+  0%, 100% { outline: 2px solid transparent; outline-offset: 2px; }
+  25% { outline: 2px solid var(--accent); outline-offset: 2px; }
+}
 
 .nav { display: flex; flex-direction: column; gap: 2px; }
 
