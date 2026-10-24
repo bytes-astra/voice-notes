@@ -130,13 +130,12 @@ fn probe_long_continuous_speech() {
         }
         let seconds = long.len() as f32 / 16000.0;
         println!("\n════ {label}：{seconds:.1}s（{repeat} 段）════");
-        for buffer in [60.0f32] {
-            let (fed, out, segments) = measure(&config, buffer, &long);
-            let lost = fed.saturating_sub(out);
-            println!(
-                "  VAD 缓冲 {buffer:>5.0}s → 喂进 {fed:>8} 采样，切出 {out:>8} 采样（{segments:>3} 句），**被吞 {lost:>8} 采样 = {:.1}s**",
-                lost as f32 / 16000.0
-            );
-        }
+        let buffer = 60.0f32;
+        let (fed, out, segments) = measure(&config, buffer, &long);
+        let lost = fed.saturating_sub(out);
+        println!(
+            "  VAD 缓冲 {buffer:>5.0}s → 喂进 {fed:>8} 采样，切出 {out:>8} 采样（{segments:>3} 句），**被吞 {lost:>8} 采样 = {:.1}s**",
+            lost as f32 / 16000.0
+        );
     }
 }
