@@ -151,7 +151,7 @@ SenseVoice 是**没有 context graph 的**离线模型，sherpa 明确不支持�
 |---|---|
 | P1-5 整段同音词替换（`hr`） | `replace.fst` 需 pynini 生成，**PyPI 上 pynini 只有 manylinux 和 Windows wheel，没有 macOS**（官方文档：macOS 只能走 conda-forge）。本机无 conda/mamba。收益虽可估（语料里 tts-19「玄戒芯片」→识别成「全泄芯片」、tts-20「弓头安装」→「满工重安装」，2/20 样本有专名同音错字），但成本不成比例 |
 | P2-4 GTCRN 降噪 | 模型只在 GitHub Releases、**没有官方 HF 镜像**，与本项目「镜像优先」冲突；且现有噪声样本 CER 只有 2.78%（5 条 2 字错），降噪解决不了当前矛盾 |
-| P2-1/2/3 换模型 | 838 / 799.7 / 130.6 MB 下载 + 改 `modeling_unit`/`bpe_vocab`/喂数节奏。对症的是 P2-3（换流式，流式 CER 16.24% 明显高于整段 11.28%），但成本最高 |
+| P2-1/2/3 换模型 | 838 / 799.7 / 130.6 MB 下载 + 改 `modeling_unit`/`bpe_vocab`/喂数节奏。**已单独成文**：[`2026-10-25-model-switch-options.md`](./2026-10-25-model-switch-options.md) —— 含实测的仓库/commit/bytes/sha256、crate 配置字段、改动面表格、spike 步骤。结论：X-ASR（换流式，168 MiB）**对症流式这个最大短板**，Qwen3-ASR（941 MiB）**唯一能解锁整段热词**，FireRed ASR2（1.15 GiB）无热词无标点 |
 | B4 标点换 int8 | 官方 HF 只有 fp32，int8 只在 GitHub Releases → 卡在托管方案（供应链 / 国内可达性）。标点模型**默认关闭**，多数用户不会下载它 |
 
 ### 8.3 真正的瓶颈：语料
