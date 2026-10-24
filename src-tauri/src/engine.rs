@@ -18,8 +18,8 @@ use sherpa_onnx::{
 use tauri::{AppHandle, Emitter};
 
 use crate::asr::{
-    clean, join_segments, should_pre_roll, Segment, Transcript, VAD_WINDOW, PRE_ROLL_SAMPLES,
-    SAMPLE_RATE,
+    clean, join_segments, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript,
+    VAD_WINDOW, PRE_ROLL_SAMPLES, SAMPLE_RATE,
 };
 use crate::log::{self, on_off};
 use crate::{code, code_detail};
@@ -316,6 +316,13 @@ pub fn shared_engine(state: &AppState) -> Result<Arc<Engine>, String> {
 /// 连续说话时找不到，句子可以长到 1 分钟以上。给 32 秒会触发 CircularBuffer 扩容。
 const MAX_SEGMENT_SECONDS: f32 = 30.0;
 
+/// VAD 的静音阈值：句间要静音多久才算断句（秒）。
+///
+/// 0.5 秒比 Silero 官方默认（0.1 秒）保守 5 倍，句子拖得长、尾巴带静音。
+/// 调到 0.3 治「拖带静音」。**整段和流式必须一致** —— 否则两种模式的断句行为
+/// 不一样，同一段音频在两个模式里会切出不同数量的句子。
+const VAD_MIN_SILENCE: f32 = 0.3;
+
 pub struct Engine {
     pub language: String,
     pub itn: bool,
@@ -345,7 +352,7 @@ impl Engine {
                 silero_vad: SileroVadModelConfig {
                     model: paths.vad.clone(),
                     threshold: 0.5,
-                    min_silence_duration: 0.5,
+                    min_silence_duration: VAD_MIN_SILENCE,
                     min_speech_duration: 0.25,
                     window_size: VAD_WINDOW as i32,
                     max_speech_duration: MAX_SEGMENT_SECONDS,
@@ -379,6 +386,43 @@ impl Engine {
         decode(&self.recognizer, samples)
     }
 
+    /// 从 VAD 里取出一段（含 pre-roll 回扩）。
+    ///
+    /// 返回 `(起点秒, 采样)`；VAD 里没有段了返回 `None`。`is_first` 用来保证
+    /// pre-roll 只作用在第一段上。
+    fn take_vad_segment(
+        detector: &VoiceActivityDetector,
+        samples: &[f32],
+        is_first: &mut bool,
+    ) -> Option<(f32, Vec<f32>)> {
+        let segment = detector.front()?;
+        let raw = segment.samples();
+        let start_samples = segment.start() as usize;
+        let mut from = start_samples;
+        if *is_first
+            && should_pre_roll(start_samples, &samples[..start_samples.min(samples.len())], raw)
+        {
+            from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
+        }
+        *is_first = false;
+        let end = (start_samples + raw.len()).min(samples.len());
+        let audio = samples[from..end].to_vec();
+        detector.pop();
+        Some((from as f32 / SAMPLE_RATE as f32, audio))
+    }
+
+    /// 识别一段（可能是短句合并出来的）音频，追加到段落列表。
+    fn push_decoded(&self, merged: &MergedSegment, segments: &mut Vec<Segment>) {
+        let text = decode(&self.recognizer, &merged.samples);
+        if !text.is_empty() {
+            segments.push(Segment {
+                text,
+                start: merged.start,
+                end: merged.end,
+            });
+        }
+    }
+
     /// 转写 16 kHz 单声道样本；VAD 可用时按语音段切分，否则按 30s 窗口兜底。
     pub fn transcribe(&self, samples: &[f32]) -> Transcript {
         let started = Instant::now();
@@ -391,43 +435,28 @@ impl Engine {
             {
                 detector.reset();
                 let mut first = true;
+                let mut merger = SegmentMerger::new();
                 for chunk in samples.chunks(VAD_WINDOW) {
                     detector.accept_waveform(chunk);
-                    while let Some(segment) = detector.front() {
-                        let raw = segment.samples();
-                        let start_samples = segment.start() as usize;
-                        let mut from = start_samples;
-                        if first && should_pre_roll(start_samples, &samples[..start_samples.min(samples.len())], raw) {
-                            from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
+                    while let Some((start, audio)) =
+                        Self::take_vad_segment(&detector, samples, &mut first)
+                    {
+                        for merged in merger.push(start, audio) {
+                            self.push_decoded(&merged, &mut segments);
                         }
-                        first = false;
-                        let audio = &samples[from..(start_samples + raw.len()).min(samples.len())];
-                        let text = decode(&self.recognizer, audio);
-                        let start = from as f32 / SAMPLE_RATE as f32;
-                        let end = start + audio.len() as f32 / SAMPLE_RATE as f32;
-                        if !text.is_empty() {
-                            segments.push(Segment { text, start, end });
-                        }
-                        detector.pop();
                     }
                 }
                 detector.flush();
-                while let Some(segment) = detector.front() {
-                    let raw = segment.samples();
-                    let start_samples = segment.start() as usize;
-                    let mut from = start_samples;
-                    if first && should_pre_roll(start_samples, &samples[..start_samples.min(samples.len())], raw) {
-                        from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
+                while let Some((start, audio)) =
+                    Self::take_vad_segment(&detector, samples, &mut first)
+                {
+                    for merged in merger.push(start, audio) {
+                        self.push_decoded(&merged, &mut segments);
                     }
-                    first = false;
-                    let audio = &samples[from..(start_samples + raw.len()).min(samples.len())];
-                    let text = decode(&self.recognizer, audio);
-                    let start = from as f32 / SAMPLE_RATE as f32;
-                    let end = start + audio.len() as f32 / SAMPLE_RATE as f32;
-                    if !text.is_empty() {
-                        segments.push(Segment { text, start, end });
-                    }
-                    detector.pop();
+                }
+                // 还在等的短句：收尾时定稿
+                for merged in merger.flush() {
+                    self.push_decoded(&merged, &mut segments);
                 }
             }
         }
@@ -516,7 +545,7 @@ impl StreamingEngine {
             silero_vad: SileroVadModelConfig {
                 model: Some(path.clone()),
                 threshold: 0.5,
-                min_silence_duration: 0.5,
+                min_silence_duration: VAD_MIN_SILENCE,
                 min_speech_duration: 0.25,
                 window_size: VAD_WINDOW as i32,
                 max_speech_duration: 20.0,

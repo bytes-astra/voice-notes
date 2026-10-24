@@ -99,6 +99,8 @@ menu.rs      macOS 原生菜单（只有 macOS 编）
 - **默认整句一次识别**（最准，`asr.rs` 的 `MAX_SINGLE_SHOT_SECONDS` / `merge_transcripts`）。SenseVoice 的「30 秒上限」实测不是硬约束：喂 55 秒 / 130 秒连续语音准确率都 98.6%。只有超过 `MAX_SINGLE_SHOT_SECONDS`（90 秒）才切 30 秒窗口 + 2 秒重叠（`merge_transcripts` 合并），防编码器注意力平方级吃显存。**别为了「符合官方限制」就切** —— 切了反而更差（97.9%），而且会把边界上的词劈开。
 - **VAD 会切掉开头第一个字**：音频开头直接是语音（没前导静音，比如 TTS、剪过的文件）时 sherpa VAD 的内部 padding 只有 ≈314 ms（「今天下午」→「天下午」）。`asr.rs` 的 `should_pre_roll` 只在「第一段 + 起点 < 0.6 s + 段前 RMS > 段 RMS × 0.3」时把起点回扩 0.4 s。**不要改成无门控回扩** —— 实测会把开头噪声当语音（真人样本多出「您好」）。
 - **ITN 自带标点**（ITN 开关在 `engine.rs` 的 `Engine::new`）：开 ITN 的 SenseVoice 自己就输出标点（关 ITN 才是纯文本）。标点模型只用于流式，别给整段再套一遍，否则叠成「。。」。
+- **短句合并**（`asr.rs` 的 `SegmentMerger`）：VAD 切出来的句子短于 3 秒（`MERGE_MIN_SECONDS`）不立刻定稿，等下一句来了**在音频层**合成一句再识别 —— 短句单独送 SenseVoice 时上下文太少，容易把词认错（参照 FunASR 的 `merge_vad=True, merge_length_s=15`）。两段之间隔超过 2 秒（`MERGE_MAX_GAP_SECONDS`）就不合并，否则「说完停顿十秒再开口」会被连成一句。**录音和文件转写两条生产路径都走 `OfflineSession`**，所以行为一致；`Engine::transcribe`（只给测试/探针用）也接了同一个合并器，否则两边结果对不上。
+- **VAD 参数整段和流式必须一致**（`engine.rs` 的 `VAD_MIN_SILENCE`）：整段 `Engine::new` 和流式 `StreamingEngine::new` 用同一个常量（min_silence 0.3 秒），否则同一段音频在两个模式里切出的句子数量不同。
 
 **流式（Zipformer transducer）**
 
@@ -150,7 +152,7 @@ node scripts/fetch-quality-corpus.mjs 12   # 真人中文电话录音 + 转写�
 bash scripts/gen-tts-corpus.sh             # TTS 20 句 + 数字句 + 长句 + 噪声变体
 ```
 
-当前基线（zh + ITN 整段，含 pre-roll 修复；40 条真人语料）：真人 **11.41%** / 真人+噪声 **1.39%** / TTS **15.55%**（修复前 26.47%）/ 长句 **15.00%**。**别拿 TTS 的绝对 CER 当质量结论** —— 它主要暴露「VAD 切字头」这类相对差异。
+当前基线（zh + ITN 整段，含 pre-roll 修复 + 短句合并 + min_silence 0.3；40 条真人语料）：真人 **11.28%** / 真人+噪声 **2.78%** / TTS **16.39%**（修复前 26.47%）/ 长句 **12.50%**；整段总段数 86（合并前 90）。**别拿 TTS 的绝对 CER 当质量结论** —— 它主要暴露「VAD 切字头」这类相对差异。
 
 **怀疑「录音丢了」先跑探针，别猜**（四个探针在 `src-tauri/tests/`，只打印不断言；共用的小工具在 `src-tauri/tests/common/mod.rs`，探针里写 `mod common;` 引入）：
 

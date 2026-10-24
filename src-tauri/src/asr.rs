@@ -220,6 +220,181 @@ pub fn join_segments<'a>(parts: impl Iterator<Item = &'a str>) -> String {
     out.trim().to_string()
 }
 
+/// 短句合并：短于这个长度的句子不立刻定稿，等下一句来了合并成一句再识别。
+///
+/// VAD 按 `min_silence_duration` 切句，切出来的短句（「好的」「对」）单独送
+/// SenseVoice 时上下文太少，容易把词认错；和下一句合成一句再识别，模型能拿到
+/// 更长的上下文。参照 FunASR 的 `merge_vad=True, merge_length_s=15`。
+const MERGE_MIN_SECONDS: f32 = 3.0;
+
+/// 两句之间隔着这么久就不合并了（秒）。
+///
+/// 不设上限的话，用户说完「好的」停顿十秒再开口，这两句会被合成一句 —— 音频中间
+/// 隔了十秒静音，模型却听成连续的一句话。
+const MERGE_MAX_GAP_SECONDS: f32 = 2.0;
+
+/// 可以送去识别的音频段（可能是两句合并出来的）。
+pub struct MergedSegment {
+    /// 起点（秒，相对会话起点）
+    pub start: f32,
+    /// 终点（秒）
+    pub end: f32,
+    /// 16 kHz 单声道采样
+    pub samples: Vec<f32>,
+}
+
+/// 短句合并器：把 VAD 切出来的短句和下一句合并后再送识别。
+///
+/// 用法：`push()` 喂进一段，返回「现在可以识别了」的段（可能是空的）；收尾时用
+/// `flush()` 把还留着的短句取出来定稿。
+pub struct SegmentMerger {
+    /// 还没定稿的短句：`(起点秒, 采样)`
+    pending: Option<(f32, Vec<f32>)>,
+}
+
+impl SegmentMerger {
+    pub fn new() -> Self {
+        Self { pending: None }
+    }
+
+    /// 送入一段 VAD 切好的音频（`start` 是它在会话里的起点，秒）。
+    ///
+    /// 返回可以送去识别的段：句子够长就当场返回；太短就先留着，等下一句来了
+    /// 合并；上一句等太久（间隔超过 `MERGE_MAX_GAP_SECONDS`）就各自定稿。
+    pub fn push(&mut self, start: f32, samples: Vec<f32>) -> Vec<MergedSegment> {
+        let mut ready = Vec::new();
+        if let Some((prev_start, prev_samples)) = self.pending.take() {
+            let prev_end = prev_start + prev_samples.len() as f32 / SAMPLE_RATE as f32;
+            if start - prev_end < MERGE_MAX_GAP_SECONDS {
+                // 间隔不大 → 合成一句送识别
+                let mut merged = prev_samples;
+                merged.extend_from_slice(&samples);
+                ready.push(MergedSegment {
+                    start: prev_start,
+                    end: start + samples.len() as f32 / SAMPLE_RATE as f32,
+                    samples: merged,
+                });
+                return ready;
+            }
+            // 隔太久 → 上一句自己定稿，不跨着大段静音合并
+            ready.push(MergedSegment {
+                start: prev_start,
+                end: prev_end,
+                samples: prev_samples,
+            });
+        }
+        let end = start + samples.len() as f32 / SAMPLE_RATE as f32;
+        if end - start < MERGE_MIN_SECONDS {
+            self.pending = Some((start, samples));
+        } else {
+            ready.push(MergedSegment { start, end, samples });
+        }
+        ready
+    }
+
+    /// 收尾：把还留着的短句取出来定稿。
+    pub fn flush(&mut self) -> Vec<MergedSegment> {
+        match self.pending.take() {
+            Some((start, samples)) => {
+                let end = start + samples.len() as f32 / SAMPLE_RATE as f32;
+                vec![MergedSegment { start, end, samples }]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// 还留着的短句的结束时间（秒）。
+    pub fn pending_end(&self) -> Option<f32> {
+        self.pending
+            .as_ref()
+            .map(|(start, samples)| start + samples.len() as f32 / SAMPLE_RATE as f32)
+    }
+}
+
+impl Default for SegmentMerger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod merger_tests {
+    use super::*;
+
+    fn samples(seconds: f32) -> Vec<f32> {
+        vec![0.0; (seconds * SAMPLE_RATE as f32) as usize]
+    }
+
+    #[test]
+    fn long_segment_is_ready_immediately() {
+        let mut merger = SegmentMerger::new();
+        let ready = merger.push(0.0, samples(4.0));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].samples.len(), (4.0 * SAMPLE_RATE as f32) as usize);
+    }
+
+    #[test]
+    fn short_segment_waits_for_the_next_one() {
+        let mut merger = SegmentMerger::new();
+        // 1 秒的短句：先留着，不定稿
+        assert!(merger.push(0.0, samples(1.0)).is_empty());
+        // 下一句来了 → 合成一句
+        let ready = merger.push(1.2, samples(2.0));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].start, 0.0);
+        assert_eq!(ready[0].end, 3.2);
+        assert_eq!(ready[0].samples.len(), (3.0 * SAMPLE_RATE as f32) as usize);
+    }
+
+    #[test]
+    fn long_pause_keeps_segments_apart() {
+        let mut merger = SegmentMerger::new();
+        assert!(merger.push(0.0, samples(1.0)).is_empty());
+        // 隔了 10 秒才说下一句 → 不该合并成一句
+        let ready = merger.push(11.0, samples(4.0));
+        assert_eq!(ready.len(), 2);
+        assert_eq!(ready[0].start, 0.0);
+        assert_eq!(ready[0].end, 1.0);
+        assert_eq!(ready[1].start, 11.0);
+        assert_eq!(ready[1].end, 15.0);
+    }
+
+    #[test]
+    fn short_segment_after_long_pause_is_held_again() {
+        let mut merger = SegmentMerger::new();
+        assert!(merger.push(0.0, samples(1.0)).is_empty());
+        // 上一句隔太久 → 自己定稿；这一句自己也短 → 继续留着
+        let ready = merger.push(11.0, samples(2.0));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].start, 0.0);
+        assert_eq!(ready[0].end, 1.0);
+        assert_eq!(merger.flush().len(), 1);
+    }
+
+    #[test]
+    fn flush_returns_the_pending_short_segment() {
+        let mut merger = SegmentMerger::new();
+        assert!(merger.push(0.0, samples(1.0)).is_empty());
+        let ready = merger.flush();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].start, 0.0);
+        assert_eq!(ready[0].end, 1.0);
+        assert!(merger.flush().is_empty());
+    }
+
+    #[test]
+    fn pending_end_reports_when_the_held_segment_finished() {
+        let mut merger = SegmentMerger::new();
+        assert_eq!(merger.pending_end(), None);
+        assert!(merger.push(0.0, samples(1.0)).is_empty());
+        assert_eq!(merger.pending_end(), Some(1.0));
+        // 长句当场定稿，没有待定的短句
+        let mut merger = SegmentMerger::new();
+        assert_eq!(merger.push(0.0, samples(4.0)).len(), 1);
+        assert_eq!(merger.pending_end(), None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +460,8 @@ pub struct OfflineSession {
     head: Vec<f32>,
     /// 是否已经处理过第一段
     drained_first: bool,
+    /// 短句合并器：太短的句子先留着，等下一句来了合成一句再识别
+    merger: SegmentMerger,
     /// 纯推理耗时累计（毫秒）
     elapsed_ms: u64,
 }
@@ -311,6 +488,7 @@ impl OfflineSession {
             segments: Vec::new(),
             head: Vec::new(),
             drained_first: false,
+            merger: SegmentMerger::new(),
             elapsed_ms: 0,
         }
     }
@@ -329,7 +507,27 @@ impl OfflineSession {
             self.detector.accept_waveform(&window);
             self.drain(&mut events);
         }
+        // 短句等太久（后面一直是静音）→ 别让用户干等，先定稿
+        self.flush_stale_pending(&mut events);
         events
+    }
+
+    /// 短句已经等够了（后面一直没人说话）→ 定稿。
+    ///
+    /// 不这样处理的话，用户说完「好的」停顿几秒，这两个字要一直等到下一句话
+    /// 出现（或停录）才显示出来。VAD 切出一段之后，后面必然是静音（切段的前提
+    /// 就是凑够了 `min_silence_duration`），所以「距上一段结束多久」就是静音时长。
+    fn flush_stale_pending(&mut self, events: &mut Vec<OfflineEvent>) {
+        // 用 VAD 自己的时间轴：它收到的是 fed_samples 减去还没喂进去的余量
+        let now = (self.fed_samples - self.vad_pending.len()) as f32 / SAMPLE_RATE as f32;
+        let Some(pending_end) = self.merger.pending_end() else {
+            return;
+        };
+        if now - pending_end >= MERGE_MAX_GAP_SECONDS {
+            for merged in self.merger.flush() {
+                self.recognize_and_emit(merged, events);
+            }
+        }
     }
 
     /// 收尾：把 VAD 里还没成句的剩余音频冲出来识别。
@@ -341,6 +539,10 @@ impl OfflineSession {
         }
         self.detector.flush();
         self.drain(&mut events);
+        // 还在等的短句：收尾时定稿
+        for merged in self.merger.flush() {
+            self.recognize_and_emit(merged, &mut events);
+        }
         events
     }
 
@@ -364,19 +566,30 @@ impl OfflineSession {
                 raw
             };
             let start = from as f32 / SAMPLE_RATE as f32;
-            let end = start + samples.len() as f32 / SAMPLE_RATE as f32;
             self.detector.pop();
 
-            let started = Instant::now();
-            let text = self.recognize_segment(&samples);
-            self.elapsed_ms += started.elapsed().as_millis() as u64;
-            if text.trim().is_empty() {
-                continue;
+            // 短句合并：太短的句子先留着，等下一句来了合成一句再识别
+            for merged in self.merger.push(start, samples) {
+                self.recognize_and_emit(merged, events);
             }
-            let segment = Segment { text, start, end };
-            events.push(OfflineEvent::Segment(segment.clone()));
-            self.segments.push(segment);
         }
+    }
+
+    /// 识别一段（可能是合并出来的）音频并产出事件。
+    fn recognize_and_emit(&mut self, merged: MergedSegment, events: &mut Vec<OfflineEvent>) {
+        let started = Instant::now();
+        let text = self.recognize_segment(&merged.samples);
+        self.elapsed_ms += started.elapsed().as_millis() as u64;
+        if text.trim().is_empty() {
+            return;
+        }
+        let segment = Segment {
+            text,
+            start: merged.start,
+            end: merged.end,
+        };
+        events.push(OfflineEvent::Segment(segment.clone()));
+        self.segments.push(segment);
     }
 
     /// 识别一段切好的音频。
