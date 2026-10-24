@@ -13,6 +13,7 @@
   --accent-2: #8b5cf6;
   --accent-ink: #ffffff;
   --accent-soft: rgba(91, 91, 214, 0.10);
+  --accent-glow: rgba(91, 91, 214, 0.45);
   --danger: #d92d20;
   --ok: #079455;
   --warn: #b54708;
@@ -36,6 +37,7 @@
     --accent-2: #a78bfa;
     --accent-ink: #0b0d10;
     --accent-soft: rgba(139, 139, 245, 0.14);
+    --accent-glow: rgba(139, 139, 245, 0.5);
     --danger: #ff6b6b;
     --ok: #4ade80;
     --warn: #fbbf24;
@@ -56,6 +58,7 @@
   --accent-2: #a78bfa;
   --accent-ink: #0b0d10;
   --accent-soft: rgba(139, 139, 245, 0.14);
+  --accent-glow: rgba(139, 139, 245, 0.5);
   --danger: #ff6b6b;
   --ok: #4ade80;
   --warn: #fbbf24;
@@ -863,10 +866,22 @@ body.macos .sidebar-top {
   box-shadow: 0 8px 18px -12px var(--accent);
   transition: filter 0.15s;
 }
-.new-btn:hover { filter: brightness(1.05); }
-/* 按下去要有手感：缩一下 + 压暗 */
-.new-btn:active { transform: scale(0.975); filter: brightness(0.93); }
-.new-btn { transition: transform 90ms ease, filter 120ms ease; }
+/* hover 要看得出：抬起来一点 + 主色光晕 + 提亮。
+   原来只有 brightness(1.05) —— 饱和色上那点亮度差基本看不出来。 */
+.new-btn:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+  box-shadow: 0 10px 22px -6px var(--accent-glow);
+}
+/* 按下去要有手感：缩一下 + 压暗 + 光晕收掉 */
+.new-btn:active {
+  transform: translateY(0) scale(0.975);
+  filter: brightness(0.93);
+  box-shadow: none;
+}
+.new-btn {
+  transition: transform 120ms ease, filter 140ms ease, box-shadow 140ms ease;
+}
 
 /* 「开始新转写」点击后录音卡片闪一下 —— 给点击一个明确反馈 */
 .recorder.flash { animation: recorder-flash 700ms ease-out; }
