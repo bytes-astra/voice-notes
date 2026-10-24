@@ -47,6 +47,17 @@ pub fn log_transcript(kind: &str, transcript: &Transcript) {
     ));
 }
 
+/// 记一句识别结果：只记边界和字数，不记内容 —— 怀疑「录音丢了」时能看出句子在不在、
+/// 覆盖了哪段时间（配合总时长就能算出哪一段没被覆盖）。
+fn log_segment(tag: &str, segment: &asr::Segment) {
+    log::info(format!(
+        "{tag}：{:.1}s → {:.1}s，{} 字",
+        segment.start,
+        segment.end,
+        segment.text.chars().count()
+    ));
+}
+
 /// 整段模式的识别线程。
 pub struct OfflineRun {
     pub stop: Arc<AtomicBool>,
@@ -110,14 +121,7 @@ where
             for event in session.push(&samples) {
                 let OfflineEvent::Segment(segment) = event;
                 parts.push(segment.text.clone());
-                // 只记边界和字数，不记内容：怀疑「录音丢了」时能看出句子在不在、
-                // 覆盖了哪段时间（配合总时长就能算出哪一段没被覆盖）。
-                log::info(format!(
-                    "识别出一句：{:.1}s → {:.1}s，{} 字",
-                    segment.start,
-                    segment.end,
-                    segment.text.chars().count()
-                ));
+                log_segment("识别出一句", &segment);
                 if !discarded() {
                     emit(OfflineEvent::Segment(segment));
                 }
@@ -134,12 +138,7 @@ where
         for event in session.finish() {
             let OfflineEvent::Segment(segment) = event;
             parts.push(segment.text.clone());
-            log::info(format!(
-                "收尾识别出一句：{:.1}s → {:.1}s，{} 字",
-                segment.start,
-                segment.end,
-                segment.text.chars().count()
-            ));
+            log_segment("收尾识别出一句", &segment);
             emit(OfflineEvent::Segment(segment));
         }
     }
