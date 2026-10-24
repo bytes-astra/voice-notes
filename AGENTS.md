@@ -10,7 +10,7 @@ npm run dev              # 开发模式
 npm run build            # 打包 → src-tauri/target/release/bundle/
 npm run check:i18n       # 改文案后必跑：各语言 key 对齐 + HTML/JS 引用的 key 存在
 npm run check            # 门禁：i18n → clippy（-D warnings）→ cargo test --lib
-npm run check:ui         # 界面检查：真实 WebKit + 假 __TAURI__，44 项
+npm run check:ui         # 界面检查：真实 WebKit + 假 __TAURI__，47 项
 npm run shots            # 重出 README 的 9 张截图
 ```
 
@@ -170,7 +170,7 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 **改 UI 要在浏览器里验**（Playwright + 假 `window.__TAURI__`）：
 
 ```bash
-npm run check:ui     # 44 项检查
+npm run check:ui     # 47 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 

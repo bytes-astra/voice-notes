@@ -28,7 +28,7 @@ jobs:
       - name: 装 Playwright 的 WebKit
         run: npx playwright install --with-deps webkit
 
-      # 真实 WebKit 里跑一遍界面：假 window.__TAURI__，40 项检查
+      # 真实 WebKit 里跑一遍界面：假 window.__TAURI__，47 项检查
       - name: 界面检查
         run: npm run check:ui
 
