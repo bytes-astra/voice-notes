@@ -35,7 +35,7 @@ Tauri 2 桌面应用，CPU 本地推理，不需要独立显卡；除了下载�
 - **文件转写**：把音频 / 视频拖进窗口，或按 `⌘O` / `Ctrl+O` 选文件；后端解码（symphonia，纯 Rust，不需要 ffmpeg），支持 mp3 / wav / flac / ogg / m4a / mp4 / mov（视频轨忽略），长文件边解边转。
 - **界面语言**：中文 / English，设置里可切。
 - **历史记录**：只存本地（最多 100 条），一键复制、保存。
-- **保存目录可指定**，默认 `文档/语音转文字/`，文件是 UTF-8 的 `.txt`。
+- **保存目录可指定**，默认 `~/Documents/VoiceNotes`（目录名用 ASCII，跨平台工具不用转义；旧版的中文目录「语音转文字」会在启动时自动改名，只在新目录不存在时才搬、不覆盖已有数据），文件是 UTF-8 的 `.txt`。
 
 ## 安装
 
@@ -112,7 +112,7 @@ silero_vad.onnx   # 必需：没有 VAD 就无法分句，这个目录会被判�
 需要 Rust 1.78+、Node 18+；macOS 还要 Xcode Command Line Tools。
 
 ```bash
-npm install          # 只装 @tauri-apps/cli
+npm install          # 只装 devDependencies（@tauri-apps/cli + playwright）
 npm run dev          # 开发模式
 npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
 npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML/JS 引用的 key 是否存在
@@ -178,6 +178,9 @@ src-tauri/
   src/menu.rs            macOS 原生菜单
   assets/hotwords.txt    流式术语表种子
   tests/quality_probe.rs 转写质量对比探针（只打印不断言）
+  tests/*_long_probe.rs  长录音丢音频排查探针（vad / offline / streaming / resample）
+  tests/common/mod.rs    探针共用的小工具（集成测试之间只能这样共享）
+  tests/fixtures/        冒烟与探针用的短音频
 scripts/                 i18n 体检、图标生成、语料拉取与生成
 docs/research/           转写质量调研与优化方案
 ```
@@ -193,6 +196,17 @@ cargo test --test decode_smoke    # 后端解码 + 文件全链路转写
 ```
 
 `asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR`（整段模型目录），`streaming_smoke` 需要 `VOICE_NOTES_STREAMING_MODEL_DIR`（流式四个文件：`encoder.int8.onnx` / `decoder.onnx` / `joiner.int8.onnx` / `tokens.txt`），未设置就跳过。要跑真实网络的用例，得显式加 `VOICE_NOTES_DOWNLOAD_TEST=1` 或 `VOICE_NOTES_RECORD_TEST=1`。
+
+怀疑「录音丢了」（长录音后面少字、句子断在半截）先跑探针，别猜 —— 只打印不断言：
+
+```bash
+cargo test --test vad_long_probe -- --nocapture        # VAD 吞不吞音频
+cargo test --test offline_long_probe -- --nocapture    # 整段会话覆盖了哪几段
+cargo test --test streaming_long_probe -- --nocapture  # 流式会话（需 VOICE_NOTES_STREAMING_MODEL_DIR）
+cargo test --test resample_probe -- --nocapture        # 48k→16k 重采样对识别的影响
+```
+
+2026-10-24 实测（176 秒连续语音）：VAD、整段会话、流式会话、重采样四条路都不丢音频，误差只有句边界。唯一的丢失点是采集队列上限（60 秒）—— 超了会丢最旧的并留 `[[gap:N]]` 标记，日志里同时会写「识别跟不上，丢掉 X 秒音频」。
 
 实测（Apple Silicon）：5.6 秒中文音频转写约 200 ms，实时率约 0.04×。
 

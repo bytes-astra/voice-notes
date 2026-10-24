@@ -10,7 +10,7 @@ npm run dev              # 开发模式
 npm run build            # 打包 → src-tauri/target/release/bundle/
 npm run check:i18n       # 改文案后必跑：各语言 key 对齐 + HTML/JS 引用的 key 存在
 npm run check            # 门禁：i18n → clippy（-D warnings）→ cargo test --lib
-npm run check:ui         # 界面检查：真实 WebKit + 假 __TAURI__，40 项
+npm run check:ui         # 界面检查：真实 WebKit + 假 __TAURI__，44 项
 npm run shots            # 重出 README 的 9 张截图
 ```
 
@@ -68,7 +68,7 @@ log.rs       应用日志（写文件 + stderr 镜像）
 menu.rs      macOS 原生菜单（只有 macOS 编）
 ```
 
-- **lib.rs 只放命令层**：一个文件混着三层（命令 / 业务 / 基础设施）会长得很快 —— 之前它 1821 行，现在 935 行。新逻辑先找对应模块放：`record.rs`（录音编排）、`engine.rs`（引擎与状态）、`output.rs`（落盘）。命令本身保持薄：一个命令别同时干两件事（`start_recording` 已按模式拆成 `start_streaming_recording` / `start_offline_recording`）。
+- **lib.rs 只放命令层**：一个文件混着三层（命令 / 业务 / 基础设施）会长得很快 —— 之前它 1821 行，现在约 970 行。新逻辑先找对应模块放：`record.rs`（录音编排）、`engine.rs`（引擎与状态）、`output.rs`（落盘）。命令本身保持薄：一个命令别同时干两件事（`start_recording` 已按模式拆成 `start_streaming_recording` / `start_offline_recording`）。
 - **`record.rs` 不认识 Tauri**：结果通过 `emit` 回调交出去，所以它能被单测直接调用。**别往里塞 `AppHandle`** —— 实在要发事件就在 lib.rs 那层包一下。
 - **名字别撞**：`record.rs` 是「录音怎么跑」，`asr.rs` 里的 `OfflineSession` / `StreamingSession` 是「识别会话」，两回事 —— 所以前者不叫 session.rs。缺口占位符（`[[gap:N]]`）的**格式**只在 `audio.rs` 一处（构造 + 解析都在那儿），别在别的模块再写一遍正则。
 
@@ -170,7 +170,7 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 **改 UI 要在浏览器里验**（Playwright + 假 `window.__TAURI__`）：
 
 ```bash
-npm run check:ui     # 40 项检查
+npm run check:ui     # 44 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 
