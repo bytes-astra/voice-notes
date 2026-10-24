@@ -87,11 +87,13 @@ pub const STREAM_TOKENS: Asset = Asset {
     sha256: "6193c7ea1c96d0d9a1e9652789b40d13a8a913b434a5451e93158f5a09fd6652",
 };
 
+// 流式也用 VAD v5：跟整段保持同一个模型文件，否则两种模式断句行为不一致
+// （v4 与 v5 的切句边界不同）。同一个 commit 下的另一个文件名。
 pub const STREAM_VAD: Asset = Asset {
     name: "silero_vad.onnx",
-    path: "/csukuangfj/vad/resolve/fba88cd2e921609e7675c3aaf51e0b9b295da4bc/silero_vad.onnx",
-    bytes: 1_807_522,
-    sha256: "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
+    path: "/csukuangfj/vad/resolve/fba88cd2e921609e7675c3aaf51e0b9b295da4bc/silero_vad_v5.onnx",
+    bytes: 2_313_101,
+    sha256: "6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396",
 };
 
 pub const STREAM_ASSETS: [&Asset; 5] = [

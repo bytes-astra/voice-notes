@@ -106,7 +106,7 @@ menu.rs      macOS 原生菜单（只有 macOS 编）
 - **必须按 200 ms 分片、且只在 `is_ready()` 为真时 `decode()`**（`asr.rs` 的 `StreamingSession`），否则 sherpa-onnx 特征缓冲越界直接 abort（`features.cc GetFrames`）。别改成小分片或无条件 decode。
 - **收尾必须补 300 ms 静音**（`TAIL_SILENCE_SAMPLES`，在 `asr.rs`）：解码器需要尾部上下文才吐出最后一个字，不补就丢句尾（「产品评审会」→「产品评审」）。补的静音不计入时长。
 - **VAD 门控**（在 `record.rs` 的 `run_streaming_core`）：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字）；起音前留 0.4 s 预录避免切字头。
-- 流式模型是独立的一组 assets（`models.rs` 的 `STREAM_*`：`streaming-zipformer-zh-int8-2025-06-30` + `silero_vad.onnx`），只覆盖中文；选粤/日/韩时前端自动切回整段。
+- 流式模型是独立的一组 assets（`models.rs` 的 `STREAM_*`：`streaming-zipformer-zh-int8-2025-06-30` + `silero_vad.onnx`），只覆盖中文；选粤/日/韩时前端自动切回整段。**流式的 `silero_vad.onnx` 与整段的是同一个 v5 文件**（`STREAM_VAD` 和 `VAD` 指向同一 commit 下的 `silero_vad_v5.onnx`）—— 之前流式还停在 v4，两种模式的切句边界会不一样。
 - **不要用 SenseVoice 覆盖流式结果**（这个功能已删，别加回来）：修收尾后流式 99%、SenseVoice 91%，而且覆盖要保留全部音频，和「不限时长、内存恒定」直接冲突。
 - **术语表（热词）**（`settings.rs` 清洗，`engine.rs` 的 `StreamingEngine::new` 用它）：`settings.hotwords`（≤ 100 条、单条 ≤ 32 字，`settings::clean_hotwords` 清洗）。非空时 `StreamingEngine` 用 `modified_beam_search` + `config.hotwords_buf`（短音频约慢 6%），为空保持 greedy。**只能用在流式** —— SenseVoice 上给热词或 beam 会 `_Exit(-1)` 杀进程（已复现）。改词表会清空流式引擎，下次录音重载 161 MB。设置页「填入示例」用的是 `src-tauri/assets/hotwords.txt`。
 - 标点模型（`PUNCT`，CT-Transformer zh-en，281 MB，`engine.rs` 的 `PunctuationEngine`）独立放在 `models/punct/`，默认关闭；开启后 `StreamEmitter` 在每句定稿时调 `PunctuationEngine::apply`，实时中间结果不加标点。模型缺失/加载失败时静默降级，不阻断录音。
