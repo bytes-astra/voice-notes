@@ -512,7 +512,7 @@ impl StreamingEngine {
                 threshold: 0.5,
                 min_silence_duration: 0.5,
                 min_speech_duration: 0.25,
-                window_size: 512,
+                window_size: VAD_WINDOW as i32,
                 max_speech_duration: 20.0,
             },
             sample_rate: SAMPLE_RATE,
