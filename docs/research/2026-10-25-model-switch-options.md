@@ -11,7 +11,7 @@
 
 | 候选 | 换的是 | 下载量（实测） | sherpa 1.13.8 支持 | 关键价值 | 关键代价 |
 |---|---|---|---|---|---|
-| **X-ASR** | 流式（+离线） | **168 MiB** | ✅ 原生（`model_type`/`modeling_unit`/`bpe_vocab` 字段都有） | **对症**：流式 CER 16.24% 明显高于整段 11.28%；自带动词性模型 + 自带标点 + 中英混说 | 不是 cjkchar，喂数节奏要改；要重写流式的 tokens 假设 |
+| **X-ASR** | 流式（+离线） | **168 MiB** | ⚠️ 见 §2.2.1：这份包在 1.13.8 上**加载失败** | **对症**：流式 CER 16.24% 明显高于整段 11.28%；自带动词性模型 + 自带标点 + 中英混说 | 不是 cjkchar，喂数节奏要改；要重写流式的 tokens 假设；**先解决装不上** |
 | **Qwen3-ASR 0.6B** | 整段 | **941 MiB** | ✅ 原生（`OfflineQwen3ASRModelConfig`） | **整段模式终于能用热词**（`hotwords` 字段） | 自回归 LLM 解码，慢；`max_total_len`/`max_new_tokens` 要显式调 |
 | **FireRed ASR2** | 整段 | **1.15 GiB** | ✅ 原生（`OfflineFireRedAsrModelConfig`） | 中文绝对精度最高一档 | **没有热词接口、没有标点**；体积最大；下载比现有整段模型大 3 倍 |
 
@@ -63,7 +63,7 @@
 上游：`GilgameshWind/X-ASR-zh-en`（HF tags 明确写了 `sherpa-onnx` / `streaming-asr` / `offline-asr` /
 `x-asr-zipformer-transducer` / `code-switching`）。
 
-### 2.2 crate 配置（1.13.8 原生支持，不用升 crate）
+### 2.2 crate 配置（字段确实有；但这份模型包能不能装上，见 §2.2.1）
 
 `OnlineModelConfig`（`sherpa-onnx-1.13.8/src/online_asr.rs:128`）里有这三个字段：
 
@@ -79,6 +79,36 @@ pub bpe_vocab: Option<String>,       // bpe.model 的路径
 config.model_config.model_type = Some("zipformer2".into());
 config.model_config.modeling_unit = Some("bpe".into());
 config.model_config.bpe_vocab = Some(paths.bpe_vocab.clone());
+```
+
+### 2.2.1 实测：这份 int8 包在 1.13.8 上装不上（2026-10-25）
+
+按上面的配置真去加载，直接失败：
+
+```
+sherpa-onnx/csrc/online-zipformer2-transducer-model.cc:InitEncoder:116
+  'encoder_dims' does not exist in the metadata
+```
+
+原因：`model_type="zipformer2"` 走的是 sherpa 的 **zipformer2 专用编码器**，它要求 ONNX 里带
+`encoder_dims` 元数据；csukuangfj2 这份导出（文件大小与 sha256 与 §2.1 完全一致，就是同一批文件）
+**没有这个元数据**。
+
+所以 §2.2 那句「1.13.8 原生支持，不用升 crate」只对**带元数据的导出**成立。这份包要么换一份导出、
+要么升 sherpa-onnx、要么换模型类型 —— 哪个能通，**没有验证**。
+
+**这条本身就是结论**：换模型的第一步不是写接入代码，是**先确认模型包能被当前 sherpa 版本加载**。
+本项目的模型是随应用分发、用户不装 Python 的，模型包与运行时版本必须配对，
+这层约束在选型时要一起算进成本。
+
+**复现方式**：
+
+```bash
+# 下载（169 MiB）
+curl -sSL -O "https://huggingface.co/csukuangfj2/sherpa-onnx-x-asr-zipformer-transducer-zh-en-int8-2026-06-03/resolve/main/encoder-epoch-99-avg-1.int8.onnx"
+# 然后用 OnlineRecognizerConfig { model_type: Some("zipformer2"),
+#                                modeling_unit: Some("bpe"),
+#                                bpe_vocab: Some(".../bpe.model") } 加载 → 报错
 ```
 
 ### 2.3 改动面
@@ -202,6 +232,14 @@ config.model_config.fire_red_asr_ctc = OfflineFireRedAsrCtcModelConfig { model }
 ## 5. 怎么执行：先做 spike，别直接改产品代码
 
 **换模型是大事，但第一步不该动产品代码。** 正确顺序：
+
+### 步骤 0：先只验「能不能装上」（最便宜的一步）
+
+**别一上来就跑语料。** 先只做一件事：把模型文件按上面的配置加载起来，
+`OnlineRecognizer::create()` 不返回 `None` 就算过。
+
+X-ASR 已经在这步挂过一次（§2.2.1）—— 整套配置抄好、模型下好，才发现自己是对的、
+只是那份导出缺元数据。装不上，后面所有 CER / RTF 数字都没有意义。
 
 ### 步骤 1：写一个独立探针（不改产品代码）
 
