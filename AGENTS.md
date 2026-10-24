@@ -74,6 +74,11 @@ menu.rs      macOS 原生菜单（只有 macOS 编）
 - **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续），前端只在 `fatal` 为真时才取消录音。
 - **事件载荷是增量的**：`stream:segment` 只带新句子，`stream:partial` 只带中间结果。别改回累计全文（长时间会话是 O(n²) 的传输与重绘）。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）。
 - 文件解码在后端：`decode::decode_to_16k()` 逐块解码，内存恒定。symphonia 锁 **0.5**（0.6 要 Rust 1.85，会破本项目声明的 1.78）。
+- **整段和流式的模型下载是两条独立的线**（可以同时下）：各自有 `downloading` / `cancel_download` 标志（`engine.rs` 的 `AppState` 里 `downloading_streaming` / `cancel_download_streaming`）。**共用一个标志的话，整段在下载时点流式下载会直接报 busy 失败**。
+  - 进度事件是同一个名字（`model:progress`），所以载荷里带 `kind`（`"offline"` / `"streaming"`，由 `lib.rs` 的 `EventSink` 塞进去）—— **前端必须按 kind 分流**，别看「当前是不是在下载」那种状态，否则两个面板会互相显示对方的进度（看起来就像流式在重复下载整段模型）。
+  - `cancel_download` 命令带 `kind` 参数，指明取消哪一个。
+- **转写结果的默认输出目录用 ASCII**（`settings::default_output_dir` → `~/Documents/VoiceNotes`）：中文目录名在终端、脚本、跨平台工具里处处要转义。旧版的中文目录「语音转文字」由 `settings::migrate_output_dir()` 在启动时一次性改名（只在新目录不存在时才搬，不覆盖已有数据）。
+- **打开文件夹用自己的 `open_output_dir` 命令，不要用 opener 插件**：插件的 `opener:allow-open-path` 权限是「without any pre-configured scope」—— **不配 scope 的话任何路径都被拒**（报 "Not allowed to open path"）；而保存目录是用户可改的（`settings.output_dir`），静态 scope 盖不全。后端自己解析出真实路径再 `open`/`explorer`/`xdg-open` 更省事（应用自己的命令不需要 ACL 权限，`__allow_command` 直接放行）。
 - **日志一直开着，不需要用户配置**：`log.rs`（`log::info` / `warn` / `error`）写到系统标准日志目录 —— macOS `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，Windows `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log`；超 1 MB 轮转一次保留 `.1`，同时镜像 stderr。**没有开关、没有设置页** —— 用户反馈问题直接把这个文件发过来。前端那边用 `client_log` 命令写进同一个文件（`src/tauri.js` 的 `logEvent()`），这样一份文件就是完整的一份记录。
 - **技术细节只进日志，不进界面文案**：`code_detail()` 已经把细节写进日志了，界面那边只显示字典里的干净文案（见「用户提示与技术细节分开」那条）。前端把错误抛给界面时同理：toast 里放干净文案，细节用 `logEvent('ERROR', …)` 记下来。
 - 拖拽用 Tauri 的 `onDragDropEvent`：Tauri v2 默认拦截系统拖放，HTML5 `drop` 事件在真应用里不触发。**所以 `tauri.conf.json` 的 `dragDropEnabled` 必须保持 `true`** —— 关掉它 wry 就不装拖放 handler，`onDragDropEvent` 永远不触发，拖拽转写直接变成死代码（而且没有 HTML5 兜底）。
