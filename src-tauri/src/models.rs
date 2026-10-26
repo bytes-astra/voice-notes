@@ -159,22 +159,26 @@ pub fn resolve_streaming(app: &AppHandle) -> Option<StreamingPaths> {
         .ok()?
         .join("models")
         .join(STREAM_DIR);
-    let encoder = dir.join(STREAM_ENCODER.name);
-    let decoder = dir.join(STREAM_DECODER.name);
-    let joiner = dir.join(STREAM_JOINER.name);
-    let tokens = dir.join(STREAM_TOKENS.name);
-    if !(exists(&encoder) && exists(&decoder) && exists(&joiner) && exists(&tokens)) {
+    resolve_streaming_in(&dir)
+}
+
+fn asset_ready(dir: &Path, asset: &Asset) -> bool {
+    fs::metadata(dir.join(asset.name))
+        .map(|meta| meta.is_file() && meta.len() == asset.bytes)
+        .unwrap_or(false)
+}
+
+fn resolve_streaming_in(dir: &Path) -> Option<StreamingPaths> {
+    if !STREAM_ASSETS.iter().all(|asset| asset_ready(dir, asset)) {
         return None;
     }
     Some(StreamingPaths {
         dir: dir.to_string_lossy().into_owned(),
-        encoder: encoder.to_string_lossy().into_owned(),
-        decoder: decoder.to_string_lossy().into_owned(),
-        joiner: joiner.to_string_lossy().into_owned(),
-        tokens: tokens.to_string_lossy().into_owned(),
-        vad: Some(dir.join(STREAM_VAD.name))
-            .filter(|path| exists(path))
-            .map(|path| path.to_string_lossy().into_owned()),
+        encoder: dir.join(STREAM_ENCODER.name).to_string_lossy().into_owned(),
+        decoder: dir.join(STREAM_DECODER.name).to_string_lossy().into_owned(),
+        joiner: dir.join(STREAM_JOINER.name).to_string_lossy().into_owned(),
+        tokens: dir.join(STREAM_TOKENS.name).to_string_lossy().into_owned(),
+        vad: Some(dir.join(STREAM_VAD.name).to_string_lossy().into_owned()),
     })
 }
 
@@ -250,7 +254,9 @@ fn app_data_file_ok(path: &Path) -> bool {
         _ => None,
     };
     match expected {
-        Some(bytes) => fs::metadata(path).map(|meta| meta.len() == bytes).unwrap_or(false),
+        Some(bytes) => fs::metadata(path)
+            .map(|meta| meta.len() == bytes)
+            .unwrap_or(false),
         None => true,
     }
 }
@@ -328,11 +334,14 @@ pub trait ProgressSink: Send + Sync {
 }
 
 fn hash_file(path: &Path) -> Result<String, String> {
-    let mut file = fs::File::open(path).map_err(|e| code_detail("error.readFileFailed", format!("{path:?}: {e}")))?;
+    let mut file = fs::File::open(path)
+        .map_err(|e| code_detail("error.readFileFailed", format!("{path:?}: {e}")))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
-        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| code_detail("error.readFileFailed", e))?;
         if n == 0 {
             break;
         }
@@ -412,7 +421,10 @@ async fn fetch_one(
 
     let size = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     if size != asset.bytes {
-        return Err(code_detail("error.sizeMismatch", format!("{size} / {}", asset.bytes)));
+        return Err(code_detail(
+            "error.sizeMismatch",
+            format!("{size} / {}", asset.bytes),
+        ));
     }
 
     sink.report(Progress {
@@ -457,7 +469,7 @@ pub async fn download_asset(
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(20))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| code_detail("error.connectFailed", e))?;
     let dest = dest_dir.join(asset.name);
     if fs::metadata(&dest)
         .map(|m| m.len() == asset.bytes)
@@ -580,6 +592,31 @@ mod tests {
         let unknown = dir.join("model.onnx");
         fs::write(&unknown, b"x").unwrap();
         assert!(app_data_file_ok(&unknown), "未知大小的文件名应该放行");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streaming_model_requires_complete_assets() {
+        let dir = std::env::temp_dir().join(format!("vn-streaming-ready-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for asset in STREAM_ASSETS {
+            fs::write(dir.join(asset.name), vec![0; asset.bytes as usize]).unwrap();
+        }
+        assert!(resolve_streaming_in(&dir).is_some(), "完整模型应可用");
+
+        fs::write(dir.join(STREAM_ENCODER.name), b"truncated").unwrap();
+        assert!(resolve_streaming_in(&dir).is_none(), "截断的模型不能报就绪");
+        fs::write(
+            dir.join(STREAM_ENCODER.name),
+            vec![0; STREAM_ENCODER.bytes as usize],
+        )
+        .unwrap();
+        fs::write(dir.join(STREAM_VAD.name), b"truncated").unwrap();
+        assert!(
+            resolve_streaming_in(&dir).is_none(),
+            "截断的 VAD 不能报就绪"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

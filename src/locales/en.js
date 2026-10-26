@@ -5,6 +5,8 @@ window.I18N_LOCALES['en'] = {
   'app.title': 'Voice to Text',
   'app.brand': 'Voice to Text',
   'app.startFailed': 'Failed to start: {error}',
+  'menu.edit': 'Edit',
+  'menu.view': 'View',
 
   'theme.toDark': 'Switch to dark',
   'theme.toLight': 'Switch to light',
@@ -64,6 +66,7 @@ window.I18N_LOCALES['en'] = {
   // Backend error codes: the backend returns the key, the frontend renders it
   'record.tooShort': 'Too short — say at least {seconds}s',
   'record.alreadyRecording': 'A recording is already in progress',
+  'record.configLocked': 'Recognition settings cannot be changed while recording',
   'record.notRecording': 'No recording is in progress',
   'record.stopFailed': 'Could not stop the recording',
   'record.threadExited': 'Recognition has stopped',
@@ -173,6 +176,7 @@ window.I18N_LOCALES['en'] = {
   'error.createStreamingDir': 'Could not create the streaming model folder',
   'error.createSettingsDir': 'Could not create the settings folder',
   'error.saveSettingsFailed': 'Could not save the settings',
+  'error.menuFailed': 'Could not update the system menu',
   'error.readFileFailed': 'Could not read the file',
   'error.connectFailed': 'Could not reach the download source',
   'error.writeCacheFailed': 'Could not write the cache file',

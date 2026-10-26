@@ -90,6 +90,7 @@ export function renderStatus() {
 
 export function renderMode() {
   const mode = state.status?.mode || 'offline'
+  els.itnToggle.disabled = state.phase !== 'idle'
   for (const chip of els.modeRow.children) {
     chip.setAttribute('aria-pressed', String(chip.dataset.mode === mode))
     chip.disabled = state.phase !== 'idle'
@@ -97,8 +98,10 @@ export function renderMode() {
   if (state.phase === 'idle') els.hint.textContent = idleHint()
   if (state.status) {
     for (const chip of els.langRow.children) {
-      chip.disabled = state.status.mode === 'streaming' && !STREAM_LANGS.includes(chip.dataset.lang)
-      chip.title = chip.disabled ? t('mode.streamingOnlyZh') : ''
+      chip.disabled = state.phase !== 'idle' || (state.status.mode === 'streaming' && !STREAM_LANGS.includes(chip.dataset.lang))
+      chip.title = state.phase !== 'idle'
+        ? t('record.configLocked')
+        : chip.disabled ? t('mode.streamingOnlyZh') : ''
     }
   }
   const needStream = mode === 'streaming' && !state.status?.streamingReady
@@ -137,6 +140,7 @@ export async function setMode(mode) {
 }
 
 export async function setLanguage(language) {
+  if (state.phase !== 'idle') return
   try {
     if (state.status?.mode === 'streaming' && !STREAM_LANGS.includes(language)) {
       toast(t('mode.switchedBack'))

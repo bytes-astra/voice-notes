@@ -3,7 +3,7 @@
 import { els, fmtBytes, fmtClock, fmtError, state, t, toast } from './core.js'
 import { listen } from './tauri.js'
 import { modelBadgeText, renderStatus, setProgress, setStreamProgress } from './status.js'
-import { cancelRecording, pushLevel } from './recorder.js'
+import { cancelRecording, pushLevel, stopRecording } from './recorder.js'
 import { appendSegment, showPartial } from './result.js'
 
 /// 后端错误消息 → 界面文案。
@@ -18,6 +18,7 @@ function errorMessage(message) {
 export async function listenEvents() {
   await listen('audio:level', (event) => {
     const payload = event.payload || {}
+    if (payload.sessionId != null && payload.sessionId !== state.recordingSessionId) return
     pushLevel(payload.level || 0)
     if (state.phase === 'recording' && typeof payload.elapsed === 'number') {
       els.timer.textContent = fmtClock(payload.elapsed)
@@ -26,11 +27,20 @@ export async function listenEvents() {
 
   await listen('audio:error', (event) => {
     const payload = event.payload
+    if (payload?.sessionId != null && payload.sessionId !== state.recordingSessionId) return
+    // 取消已经完成状态切换，迟到的采集错误不再打断新会话或弹过期提示。
+    if (state.phase === 'cancelling') return
     toast(fmtError(payload), 'error')
     // 载荷是对象 { code, detail?, seconds?, fatal }：只有致命错误才中断录音。
     // 缺口提示（fatal:false）只提示、录音继续；没有 fatal 字段时按致命处理。
     const fatal = payload && typeof payload === 'object' ? payload.fatal !== false : true
-    if (fatal && state.phase === 'recording') void cancelRecording()
+    if (fatal && payload?.code === 'record.micError' && ['requesting', 'recording'].includes(state.phase)) {
+      // 启动期间发生采集错误时取消；已录音则收尾保住已有文字。
+      if (state.phase === 'recording') void stopRecording()
+      else void cancelRecording()
+    } else if (fatal && state.phase === 'recording') {
+      void cancelRecording()
+    }
   })
 
   await listen('model:progress', (event) => {
@@ -60,11 +70,14 @@ export async function listenEvents() {
   // 事件是增量载荷：只带新句子，前端自己追加（累计全文在长时间会话下是 O(n²)）
   await listen('stream:partial', (event) => {
     const payload = event.payload || {}
+    if (state.transcribingFile || payload.sessionId !== state.recordingSessionId) return
     showPartial(payload.partial)
   })
 
   await listen('stream:segment', (event) => {
     const payload = event.payload || {}
+    const activeSession = state.transcribingFile ? state.fileSessionId : state.recordingSessionId
+    if (payload.sessionId !== activeSession) return
     appendSegment(payload.segment)
     showPartial('')
     if (state.transcribingFile) {

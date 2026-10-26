@@ -1,5 +1,7 @@
 /* 全局状态、DOM 引用、通用工具：所有模块的底座，不依赖任何业务模块 */
 
+import { logEvent } from './tauri.js'
+
 export const t = window.I18N.t
 export const I18N = window.I18N
 
@@ -47,6 +49,9 @@ export const state = {
   downloadingStreaming: false,
   view: 'transcribe',
   lastTranscript: null,
+  recordingSessionId: 0,
+  fileSessionId: 0,
+  fileAttemptId: 0,
   /// 录音/启动请求的代号：取消时 +1，让还在 await 的启动流程自己放弃。
   requestId: 0,
   toastTimer: 0,
@@ -130,13 +135,20 @@ export const els = {
 /// `{value}`（一个具体值）和 `{seconds}`（秒数）。
 /// 字典里没有这个 key → 显示「未知错误」，同样不把原文漏给用户。
 export function fmtError(error) {
+  const unknown = () => {
+    const detail = error && typeof error === 'object'
+      ? error.detail || error.message || JSON.stringify(error)
+      : errorText(error)
+    logEvent('ERROR', `未翻译的异常: ${detail}`)
+    return t('error.unknown')
+  }
   if (error && typeof error === 'object' && !Array.isArray(error)) {
     const vars = {}
     if (error.seconds != null) vars.seconds = error.seconds
     const text = translateCode(error.code, vars)
     if (text) return text
     if (isErrorCode(error.code)) return t('error.unknown')
-    return error.detail || error.message || String(error)
+    return unknown()
   }
   const raw = (typeof error === 'string' ? error : error?.message || String(error)).replace(/^Error:\s*/, '')
   const cut = raw.indexOf(':')
@@ -148,7 +160,7 @@ export function fmtError(error) {
   if (text) return text
   // 是个错误码但字典里没有 → 未知错误（别把码和细节原样甩给用户）。
   // 不是错误码（系统 / 第三方库原文）→ 照旧显示原文。
-  return isErrorCode(key) ? t('error.unknown') : raw
+  return isErrorCode(key) ? t('error.unknown') : unknown()
 }
 
 /// 像不像我们自己的错误码（`record.micError` 这种带点的）。

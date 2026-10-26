@@ -5,6 +5,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'app.title': '语音转文字',
   'app.brand': '语音转文字',
   'app.startFailed': '启动失败：{error}',
+  'menu.edit': '编辑',
+  'menu.view': '视图',
 
   'theme.toDark': '切换到深色',
   'theme.toLight': '切换到浅色',
@@ -62,6 +64,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // 后端错误码：后端只返回字典 key，这些文案由前端查字典渲染
   'record.tooShort': '录音太短，至少说 {seconds} 秒',
   'record.alreadyRecording': '当前正在录音',
+  'record.configLocked': '录音期间不能更改识别设置',
   'record.notRecording': '当前未在录音',
   'record.stopFailed': '停止录音失败',
   'record.threadExited': '识别已停止',
@@ -170,6 +173,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'error.createStreamingDir': '无法创建流式模型目录',
   'error.createSettingsDir': '无法创建设置目录',
   'error.saveSettingsFailed': '无法保存设置',
+  'error.menuFailed': '无法更新系统菜单',
   'error.readFileFailed': '无法读取文件',
   'error.connectFailed': '无法连接下载源',
   'error.writeCacheFailed': '无法写入缓存文件',

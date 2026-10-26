@@ -62,7 +62,9 @@ impl SampleQueue {
     }
 
     pub fn push(&self, samples: &[f32]) {
-        let Ok(mut guard) = self.samples.lock() else { return };
+        let Ok(mut guard) = self.samples.lock() else {
+            return;
+        };
         guard.extend_from_slice(samples);
     }
 
@@ -102,7 +104,9 @@ pub struct LevelRing {
 
 impl LevelRing {
     fn push(&self, samples: &[f32]) {
-        let Ok(mut guard) = self.samples.lock() else { return };
+        let Ok(mut guard) = self.samples.lock() else {
+            return;
+        };
         guard.extend_from_slice(samples);
         if guard.len() > LEVEL_RING {
             let excess = guard.len() - LEVEL_RING;
@@ -111,7 +115,9 @@ impl LevelRing {
     }
 
     fn peak(&self) -> f32 {
-        let Ok(buf) = self.samples.lock() else { return 0.0 };
+        let Ok(buf) = self.samples.lock() else {
+            return 0.0;
+        };
         let tail = &buf[buf.len().saturating_sub(LEVEL_RING)..];
         if tail.is_empty() {
             return 0.0;
@@ -136,7 +142,10 @@ pub fn gap_seconds(dropped_samples: u32, sample_rate: u32) -> u32 {
 
 /// 识别跟不上、丢掉了一段音频时插进结果里的标记（语言中立占位符）。
 pub fn gap_marker(dropped_samples: u32, sample_rate: u32) -> String {
-    format!("{GAP_MARKER_PREFIX}{}]]", gap_seconds(dropped_samples, sample_rate))
+    format!(
+        "{GAP_MARKER_PREFIX}{}]]",
+        gap_seconds(dropped_samples, sample_rate)
+    )
 }
 
 /// `audio:error` 事件的载荷：`code` 是字典 key，`fatal` 表示是否要中断录音。
@@ -156,6 +165,9 @@ pub struct AudioErrorPayload {
     pub seconds: Option<u32>,
     /// 致命错误：前端要中断录音
     pub fatal: bool,
+    /// 录音事件属于哪次会话；文件解码错误不属于录音，为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
 }
 
 impl AudioErrorPayload {
@@ -166,6 +178,7 @@ impl AudioErrorPayload {
             detail: None,
             seconds: None,
             fatal: true,
+            session_id: None,
         }
     }
 
@@ -176,6 +189,7 @@ impl AudioErrorPayload {
             detail: Some(detail.to_string()),
             seconds: None,
             fatal: true,
+            session_id: None,
         }
     }
 
@@ -186,6 +200,7 @@ impl AudioErrorPayload {
             detail: None,
             seconds: Some(seconds),
             fatal: false,
+            session_id: None,
         }
     }
 
@@ -196,6 +211,7 @@ impl AudioErrorPayload {
             detail: Some(detail.to_string()),
             seconds: None,
             fatal: false,
+            session_id: None,
         }
     }
 }
@@ -233,6 +249,11 @@ impl Recorder {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub fn inject_error(&self, error: String) {
+        *self.error.lock().unwrap() = Some(error);
+    }
+
     pub fn cancel(mut self) {
         let _ = self.tx.send(Cmd::Cancel);
         if let Some(join) = self.join.take() {
@@ -252,6 +273,7 @@ impl Drop for Recorder {
 
 #[derive(Clone, Serialize)]
 struct LevelPayload {
+    session_id: Option<u64>,
     level: f32,
     elapsed: f32,
 }
@@ -301,6 +323,7 @@ pub fn probe_input(device: Option<&str>) -> Result<(), String> {
     // 打开再丢掉：系统权限是在打开输入流的时候触发的。
     let (stream, _, _) = build_stream(
         None,
+        None,
         LevelRing::default(),
         Arc::new(Mutex::new(None)),
         device,
@@ -311,12 +334,16 @@ pub fn probe_input(device: Option<&str>) -> Result<(), String> {
 
 /// 打开默认输入设备开始采集；音频只留在内存里，停止后由调用方转写。
 /// 采集缓冲是有界的：未消费的采样超过上限就丢最旧的（内存恒定）。
-pub fn start(app: AppHandle, device: Option<&str>) -> Result<Recorder, String> {
-    start_with(Some(app), device)
+pub fn start(app: AppHandle, device: Option<&str>, session_id: u64) -> Result<Recorder, String> {
+    start_with(Some(app), device, Some(session_id))
 }
 
 /// 与 [`start`] 相同，但不发 UI 事件（测试/无界面场景用）。
-pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Recorder, String> {
+pub fn start_with(
+    app: Option<AppHandle>,
+    device: Option<&str>,
+    session_id: Option<u64>,
+) -> Result<Recorder, String> {
     let device = device.map(|name| name.to_string());
     let (tx, rx) = mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(u32, SampleQueue), String>>();
@@ -330,6 +357,7 @@ pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Record
         .spawn(move || {
             let stream = match build_stream(
                 app.as_ref(),
+                session_id,
                 thread_levels.clone(),
                 thread_error.clone(),
                 device.as_deref(),
@@ -359,6 +387,7 @@ pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Record
                         let _ = app.emit(
                             "audio:level",
                             LevelPayload {
+                                session_id,
                                 level,
                                 elapsed: started.elapsed().as_secs_f32(),
                             },
@@ -371,6 +400,7 @@ pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Record
                 let _ = app.emit(
                     "audio:level",
                     LevelPayload {
+                        session_id,
                         level: 0.0,
                         elapsed: started.elapsed().as_secs_f32(),
                     },
@@ -401,6 +431,7 @@ pub fn start_with(app: Option<AppHandle>, device: Option<&str>) -> Result<Record
 
 fn build_stream(
     app: Option<&AppHandle>,
+    session_id: Option<u64>,
     levels: LevelRing,
     error: Arc<Mutex<Option<String>>>,
     wanted: Option<&str>,
@@ -424,7 +455,7 @@ fn build_stream(
             queue.clone(),
             levels.clone(),
             error.clone(),
-            app.cloned(),
+            app.cloned().zip(session_id),
         ),
         SampleFormat::I16 => make_stream::<i16>(
             &device,
@@ -433,7 +464,7 @@ fn build_stream(
             queue.clone(),
             levels.clone(),
             error.clone(),
-            app.cloned(),
+            app.cloned().zip(session_id),
         ),
         SampleFormat::U16 => make_stream::<u16>(
             &device,
@@ -442,7 +473,7 @@ fn build_stream(
             queue.clone(),
             levels.clone(),
             error.clone(),
-            app.cloned(),
+            app.cloned().zip(session_id),
         ),
         SampleFormat::I32 => make_stream::<i32>(
             &device,
@@ -451,7 +482,7 @@ fn build_stream(
             queue.clone(),
             levels.clone(),
             error.clone(),
-            app.cloned(),
+            app.cloned().zip(session_id),
         ),
         other => {
             return Err(code_detail(
@@ -486,7 +517,7 @@ fn find_device(host: &cpal::Host, wanted: Option<&str>) -> Result<cpal::Device, 
 }
 
 fn stream_error_handler(
-    app: Option<AppHandle>,
+    context: Option<(AppHandle, u64)>,
     slot: Arc<Mutex<Option<String>>>,
 ) -> impl FnMut(cpal::StreamError) + Send + 'static {
     move |err: cpal::StreamError| {
@@ -494,10 +525,13 @@ fn stream_error_handler(
         if let Ok(mut guard) = slot.lock() {
             *guard = Some(code_detail("record.micError", &err));
         }
-        if let Some(app) = &app {
+        if let Some((app, session_id)) = &context {
             let _ = app.emit(
                 "audio:error",
-                AudioErrorPayload::fatal_detail("record.micError", err),
+                AudioErrorPayload {
+                    session_id: Some(*session_id),
+                    ..AudioErrorPayload::fatal_detail("record.micError", err)
+                },
             );
         }
     }
@@ -510,7 +544,7 @@ fn make_stream<T>(
     queue: SampleQueue,
     levels: LevelRing,
     error: Arc<Mutex<Option<String>>>,
-    app: Option<AppHandle>,
+    context: Option<(AppHandle, u64)>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
     T: SizedSample + Sample,
@@ -525,7 +559,7 @@ where
     device.build_input_stream(
         config,
         move |data: &[T], _| capture.push(data),
-        stream_error_handler(app, error),
+        stream_error_handler(context, error),
         None,
     )
 }
@@ -682,7 +716,7 @@ mod tests {
             eprintln!("跳过：未设置 VOICE_NOTES_RECORD_TEST");
             return;
         }
-        let recorder = start_with(None, None).expect("打开麦克风");
+        let recorder = start_with(None, None, None).expect("打开麦克风");
         let rate = recorder.sample_rate();
         let queue = recorder.queue();
         std::thread::sleep(std::time::Duration::from_secs(2));

@@ -6,8 +6,8 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde::Serialize;
 use sherpa_onnx::{
@@ -19,23 +19,25 @@ use tauri::{AppHandle, Emitter};
 
 use crate::asr::{
     clean, join_segments, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript,
-    VAD_WINDOW, PRE_ROLL_SAMPLES, SAMPLE_RATE,
+    PRE_ROLL_SAMPLES, SAMPLE_RATE, VAD_WINDOW,
 };
-use crate::log::{self, on_off};
-use crate::{code, code_detail};
-use crate::models::ModelPaths;
 use crate::audio::Recorder;
+use crate::log::{self, on_off};
 use crate::models;
-use crate::record::{OfflineRun, StreamSession};
+use crate::models::ModelPaths;
+use crate::record::RecordingRun;
 use crate::settings::{self, Settings};
+use crate::{code, code_detail};
 pub struct AppState {
     pub settings: Mutex<Settings>,
     pub recorder: Mutex<Option<Recorder>>,
+    pub recording_starting: AtomicBool,
+    pub next_recording_id: std::sync::atomic::AtomicU64,
     pub engine: Arc<Mutex<Option<Arc<Engine>>>>,
     pub streaming_engine: Arc<Mutex<Option<Arc<StreamingEngine>>>>,
     pub punct_engine: Arc<Mutex<Option<Arc<PunctuationEngine>>>>,
-    pub stream: Mutex<Option<StreamSession>>,
-    pub offline_session: Mutex<Option<OfflineRun>>,
+    pub stream: Mutex<Option<RecordingRun>>,
+    pub offline_session: Mutex<Option<RecordingRun>>,
     pub cancel_download: Arc<AtomicBool>,
     pub downloading: Arc<AtomicBool>,
     /// 流式模型下载有自己的一套标志：整段在下载时不该把流式也挡住
@@ -44,11 +46,41 @@ pub struct AppState {
     pub downloading_streaming: Arc<AtomicBool>,
 }
 
+pub struct RecordingStartGuard<'a>(pub &'a AtomicBool);
+
+pub struct DownloadFlagGuard(Arc<AtomicBool>);
+
+impl RecordingStartGuard<'_> {
+    pub fn release(self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Drop for RecordingStartGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+impl DownloadFlagGuard {
+    pub fn new(flag: Arc<AtomicBool>) -> Self {
+        Self(flag)
+    }
+}
+
+impl Drop for DownloadFlagGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
             settings: Mutex::new(settings),
             recorder: Mutex::new(None),
+            recording_starting: AtomicBool::new(false),
+            next_recording_id: std::sync::atomic::AtomicU64::new(1),
             engine: Arc::new(Mutex::new(None)),
             streaming_engine: Arc::new(Mutex::new(None)),
             punct_engine: Arc::new(Mutex::new(None)),
@@ -236,8 +268,7 @@ pub async fn ensure_streaming_engine(
     {
         return Ok(engine);
     }
-    let paths = models::resolve_streaming(app)
-        .ok_or_else(|| code("model.needStreaming"))?;
+    let paths = models::resolve_streaming(app).ok_or_else(|| code("model.needStreaming"))?;
     let hotwords = state.settings().hotwords;
     let _ = app.emit(
         "streaming:state",
@@ -347,22 +378,20 @@ impl Engine {
         let recognizer = OfflineRecognizer::create(&config)
             .ok_or_else(|| code_detail("model.loadFailed", &paths.model))?;
 
-        let vad = paths.vad.as_ref().map(|_| {
-            VadModelConfig {
-                silero_vad: SileroVadModelConfig {
-                    model: paths.vad.clone(),
-                    threshold: 0.5,
-                    min_silence_duration: VAD_MIN_SILENCE,
-                    min_speech_duration: 0.25,
-                    window_size: VAD_WINDOW as i32,
-                    max_speech_duration: MAX_SEGMENT_SECONDS,
-                },
-                sample_rate: SAMPLE_RATE,
-                num_threads: 1,
-                provider: Some("cpu".into()),
-                debug: false,
-                ..Default::default()
-            }
+        let vad = paths.vad.as_ref().map(|_| VadModelConfig {
+            silero_vad: SileroVadModelConfig {
+                model: paths.vad.clone(),
+                threshold: 0.5,
+                min_silence_duration: VAD_MIN_SILENCE,
+                min_speech_duration: 0.25,
+                window_size: VAD_WINDOW as i32,
+                max_speech_duration: MAX_SEGMENT_SECONDS,
+            },
+            sample_rate: SAMPLE_RATE,
+            num_threads: 1,
+            provider: Some("cpu".into()),
+            debug: false,
+            ..Default::default()
         });
 
         Ok(Self {
@@ -400,7 +429,11 @@ impl Engine {
         let start_samples = segment.start() as usize;
         let mut from = start_samples;
         if *is_first
-            && should_pre_roll(start_samples, &samples[..start_samples.min(samples.len())], raw)
+            && should_pre_roll(
+                start_samples,
+                &samples[..start_samples.min(samples.len())],
+                raw,
+            )
         {
             from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
         }
@@ -430,9 +463,7 @@ impl Engine {
         let mut segments = Vec::new();
 
         if let Some(vad_config) = &self.vad {
-            if let Some(detector) =
-                VoiceActivityDetector::create(vad_config, 60.0)
-            {
+            if let Some(detector) = VoiceActivityDetector::create(vad_config, 60.0) {
                 detector.reset();
                 let mut first = true;
                 let mut merger = SegmentMerger::new();
@@ -484,6 +515,7 @@ impl Engine {
             duration_seconds: duration,
             elapsed_ms: started.elapsed().as_millis() as u64,
             language: self.language.clone(),
+            warning: None,
         }
     }
 }
@@ -493,7 +525,6 @@ fn threads() -> i32 {
         .map(|n| (n.get() / 2).clamp(1, 4) as i32)
         .unwrap_or(2)
 }
-
 
 use sherpa_onnx::{
     OnlineRecognizer, OnlineRecognizerConfig, OnlineStream, OnlineTransducerModelConfig,
@@ -620,6 +651,27 @@ fn decode(recognizer: &OfflineRecognizer, samples: &[f32]) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn 录音启动预留锁配置且退出复位() {
+        let state = AppState::new(Settings::default());
+        assert!(!state.recording_starting.swap(true, Ordering::SeqCst));
+        {
+            let _starting = RecordingStartGuard(&state.recording_starting);
+            assert!(state.recording_starting.load(Ordering::SeqCst));
+        }
+        assert!(!state.recording_starting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn 下载守卫在提前返回时复位() {
+        let state = AppState::new(Settings::default());
+        state.downloading.store(true, Ordering::SeqCst);
+        {
+            let _guard = DownloadFlagGuard::new(state.downloading.clone());
+        }
+        assert!(!state.downloading.load(Ordering::SeqCst));
+    }
 
     /// 整段在下载时，流式的下载按钮不该被判成 busy —— 两个下载各用各的标志。
     #[test]

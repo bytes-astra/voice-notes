@@ -27,6 +27,8 @@ pub struct Transcript {
     pub duration_seconds: f32,
     pub elapsed_ms: u64,
     pub language: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// VAD 的窗口大小（512 样本 = 32 ms @16k）：引擎配 VAD 和会话切句都要用。
@@ -287,7 +289,11 @@ impl SegmentMerger {
         if end - start < MERGE_MIN_SECONDS {
             self.pending = Some((start, samples));
         } else {
-            ready.push(MergedSegment { start, end, samples });
+            ready.push(MergedSegment {
+                start,
+                end,
+                samples,
+            });
         }
         ready
     }
@@ -297,7 +303,11 @@ impl SegmentMerger {
         match self.pending.take() {
             Some((start, samples)) => {
                 let end = start + samples.len() as f32 / SAMPLE_RATE as f32;
-                vec![MergedSegment { start, end, samples }]
+                vec![MergedSegment {
+                    start,
+                    end,
+                    samples,
+                }]
             }
             None => Vec::new(),
         }
@@ -426,8 +436,10 @@ mod tests {
             duration_seconds: 1.5,
             elapsed_ms: 200,
             language: "zh".into(),
+            warning: None,
         };
         let value = serde_json::to_value(&transcript).unwrap();
+        assert!(value.get("warning").is_none());
         assert_eq!(value["durationSeconds"], serde_json::json!(1.5));
         assert_eq!(value["elapsedMs"], serde_json::json!(200));
         assert!(value.get("duration_seconds").is_none());
@@ -553,7 +565,11 @@ impl OfflineSession {
             let start_samples = segment.start() as usize;
             let mut from = start_samples;
             if !self.drained_first
-                && should_pre_roll(start_samples, &self.head[..start_samples.min(self.head.len())], &raw)
+                && should_pre_roll(
+                    start_samples,
+                    &self.head[..start_samples.min(self.head.len())],
+                    &raw,
+                )
             {
                 from = start_samples.saturating_sub(PRE_ROLL_SAMPLES);
             }
@@ -764,6 +780,7 @@ impl StreamingSession {
             duration_seconds: self.fed_samples as f32 / SAMPLE_RATE as f32,
             elapsed_ms: self.started.elapsed().as_millis() as u64,
             language: "zh-en".into(),
+            warning: None,
         }
     }
 }
@@ -789,6 +806,7 @@ mod gap_tests {
             duration_seconds: 3.0,
             elapsed_ms: 100,
             language: "zh".into(),
+            warning: None,
         };
         insert_gaps(&mut transcript, vec![seg("[[gap:3]]", 1.0)]);
         assert_eq!(transcript.segments.len(), 3);
@@ -854,6 +872,7 @@ mod gap_tests {
             duration_seconds: 1.0,
             elapsed_ms: 50,
             language: "zh".into(),
+            warning: None,
         };
         insert_gaps(&mut transcript, Vec::new());
         assert_eq!(transcript.text, "只有一句。");
@@ -873,7 +892,10 @@ mod merge_tests {
         ];
         let merged = merge_transcripts(&texts);
         println!("合并结果：{merged}");
-        assert!(merged.contains("一些边角的功能砍掉"), "边界处被劈开了: {merged}");
+        assert!(
+            merged.contains("一些边角的功能砍掉"),
+            "边界处被劈开了: {merged}"
+        );
         assert_eq!(merged.matches("边角").count(), 1, "边界处重复了: {merged}");
     }
 
@@ -887,7 +909,10 @@ mod merge_tests {
     #[test]
     fn ignores_punctuation_when_comparing() {
         // 前一段以句号结尾，后一段开头没有句号 —— 也要能对上
-        let texts = vec!["排期和优先级。".to_string(), "排期和优先级主要是".to_string()];
+        let texts = vec![
+            "排期和优先级。".to_string(),
+            "排期和优先级主要是".to_string(),
+        ];
         let merged = merge_transcripts(&texts);
         assert_eq!(merged, "排期和优先级。主要是");
     }
@@ -904,8 +929,8 @@ mod merge_tests {
 #[cfg(test)]
 mod pre_roll_tests {
     use super::*;
-    use std::path::PathBuf;
     use crate::models;
+    use std::path::PathBuf;
 
     #[test]
     fn pre_roll_only_for_speech_like_prefix() {

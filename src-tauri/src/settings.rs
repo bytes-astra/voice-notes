@@ -84,7 +84,8 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| code_detail("error.createSettingsDir", e))?;
     }
-    let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(settings)
+        .map_err(|e| code_detail("error.saveSettingsFailed", e))?;
     fs::write(&path, text).map_err(|e| code_detail("error.saveSettingsFailed", e))
 }
 
@@ -96,7 +97,6 @@ pub fn default_output_dir(app: &AppHandle) -> PathBuf {
         .map(|dir| dir.join("VoiceNotes"))
         .unwrap_or_else(|_| PathBuf::from(".").join("VoiceNotes"))
 }
-
 
 /// 校验输出目录：能建出来才算数。
 ///
@@ -206,7 +206,8 @@ mod hotword_tests {
         // 正常目录：能建出来才算数
         let good = std::env::temp_dir().join(format!("vn-out-ok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&good);
-        let prepared = prepare_output_dir(Some(good.display().to_string())).expect("应该能建出目录");
+        let prepared =
+            prepare_output_dir(Some(good.display().to_string())).expect("应该能建出目录");
         assert_eq!(prepared, Some(good.display().to_string()));
 
         // 空目录 = 用默认目录

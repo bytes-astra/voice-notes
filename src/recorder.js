@@ -96,7 +96,7 @@ export async function startRecording() {
   if (state.phase !== 'idle' || startTask) return
   setPhase('requesting')
   const requestId = ++state.requestId
-  startTask = runStart(requestId)
+  startTask = runStart(requestId, streaming)
   try {
     await startTask
   } catch (error) {
@@ -111,7 +111,7 @@ export async function startRecording() {
 }
 
 /// 真正启动一次录音。requestId 变了说明这次请求已经被取消（Esc）。
-async function runStart(requestId) {
+async function runStart(requestId, streaming) {
   try {
     // 先单独触发一次麦克风权限（macOS 在第一次打开输入流时才弹框），
     // 用户同意后再开始录音；不同意就停在这里。
@@ -126,7 +126,10 @@ async function runStart(requestId) {
   // 等权限的过程中取消了：不再开始。
   if (requestId !== state.requestId) return
   try {
-    await invoke('start_recording')
+    const sessionId = await invoke('reserve_session')
+    if (requestId !== state.requestId) return
+    state.recordingSessionId = sessionId
+    await invoke(streaming ? 'start_streaming_recording' : 'start_offline_recording', { sessionId })
     // 启动后端会话的过程中被取消：把已经起来的会话也停掉，别留下一个看不见的录音。
     if (requestId !== state.requestId) {
       await invoke('cancel_recording').catch(() => {})
@@ -151,6 +154,7 @@ async function runStart(requestId) {
 
 export async function stopRecording() {
   if (state.phase !== 'recording') return
+  const requestId = state.requestId
   const elapsed = (performance.now() - state.startedAt) / 1000
   stopTimer()
   els.timer.textContent = fmtClock(elapsed)
@@ -158,15 +162,28 @@ export async function stopRecording() {
   els.hint.textContent = t('record.transcribingFirst')
   try {
     const transcript = await invoke('stop_recording')
+    if (requestId !== state.requestId) return
     // 录音的最终结果：时长 + 句数，和文件转写一样记一条。
     logEvent('INFO', `停止录音，转写完成 时长=${(transcript.durationSeconds || 0).toFixed(1)}s 句数=${transcript.segments?.length || 0}`)
     showTranscript(transcript)
-    toast(transcript.text ? t('result.done') : t('result.none'))
+    toast(transcript.warning ? fmtError(transcript.warning) : transcript.text ? t('result.done') : t('result.none'), transcript.warning ? 'error' : 'info')
   } catch (error) {
+    if (requestId !== state.requestId) return
     logEvent('ERROR', `停止录音失败: ${errorText(error)}`)
+    const text = els.text.value.trim()
+    if (text) {
+      const partial = {
+        text,
+        segments: [],
+        durationSeconds: elapsed,
+        elapsedMs: 0,
+        language: state.status?.language || 'auto',
+      }
+      showTranscript(partial)
+    }
     toast(fmtError(error), 'error')
   } finally {
-    setPhase('idle')
+    if (requestId === state.requestId) setPhase('idle')
   }
 }
 
@@ -174,8 +191,10 @@ export async function cancelRecording() {
   if (state.phase !== 'recording' && state.phase !== 'requesting') return
   const wasRecording = state.phase === 'recording'
   logEvent('INFO', `取消录音 phase=${state.phase}`)
-  // 让还在 await 的启动流程放弃后续步骤（它可能在等权限或等后端启动）。
+  // 先让本会话及迟到的停止结果失效，再等待后端取消。
   state.requestId += 1
+  const requestId = state.requestId
+  setPhase('cancelling')
   stopTimer()
   // 等它落定再取消：否则它可能在这之后才把后端会话建起来，留下一个看不见的录音。
   if (startTask) await startTask.catch(() => {})
@@ -184,6 +203,7 @@ export async function cancelRecording() {
   } catch {
     /* 忽略 */
   }
+  if (requestId !== state.requestId) return
   els.timer.textContent = '00:00'
   if (wasRecording) {
     // 取消就是不要这段：清掉已经实时上屏的文字。

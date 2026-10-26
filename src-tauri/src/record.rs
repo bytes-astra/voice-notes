@@ -8,6 +8,7 @@
 //! 是「识别会话」，这里是「录音怎么跑」的编排，两回事。
 
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
@@ -20,16 +21,48 @@ use sherpa_onnx::LinearResampler;
 
 use crate::audio;
 use crate::log;
-pub struct StreamSession {
+pub struct RecordingRun {
     pub stop: Arc<AtomicBool>,
     /// 取消录音：收尾时不再产出文本（结果框里不该冒出被取消的内容）。
     pub discard: Arc<AtomicBool>,
     pub rx: Receiver<Transcript>,
 }
 
-/// 取走新到的采样（消费式：取走即释放，内存不随录音时长增长）。
-pub fn take_new(queue: &audio::SampleQueue) -> audio::NewAudio {
-    queue.take_new()
+pub struct FinishedRecording {
+    pub transcript: Transcript,
+    pub capture_error: Option<String>,
+}
+
+/// 采集故障不等于取消：先让识别线程收尾，保住已有的转写。
+pub fn finish_recording(
+    recorder: audio::Recorder,
+    run: RecordingRun,
+    timeout_secs: u64,
+) -> Result<FinishedRecording, String> {
+    let stopped = recorder.stop();
+    run.stop.store(true, Ordering::SeqCst);
+    let discard = run.discard.clone();
+    let transcript = run
+        .rx
+        .recv_timeout(Duration::from_secs(timeout_secs))
+        .map_err(|_| {
+            discard.store(true, Ordering::SeqCst);
+            crate::code("record.stopFailed")
+        })?;
+    if let Err(error) = stopped {
+        if transcript.text.trim().is_empty() {
+            return Err(error);
+        }
+        log::warn(format!("麦克风异常，保留已完成的转写：{error}"));
+        return Ok(FinishedRecording {
+            transcript,
+            capture_error: Some(error),
+        });
+    }
+    Ok(FinishedRecording {
+        transcript,
+        capture_error: None,
+    })
 }
 
 /// 一段录音的统计：音频时长、识别耗时、RTF、字数。
@@ -56,14 +89,6 @@ fn log_segment(tag: &str, segment: &asr::Segment) {
         segment.end,
         segment.text.chars().count()
     ));
-}
-
-/// 整段模式的识别线程。
-pub struct OfflineRun {
-    pub stop: Arc<AtomicBool>,
-    /// 取消录音：收尾时不再识别、不再发文本。
-    pub discard: Arc<AtomicBool>,
-    pub rx: mpsc::Receiver<Transcript>,
 }
 
 /// 整段模式：边录音边按句识别。
@@ -186,6 +211,7 @@ where
         duration_seconds: session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
         elapsed_ms: session.elapsed_ms(),
         language: engine.language.clone(),
+        warning: None,
     };
     asr::insert_gaps(&mut transcript, gaps);
     transcript
@@ -225,7 +251,7 @@ where
     let mut last_voice = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) && !discard.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(60));
-        let new_audio = take_new(&queue);
+        let new_audio = queue.take_new();
         let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
         if new_audio.dropped > 0 {
             // 识别跟不上：丢掉了一段音频，标记出来，不能静默丢
@@ -308,11 +334,12 @@ where
             duration_seconds: 0.0,
             elapsed_ms: 0,
             language: "zh-en".into(),
+            warning: None,
         };
     }
 
     // 收尾：把剩余采样和重采样器内部缓冲一起冲出去
-    let last = take_new(&queue);
+    let last = queue.take_new();
     if last.dropped > 0 {
         let seconds = audio::gap_seconds(last.dropped, rate);
         log::warn(format!("流式收尾丢掉 {seconds} 秒音频"));
@@ -346,12 +373,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use crate::models;
+    use std::path::PathBuf;
 
     /// 测试用的整段引擎 + VAD 配置（没有模型就跳过）。
     fn offline_engine() -> Option<(Arc<Engine>, sherpa_onnx::VadModelConfig)> {
-        let dir = std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(PathBuf::from)?;
+        let dir = std::env::var("VOICE_NOTES_MODEL_DIR")
+            .ok()
+            .map(PathBuf::from)?;
         let model = [dir.join("model.int8.onnx"), dir.join("model.onnx")]
             .into_iter()
             .find(|path| path.is_file())?;
@@ -378,171 +407,233 @@ mod tests {
 
     #[test]
     fn streams_from_buffer_with_resampling() {
-            let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
-                .ok()
-                .map(PathBuf::from)
-            else {
-                eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
-                return;
-            };
-            let paths = models::StreamingPaths {
-                dir: dir.display().to_string(),
-                encoder: dir.join("encoder.int8.onnx").display().to_string(),
-                decoder: dir.join("decoder.onnx").display().to_string(),
-                joiner: dir.join("joiner.int8.onnx").display().to_string(),
-                tokens: dir.join("tokens.txt").display().to_string(),
-                vad: [dir.join("silero_vad.onnx")]
-                    .into_iter()
-                    .find(|path| path.is_file())
-                    .map(|path| path.display().to_string()),
-            };
-            let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
-            let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+        let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
+            .ok()
+            .map(PathBuf::from)
+        else {
+            eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+            return;
+        };
+        let paths = models::StreamingPaths {
+            dir: dir.display().to_string(),
+            encoder: dir.join("encoder.int8.onnx").display().to_string(),
+            decoder: dir.join("decoder.onnx").display().to_string(),
+            joiner: dir.join("joiner.int8.onnx").display().to_string(),
+            tokens: dir.join("tokens.txt").display().to_string(),
+            vad: [dir.join("silero_vad.onnx")]
+                .into_iter()
+                .find(|path| path.is_file())
+                .map(|path| path.display().to_string()),
+        };
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
 
-            // 模拟 48 kHz 设备：每个 16 kHz 样本重复三次。
-            let mut upsampled = Vec::with_capacity(wave.samples().len() * 3);
-            for sample in wave.samples() {
-                upsampled.push(*sample);
-                upsampled.push(*sample);
-                upsampled.push(*sample);
-            }
-            let queue = audio::SampleQueue::new(48_000);
-            queue.push(&upsampled);
-            let stop = Arc::new(AtomicBool::new(false));
-            let stopper = stop.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(400));
-                stopper.store(true, Ordering::SeqCst);
-            });
+        // 模拟 48 kHz 设备：每个 16 kHz 样本重复三次。
+        let mut upsampled = Vec::with_capacity(wave.samples().len() * 3);
+        for sample in wave.samples() {
+            upsampled.push(*sample);
+            upsampled.push(*sample);
+            upsampled.push(*sample);
+        }
+        let queue = audio::SampleQueue::new(48_000);
+        queue.push(&upsampled);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopper = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            stopper.store(true, Ordering::SeqCst);
+        });
 
-            let mut partials = 0usize;
-            let transcript = run_streaming_core(
-                engine,
-                None,
-                queue,
-                48_000,
-                stop,
-                Arc::new(AtomicBool::new(false)),
-                |events| {
-                    for event in events {
-                        if let StreamEvent::Partial(_) = event {
-                            partials += 1;
-                        }
+        let mut partials = 0usize;
+        let transcript = run_streaming_core(
+            engine,
+            None,
+            queue,
+            48_000,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            |events| {
+                for event in events {
+                    if let StreamEvent::Partial(_) = event {
+                        partials += 1;
                     }
-                },
-            );
-            println!("流式结果：{}", transcript.text);
-            assert!(!transcript.text.is_empty(), "流式结果为空");
-            assert!(partials > 0, "没有中间结果");
-            assert!(transcript.duration_seconds > 5.0);
+                }
+            },
+        );
+        println!("流式结果：{}", transcript.text);
+        assert!(!transcript.text.is_empty(), "流式结果为空");
+        assert!(partials > 0, "没有中间结果");
+        assert!(transcript.duration_seconds > 5.0);
+    }
+
+    /// 识别跟不上、丢掉一段音频时，结果里必须留一个可见的缺口标记。
+    ///
+    /// 回归测试：之前流式路径完全忽略了 `dropped`，音频被静默丢弃。
+    #[test]
+    fn streaming_gap_marker_reaches_transcript() {
+        let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
+            .ok()
+            .map(PathBuf::from)
+        else {
+            eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+            return;
+        };
+        let paths = models::StreamingPaths {
+            dir: dir.display().to_string(),
+            encoder: dir.join("encoder.int8.onnx").display().to_string(),
+            decoder: dir.join("decoder.onnx").display().to_string(),
+            joiner: dir.join("joiner.int8.onnx").display().to_string(),
+            tokens: dir.join("tokens.txt").display().to_string(),
+            vad: [dir.join("silero_vad.onnx")]
+                .into_iter()
+                .find(|path| path.is_file())
+                .map(|path| path.display().to_string()),
+        };
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+        let mut upsampled = Vec::with_capacity(wave.samples().len() * 3);
+        for sample in wave.samples() {
+            upsampled.push(*sample);
+            upsampled.push(*sample);
+            upsampled.push(*sample);
         }
+        // 上限调到 1000 个采样：音频远超上限 → 一定会触发丢弃
+        let queue = audio::SampleQueue::with_limit(Some(1_000));
+        queue.push(&upsampled);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopper = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            stopper.store(true, Ordering::SeqCst);
+        });
 
-        /// 识别跟不上、丢掉一段音频时，结果里必须留一个可见的缺口标记。
-        ///
-        /// 回归测试：之前流式路径完全忽略了 `dropped`，音频被静默丢弃。
-        #[test]
-        fn streaming_gap_marker_reaches_transcript() {
-            let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
-                .ok()
-                .map(PathBuf::from)
-            else {
-                eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
-                return;
-            };
-            let paths = models::StreamingPaths {
-                dir: dir.display().to_string(),
-                encoder: dir.join("encoder.int8.onnx").display().to_string(),
-                decoder: dir.join("decoder.onnx").display().to_string(),
-                joiner: dir.join("joiner.int8.onnx").display().to_string(),
-                tokens: dir.join("tokens.txt").display().to_string(),
-                vad: [dir.join("silero_vad.onnx")]
-                    .into_iter()
-                    .find(|path| path.is_file())
-                    .map(|path| path.display().to_string()),
-            };
-            let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
-            let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
-            let mut upsampled = Vec::with_capacity(wave.samples().len() * 3);
-            for sample in wave.samples() {
-                upsampled.push(*sample);
-                upsampled.push(*sample);
-                upsampled.push(*sample);
-            }
-            // 上限调到 1000 个采样：音频远超上限 → 一定会触发丢弃
-            let queue = audio::SampleQueue::with_limit(Some(1_000));
-            queue.push(&upsampled);
-            let stop = Arc::new(AtomicBool::new(false));
-            let stopper = stop.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(400));
-                stopper.store(true, Ordering::SeqCst);
-            });
+        let transcript = run_streaming_core(
+            engine,
+            None,
+            queue,
+            48_000,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        );
+        println!("带缺口的流式结果：{}", transcript.text);
+        assert!(
+            transcript.text.contains("[[gap:"),
+            "丢掉音频后结果里应该有缺口标记: {}",
+            transcript.text
+        );
+        assert!(
+            transcript
+                .segments
+                .iter()
+                .any(|s| s.text.contains("[[gap:")),
+            "segments 里也该有缺口标记"
+        );
+    }
 
-            let transcript = run_streaming_core(
-                engine,
-                None,
-                queue,
-                48_000,
-                stop,
-                Arc::new(AtomicBool::new(false)),
-                |_| {},
-            );
-            println!("带缺口的流式结果：{}", transcript.text);
-            assert!(
-                transcript.text.contains("[[gap:"),
-                "丢掉音频后结果里应该有缺口标记: {}",
-                transcript.text
-            );
-            assert!(
-                transcript.segments.iter().any(|s| s.text.contains("[[gap:")),
-                "segments 里也该有缺口标记"
-            );
-        }
+    /// 整段模式：丢掉音频后，缺口标记必须出现在最终文本里。
+    ///
+    /// 回归测试：之前标记只 push 进了本地 parts，最终文本却从 session.segments()
+    /// 拼，标记被丢掉了。
+    #[test]
+    fn offline_gap_marker_reaches_transcript() {
+        let Some((engine, vad)) = offline_engine() else {
+            eprintln!("跳过：找不到 SenseVoice 模型");
+            return;
+        };
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
 
-        /// 整段模式：丢掉音频后，缺口标记必须出现在最终文本里。
-        ///
-        /// 回归测试：之前标记只 push 进了本地 parts，最终文本却从 session.segments()
-        /// 拼，标记被丢掉了。
-        #[test]
-        fn offline_gap_marker_reaches_transcript() {
-            let Some((engine, vad)) = offline_engine() else {
-                eprintln!("跳过：找不到 SenseVoice 模型");
-                return;
-            };
-            let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+        // 上限调到 1000 个采样：音频远超上限 → 一定会触发丢弃
+        let queue = audio::SampleQueue::with_limit(Some(1_000));
+        queue.push(wave.samples());
+        let stop = Arc::new(AtomicBool::new(true));
 
-            // 上限调到 1000 个采样：音频远超上限 → 一定会触发丢弃
-            let queue = audio::SampleQueue::with_limit(Some(1_000));
-            queue.push(wave.samples());
-            let stop = Arc::new(AtomicBool::new(true));
+        let mut events = Vec::new();
+        let transcript = run_offline(
+            engine,
+            vad,
+            queue,
+            16_000,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            |event| events.push(event),
+        );
+        println!("带缺口的整段结果：{}", transcript.text);
+        assert!(
+            transcript.text.contains("[[gap:"),
+            "丢掉音频后文本里应该有缺口标记: {}",
+            transcript.text
+        );
+        assert!(
+            events.iter().any(|e| match e {
+                OfflineEvent::Segment(s) => s.text.contains("[[gap:"),
+            }),
+            "也应该实时发一个缺口事件"
+        );
+        assert!(
+            transcript
+                .segments
+                .iter()
+                .any(|s| s.text.contains("[[gap:")),
+            "segments 里也该有缺口标记（流式路径就是这样的）"
+        );
+    }
 
-            let mut events = Vec::new();
-            let transcript = run_offline(
-                engine,
-                vad,
-                queue,
-                16_000,
-                stop,
-                Arc::new(AtomicBool::new(false)),
-                |event| events.push(event),
-            );
-            println!("带缺口的整段结果：{}", transcript.text);
-            assert!(
-                transcript.text.contains("[[gap:"),
-                "丢掉音频后文本里应该有缺口标记: {}",
-                transcript.text
-            );
-            assert!(
-                events.iter().any(|e| match e {
-                    OfflineEvent::Segment(s) => s.text.contains("[[gap:"),
-                }),
-                "也应该实时发一个缺口事件"
-            );
-            assert!(
-                transcript.segments.iter().any(|s| s.text.contains("[[gap:")),
-                "segments 里也该有缺口标记（流式路径就是这样的）"
-            );
-        }
+    #[test]
+    fn capture_failure_does_not_discard_finished_transcript() {
+        let Ok(recorder) = audio::start_with(None, None, None) else {
+            eprintln!("跳过：没有可用麦克风");
+            return;
+        };
+        recorder.inject_error(crate::code("record.micError"));
+        let (tx, rx) = mpsc::channel();
+        tx.send(Transcript {
+            text: "已经识别的一句".into(),
+            segments: Vec::new(),
+            duration_seconds: 2.0,
+            elapsed_ms: 20,
+            language: "zh".into(),
+            warning: None,
+        })
+        .unwrap();
+        let run = RecordingRun {
+            stop: Arc::new(AtomicBool::new(false)),
+            discard: Arc::new(AtomicBool::new(false)),
+            rx,
+        };
+        let stop = run.stop.clone();
+        let finished = finish_recording(recorder, run, 1).expect("部分结果应该保留");
+        assert_eq!(finished.transcript.text, "已经识别的一句");
+        assert!(finished.capture_error.is_some());
+        assert!(stop.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn capture_failure_without_transcript_returns_error() {
+        let Ok(recorder) = audio::start_with(None, None, None) else {
+            eprintln!("跳过：没有可用麦克风");
+            return;
+        };
+        recorder.inject_error(crate::code("record.micError"));
+        let (tx, rx) = mpsc::channel();
+        tx.send(Transcript {
+            text: String::new(),
+            segments: Vec::new(),
+            duration_seconds: 1.0,
+            elapsed_ms: 0,
+            language: "zh".into(),
+            warning: None,
+        })
+        .unwrap();
+        let run = RecordingRun {
+            stop: Arc::new(AtomicBool::new(false)),
+            discard: Arc::new(AtomicBool::new(false)),
+            rx,
+        };
+        assert!(
+            matches!(finish_recording(recorder, run, 1), Err(error) if error == "record.micError")
+        );
+    }
 
     /// 停止录音时，识别期间麦克风采到的那段音频不能被丢掉。
     ///

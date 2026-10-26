@@ -10,7 +10,7 @@ npm run dev              # 开发模式
 npm run build            # 打包 → src-tauri/target/release/bundle/
 npm run check:i18n       # 改文案后必跑：各语言 key 对齐 + HTML/JS 引用的 key 存在
 npm run check            # 门禁：i18n → clippy（-D warnings）→ cargo test --lib
-npm run check:ui         # 界面检查：真实 WebKit + 假 __TAURI__，47 项
+npm run check:ui         # 界面检查：真实 WebKit + 假 __TAURI__，70 项
 npm run shots            # 重出 README 的 9 张截图
 ```
 
@@ -44,6 +44,7 @@ cargo test --test quality_probe -- --nocapture --test-threads=1   # 质量探针
 - **同一个控件的文案不要按模式变**：麦克风下方的空闲提示两种模式统一写「点击麦克风开始录音」，模式差异由「整段 / 流式」芯片的副标题说明。
 - **下拉框用自绘组件 `src/select.js`**（`UISelect.create(el, {onChange})`）：原生 `<select>` 在 macOS/Windows 样式不可控。弹层挂 body 上用 fixed 定位，避免被滚动容器裁掉。`setItems` 必须在 `create()` 之后调用，反了拿到 null。
 - Tauri 插件调用面集中在 `src/tauri.js` 解构，其他模块从那里 import。新增插件命令要同步在 `src-tauri/capabilities/default.json` 加权限，否则运行时直接拒绝。
+- macOS 原生菜单由 `menu.rs` 创建，界面切语言时 `applyLocale()` 调 `set_menu_locale` 更新子菜单；预定义编辑项交给系统本地化，别在 Rust 写死一份不随语言变化的中文菜单。
 - **macOS 侧栏的原生材质**：`lib.rs` 的 setup 里 `set_effects(Effect::Sidebar)`（NSVisualEffectView），配合 `style.css` 里 `body.macos` 的透明规则 —— 侧栏不画底色，系统材质从后面透出来，主区自己刷不透明底色。
   - **不用开 `transparent: true`**：Tauri 内置的 `set_effects` 自己就把 webview 处理成透明了。开了反而更糟 —— 那是全局窗口属性，Windows 也会变 layered 窗口（DWM 投影会没），而 Tauri 没有平台专属的窗口配置（`tauri.windows.conf.json` 的合并是 RFC 7386，数组整体替换，改一个字段得抄整份 window 配置）。
   - **材质的明暗跟的是窗口外观**（NSWindow.appearance），不是网页的 `data-theme` —— 切主题时必须同步 `setTheme('Dark'|'Light')`（`theme.js` 的 `syncWindowTheme()`），否则系统浅色 + 应用暗色 = 浅色材质配深色字。
@@ -68,15 +69,15 @@ log.rs       应用日志（写文件 + stderr 镜像）
 menu.rs      macOS 原生菜单（只有 macOS 编）
 ```
 
-- **lib.rs 只放命令层**：一个文件混着三层（命令 / 业务 / 基础设施）会长得很快 —— 之前它 1821 行，现在约 970 行。新逻辑先找对应模块放：`record.rs`（录音编排）、`engine.rs`（引擎与状态）、`output.rs`（落盘）。命令本身保持薄：一个命令别同时干两件事（`start_recording` 已按模式拆成 `start_streaming_recording` / `start_offline_recording`）。
+- **lib.rs 只放命令层**：一个文件混着三层（命令 / 业务 / 基础设施）会长得很快 —— 之前它 1821 行，现在约 970 行。新逻辑先找对应模块放：`record.rs`（录音编排）、`engine.rs`（引擎与状态）、`output.rs`（落盘）。命令本身保持薄：一个命令别同时干两件事（录音按模式拆成 `start_streaming_recording` / `start_offline_recording` 两个独立命令）。
 - **`record.rs` 不认识 Tauri**：结果通过 `emit` 回调交出去，所以它能被单测直接调用。**别往里塞 `AppHandle`** —— 实在要发事件就在 lib.rs 那层包一下。
-- **名字别撞**：`record.rs` 是「录音怎么跑」，`asr.rs` 里的 `OfflineSession` / `StreamingSession` 是「识别会话」，两回事 —— 所以前者不叫 session.rs。缺口占位符（`[[gap:N]]`）的**格式**只在 `audio.rs` 一处（构造 + 解析都在那儿），别在别的模块再写一遍正则。
+- **名字别撞**：`record.rs` 是「录音怎么跑」，`asr.rs` 里的 `OfflineSession` / `StreamingSession` 是「识别会话」，两回事 —— 所以前者不叫 session.rs。两种录音共用 `RecordingRun { stop, discard, rx }`，停止统一走 `finish_recording`：麦克风故障也要先等 ASR 收尾，不能当取消丢文本。缺口占位符（`[[gap:N]]`）的**格式**只在 `audio.rs` 一处（构造 + 解析都在那儿），别在别的模块再写一遍正则。
 
 - **命令参数名用 camelCase**（Tauri 2 默认），如 `audioBase64`、`fileName`。
 - **推理是同步阻塞的**，一律放进 `tauri::async_runtime::spawn_blocking`，别阻塞 async 执行器。
-- 引擎按 `(language, itn)` 缓存，语言或 ITN 变化时重建。想「切语言不重载」得走 C API 的 `setConfig`，Rust 绑定没暴露。
-- **事件名只出现在 `src/events.js`**：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`。改名字要同步前端。
-- **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续），前端只在 `fatal` 为真时才取消录音。
+- 引擎按 `(language, itn)` 缓存，语言或 ITN 变化时重建。想「切语言不重载」得走 C API 的 `setConfig`，Rust 绑定没暴露。录音中语言和 ITN 前后端都锁定；自定义模型目录变更由 `set_model_dir` 清缓存。
+- **事件名只出现在 `src/events.js`**：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`。改名字要同步前端。录音/文件都先 `reserve_session`，启动/文件命令携带 `sessionId`，分段、partial、采集错误带同一个 ID；前端只接收当前会话，超时同时置 discard 阻止旧线程继续发射。
+- **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续）。致命 `record.micError` 由前端停止录音并保存非空部分结果；用户主动 Esc 才走取消并清空，其他致命错误仍取消。
 - **事件载荷是增量的**：`stream:segment` 只带新句子，`stream:partial` 只带中间结果。别改回累计全文（长时间会话是 O(n²) 的传输与重绘）。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）。
 - 文件解码在后端：`decode::decode_to_16k()` 逐块解码，内存恒定。symphonia 锁 **0.5**（0.6 要 Rust 1.85，会破本项目声明的 1.78）。
 - **整段和流式的模型下载是两条独立的线**（可以同时下）：各自有 `downloading` / `cancel_download` 标志（`engine.rs` 的 `AppState` 里 `downloading_streaming` / `cancel_download_streaming`）。**共用一个标志的话，整段在下载时点流式下载会直接报 busy 失败**。
@@ -104,7 +105,7 @@ menu.rs      macOS 原生菜单（只有 macOS 编）
 
 **流式（Zipformer transducer）**
 
-- `StreamingSession` 200 ms（3200 样本）一片喂（`asr.rs`），`start_recording` 先 `ensure_streaming_engine` 再起采集（`lib.rs`）。
+- `StreamingSession` 200 ms（3200 样本）一片喂（`asr.rs`），`start_streaming_recording` 先 `ensure_streaming_engine` 再起采集（`lib.rs`）。
 - **必须按 200 ms 分片、且只在 `is_ready()` 为真时 `decode()`**（`asr.rs` 的 `StreamingSession`），否则 sherpa-onnx 特征缓冲越界直接 abort（`features.cc GetFrames`）。别改成小分片或无条件 decode。
 - **收尾必须补 300 ms 静音**（`TAIL_SILENCE_SAMPLES`，在 `asr.rs`）：解码器需要尾部上下文才吐出最后一个字，不补就丢句尾（「产品评审会」→「产品评审」）。补的静音不计入时长。
 - **VAD 门控**（在 `record.rs` 的 `run_streaming_core`）：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字）；起音前留 0.4 s 预录避免切字头。
@@ -128,7 +129,7 @@ menu.rs      macOS 原生菜单（只有 macOS 编）
 - 模型版本固定：HF commit + sha256 + bytes 写在 `models.rs` 的 `MODEL` / `TOKENS` / `VAD` / `STREAM_*` / `PUNCT` 常量里。**换模型必须同时改 bytes 和 sha256**，否则下载校验失败。
 - **下载走镜像优先**（`[MIRROR, HF]`）：国内直连 huggingface.co 经常连不上，镜像失败再回退官方源。别改回 HF 优先。
 - **模型目录必须有 `silero_vad.onnx`**：整段分句、文件转写都靠 VAD，`models::resolve()` 会直接跳过没有 VAD 的目录（否则录完只得空结果）。
-- 已存在且大小正确的文件直接跳过下载；`.part` + Range 支持断点续传；下完做 sha256 校验。
+- 已存在且大小正确的文件直接跳过下载；`.part` + Range 支持断点续传；下完做 sha256 校验。应用内整段和流式模型都按固定字节数判定就绪（含流式 VAD），截断文件不能显示「已就绪」。下载忙碌标志用 `DownloadFlagGuard` 在所有退出路径复位，别在目录创建前裸 `?` 留下永久 busy。
 - 应用数据目录里的文件按**字节数**判定是否就绪（`app_data_file_ok`），所以换 VAD 版本后会自动重下。
 
 ## 验证
@@ -172,7 +173,7 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 **改 UI 要在浏览器里验**（Playwright + 假 `window.__TAURI__`）：
 
 ```bash
-npm run check:ui     # 47 项检查
+npm run check:ui     # 70 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 

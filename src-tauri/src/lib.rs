@@ -14,26 +14,24 @@ pub mod settings;
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use asr::{OfflineEvent, StreamEvent, Transcript};
-use engine::{PunctuationEngine, StreamingEngine};
 use audio::AudioErrorPayload;
 use engine::{
     ensure_punctuation, ensure_streaming_engine, load_engine, output_dir, persist, shared_engine,
     status_of, AppState, Status,
 };
+use engine::{DownloadFlagGuard, RecordingStartGuard};
 use log::on_off;
 // install_menu 只在 macOS 存在（menu.rs 里是 cfg 掉的），import 也要跟着 cfg，
 // 否则 Windows 上会报 unresolved import。
 #[cfg(target_os = "macos")]
 use menu::install_menu;
 use output::{sanitize_name, write_text_file, Saved};
-use settings::Settings;
-use record::{log_transcript, run_offline, run_streaming_core, OfflineRun, StreamSession};
+use record::{finish_recording, log_transcript, run_offline, run_streaming_core, RecordingRun};
 
 /// 错误码：后端只返回字典 key（前端 i18n 翻译），不返回展示文案。
 ///
@@ -89,20 +87,34 @@ impl models::ProgressSink for EventSink {
 /// 把流式事件转成 UI 事件，并维护已定稿文本。
 struct StreamEmitter {
     app: AppHandle,
+    session_id: u64,
+    discard: Arc<AtomicBool>,
 }
 
 impl StreamEmitter {
     fn apply(&mut self, events: Vec<StreamEvent>) {
+        if self.discard.load(Ordering::Relaxed) {
+            return;
+        }
         for event in events {
             match event {
                 StreamEvent::Partial(text) => {
-                    let _ = self.app.emit("stream:partial", PartialPayload { partial: text });
+                    let _ = self.app.emit(
+                        "stream:partial",
+                        PartialPayload {
+                            session_id: self.session_id,
+                            partial: text,
+                        },
+                    );
                 }
                 StreamEvent::Segment(segment) => {
-                    emit_gap_notice(&self.app, &segment.text);
+                    if !self.discard.load(Ordering::Relaxed) {
+                        emit_gap_notice(&self.app, &segment.text, Some(self.session_id));
+                    }
                     let _ = self.app.emit(
                         "stream:segment",
                         SegmentPayload {
+                            session_id: self.session_id,
                             segment: segment.text,
                             start: segment.start,
                             end: segment.end,
@@ -118,9 +130,15 @@ impl StreamEmitter {
 ///
 /// 缺口占位符（`[[gap:秒数]]`）本身会进结果文本；这里额外发一条事件，
 /// 让用户知道「刚才丢了 N 秒」，而不只是看到一段占位符。
-fn emit_gap_notice(app: &AppHandle, text: &str) {
+fn emit_gap_notice(app: &AppHandle, text: &str, session_id: Option<u64>) {
     if let Some(seconds) = audio::gap_marker_seconds(text) {
-        let _ = app.emit("audio:error", AudioErrorPayload::gap(seconds));
+        let _ = app.emit(
+            "audio:error",
+            AudioErrorPayload {
+                session_id,
+                ..AudioErrorPayload::gap(seconds)
+            },
+        );
     }
 }
 
@@ -131,6 +149,7 @@ fn emit_gap_notice(app: &AppHandle, text: &str) {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SegmentPayload {
+    session_id: u64,
     segment: String,
     start: f32,
     end: f32,
@@ -140,7 +159,42 @@ struct SegmentPayload {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PartialPayload {
+    session_id: u64,
     partial: String,
+}
+
+fn ensure_recognition_config_unlocked(state: &AppState) -> Result<(), String> {
+    let recording = state.recording_starting.load(Ordering::SeqCst)
+        || state
+            .recorder
+            .lock()
+            .map_err(|_| code("error.recordState"))?
+            .is_some();
+    ensure_config_unlocked(recording)
+}
+
+fn ensure_config_unlocked(recording: bool) -> Result<(), String> {
+    if recording {
+        return Err(code("record.configLocked"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod command_tests {
+    #[test]
+    fn recognition_config_is_locked_while_recording() {
+        assert!(super::ensure_config_unlocked(false).is_ok());
+        assert_eq!(
+            super::ensure_config_unlocked(true),
+            Err("record.configLocked".into())
+        );
+    }
+}
+
+#[tauri::command]
+fn reserve_session(state: State<AppState>) -> u64 {
+    state.next_recording_id.fetch_add(1, Ordering::SeqCst)
 }
 
 #[tauri::command]
@@ -154,6 +208,7 @@ fn set_language(
     state: State<AppState>,
     language: String,
 ) -> Result<Status, String> {
+    ensure_recognition_config_unlocked(&state)?;
     if !settings::LANGUAGES.contains(&language.as_str()) {
         return Err(code_detail("error.unsupportedLanguage", language));
     }
@@ -171,6 +226,7 @@ fn set_language(
 
 #[tauri::command]
 fn set_itn(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Status, String> {
+    ensure_recognition_config_unlocked(&state)?;
     {
         let mut guard = state
             .settings
@@ -237,22 +293,6 @@ async fn set_model_dir(
     })
     .await;
     Ok(status_of(&app, &state))
-}
-
-/// 边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
-fn run_streaming(
-    app: &AppHandle,
-    engine: Arc<StreamingEngine>,
-    punctuator: Option<Arc<PunctuationEngine>>,
-    queue: audio::SampleQueue,
-    rate: u32,
-    stop: Arc<AtomicBool>,
-    discard: Arc<AtomicBool>,
-) -> Transcript {
-    let mut emitter = StreamEmitter { app: app.clone() };
-    run_streaming_core(engine, punctuator, queue, rate, stop, discard, |events| {
-        emitter.apply(events)
-    })
 }
 
 #[tauri::command]
@@ -433,7 +473,10 @@ async fn download_streaming_model(
     if state.downloading_streaming.swap(true, Ordering::SeqCst) {
         return Err(code("setup.busy"));
     }
-    state.cancel_download_streaming.store(false, Ordering::SeqCst);
+    let _download = DownloadFlagGuard::new(state.downloading_streaming.clone());
+    state
+        .cancel_download_streaming
+        .store(false, Ordering::SeqCst);
     let dir = models::streaming_install_dir(&app)?;
     // 标点模型和流式模型一起下载
     let punct_dir = models::punctuation_install_dir(&app)?;
@@ -450,7 +493,6 @@ async fn download_streaming_model(
         &sink,
     )
     .await;
-    state.downloading_streaming.store(false, Ordering::SeqCst);
     result?;
     log::info("流式模型下载完成");
     let _ = ensure_streaming_engine(&app, &state).await;
@@ -458,7 +500,15 @@ async fn download_streaming_model(
 }
 
 #[tauri::command]
-async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+async fn start_streaming_recording(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: u64,
+) -> Result<u64, String> {
+    if state.recording_starting.swap(true, Ordering::SeqCst) {
+        return Err(code("record.alreadyRecording"));
+    }
+    let starting = RecordingStartGuard(&state.recording_starting);
     {
         let slot = state
             .recorder
@@ -469,26 +519,10 @@ async fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(
         }
     }
     let settings = state.settings();
-    // 设备名：设置里没选就是系统默认（audio::start 挑不到也会退回默认）。
     let device_label = settings
         .input_device
         .clone()
-        .unwrap_or_else(|| "默认".to_string());
-    // 两种模式的两条路径差太多（引擎、会话、线程都不一样），分开写更清楚。
-    if settings.mode == "streaming" {
-        start_streaming_recording(app, state, settings, device_label).await
-    } else {
-        start_offline_recording(app, state, settings, device_label).await
-    }
-}
-
-/// 流式模式：起采集 + 流式识别线程（200 ms 一片，边说边出字）。
-async fn start_streaming_recording(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    settings: Settings,
-    device_label: String,
-) -> Result<(), String> {
+        .unwrap_or_else(|| "默认".into());
     if models::resolve_streaming(&app).is_none() {
         return Err(code("model.needStreaming"));
     }
@@ -502,9 +536,11 @@ async fn start_streaming_recording(
         let audio_app = app.clone();
         let device = settings.input_device.clone();
         // 开麦克风会等驱动（最长 10s），放进阻塞线程，别堵 async 执行器。
-        tauri::async_runtime::spawn_blocking(move || audio::start(audio_app, device.as_deref()))
-            .await
-            .map_err(|e| code_detail("record.micOpenFailed", e))??
+        tauri::async_runtime::spawn_blocking(move || {
+            audio::start(audio_app, device.as_deref(), session_id)
+        })
+        .await
+        .map_err(|e| code_detail("record.micOpenFailed", e))??
     };
     let queue = recorder.queue();
     let rate = recorder.sample_rate();
@@ -520,14 +556,19 @@ async fn start_streaming_recording(
     std::thread::Builder::new()
         .name("streaming-asr".into())
         .spawn(move || {
-            let transcript = run_streaming(
-                &thread_app,
+            let mut emitter = StreamEmitter {
+                app: thread_app,
+                session_id,
+                discard: thread_discard.clone(),
+            };
+            let transcript = run_streaming_core(
                 engine,
                 punctuator,
                 queue,
                 rate,
                 thread_stop,
                 thread_discard,
+                |events| emitter.apply(events),
             );
             let _ = tx.send(transcript);
         })
@@ -547,22 +588,38 @@ async fn start_streaming_recording(
             return Err(code("record.alreadyRecording"));
         }
         *slot = Some(recorder);
-        let session = StreamSession { stop, discard, rx };
-        *state
-            .stream
-            .lock()
-            .map_err(|_| code("error.streamState"))? = Some(session);
+        let session = RecordingRun { stop, discard, rx };
+        *state.stream.lock().map_err(|_| code("error.streamState"))? = Some(session);
     }
-    Ok(())
+    starting.release();
+    Ok(session_id)
 }
 
 /// 整段模式：起采集 + 整段识别线程（边录边按句识别，音频消费掉即释放）。
+#[tauri::command]
 async fn start_offline_recording(
     app: AppHandle,
     state: State<'_, AppState>,
-    settings: Settings,
-    device_label: String,
-) -> Result<(), String> {
+    session_id: u64,
+) -> Result<u64, String> {
+    if state.recording_starting.swap(true, Ordering::SeqCst) {
+        return Err(code("record.alreadyRecording"));
+    }
+    let starting = RecordingStartGuard(&state.recording_starting);
+    {
+        let slot = state
+            .recorder
+            .lock()
+            .map_err(|_| code("error.recordState"))?;
+        if slot.is_some() {
+            return Err(code("record.alreadyRecording"));
+        }
+    }
+    let settings = state.settings();
+    let device_label = settings
+        .input_device
+        .clone()
+        .unwrap_or_else(|| "默认".into());
     // 整段模式：边录边按句识别（音频消费掉即释放，内存不随录音时长增长）
     load_engine(&app, &state).await?;
     let engine = shared_engine(&state)?;
@@ -572,9 +629,11 @@ async fn start_offline_recording(
     let recorder = {
         let audio_app = app.clone();
         let device = settings.input_device.clone();
-        tauri::async_runtime::spawn_blocking(move || audio::start(audio_app, device.as_deref()))
-            .await
-            .map_err(|e| code_detail("record.micOpenFailed", e))??
+        tauri::async_runtime::spawn_blocking(move || {
+            audio::start(audio_app, device.as_deref(), session_id)
+        })
+        .await
+        .map_err(|e| code_detail("record.micOpenFailed", e))??
     };
     let queue = recorder.queue();
     let rate = recorder.sample_rate();
@@ -596,13 +655,17 @@ async fn start_offline_recording(
                 queue,
                 rate,
                 thread_stop,
-                thread_discard,
+                thread_discard.clone(),
                 |event| {
+                    if thread_discard.load(Ordering::Relaxed) {
+                        return;
+                    }
                     let OfflineEvent::Segment(segment) = event;
-                    emit_gap_notice(&thread_app, &segment.text);
+                    emit_gap_notice(&thread_app, &segment.text, Some(session_id));
                     let _ = thread_app.emit(
                         "stream:segment",
                         SegmentPayload {
+                            session_id,
                             segment: segment.text,
                             start: segment.start,
                             end: segment.end,
@@ -630,9 +693,10 @@ async fn start_offline_recording(
         *state
             .offline_session
             .lock()
-            .map_err(|_| code("error.recordState"))? = Some(OfflineRun { stop, discard, rx });
+            .map_err(|_| code("error.recordState"))? = Some(RecordingRun { stop, discard, rx });
     }
-    Ok(())
+    starting.release();
+    Ok(session_id)
 }
 
 #[tauri::command]
@@ -646,28 +710,27 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     }
     .ok_or_else(|| code("record.notRecording"))?;
     let stream = {
-        let mut slot = state
-            .stream
-            .lock()
-            .map_err(|_| code("error.streamState"))?;
+        let mut slot = state.stream.lock().map_err(|_| code("error.streamState"))?;
         slot.take()
     };
 
     // 停止采集 + 等识别线程收尾都是阻塞操作（最长 20/30 秒），放进阻塞线程。
     if let Some(stream) = stream {
-        let transcript = tauri::async_runtime::spawn_blocking(move || -> Result<Transcript, String> {
-            // 先停采集（尾巴留在队列里，由识别线程收尾时取走）。
-            let stopped = recorder.stop();
-            // stop 报错也要让识别线程退出，否则它会一直空转。
-            stream.stop.store(true, Ordering::SeqCst);
-            stopped?;
-            stream
-                .rx
-                .recv_timeout(Duration::from_secs(20))
-                .map_err(|_| code("record.streamTimeout"))
+        let finished = tauri::async_runtime::spawn_blocking(move || {
+            finish_recording(recorder, stream, 20).map_err(|error| {
+                if error == "record.stopFailed" {
+                    code("record.streamTimeout")
+                } else {
+                    error
+                }
+            })
         })
         .await
         .map_err(|e| code_detail("record.stopFailed", e))??;
+        let mut transcript = finished.transcript;
+        if finished.capture_error.is_some() {
+            transcript.warning = Some(code("record.micError"));
+        }
         log_transcript("流式", &transcript);
         return Ok(transcript);
     }
@@ -681,24 +744,28 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     let Some(offline) = offline else {
         return Err(code("record.threadExited"));
     };
-    let transcript = tauri::async_runtime::spawn_blocking(move || -> Result<Transcript, String> {
-        let stopped = recorder.stop();
-        offline.stop.store(true, Ordering::SeqCst);
-        stopped?;
-        let transcript = offline
-            .rx
-            .recv_timeout(Duration::from_secs(30))
-            .map_err(|_| code("record.offlineTimeout"))?;
-        if transcript.duration_seconds < 0.2 {
+    let finished = tauri::async_runtime::spawn_blocking(move || {
+        let finished = finish_recording(recorder, offline, 30).map_err(|error| {
+            if error == "record.stopFailed" {
+                code("record.offlineTimeout")
+            } else {
+                error
+            }
+        })?;
+        if finished.transcript.duration_seconds < 0.2 {
             return Err(code_detail("record.tooShort", "0.2"));
         }
-        if transcript.text.trim().is_empty() {
+        if finished.transcript.text.trim().is_empty() {
             return Err(code("record.empty"));
         }
-        Ok(transcript)
+        Ok(finished)
     })
     .await
     .map_err(|e| code_detail("record.stopFailed", e))??;
+    let mut transcript = finished.transcript;
+    if finished.capture_error.is_some() {
+        transcript.warning = Some(code("record.micError"));
+    }
     log_transcript("整段", &transcript);
     Ok(transcript)
 }
@@ -712,6 +779,7 @@ async fn transcribe_file(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
+    session_id: u64,
 ) -> Result<Transcript, String> {
     log::info(format!("文件转写开始：{path}"));
     load_engine(&app, &state).await?;
@@ -727,6 +795,7 @@ async fn transcribe_file(
             let _ = thread_app.emit(
                 "stream:segment",
                 SegmentPayload {
+                    session_id,
                     segment: segment.text.clone(),
                     start: segment.start,
                     end: segment.end,
@@ -761,6 +830,7 @@ async fn transcribe_file(
             duration_seconds: session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
             elapsed_ms: session.elapsed_ms(),
             language: engine.language.clone(),
+            warning: None,
         };
         log::info(format!(
             "文件转写完成：时长 {:.1}s，句子 {} 段",
@@ -770,14 +840,14 @@ async fn transcribe_file(
         Ok(transcript)
     })
     .await
-    // 阻塞线程 panic 了：原样把系统信息抛出去（前端 fmtError 查不到字典就显示原文）。
-    .map_err(|e| e.to_string())?
+    .map_err(|e| code_detail("record.stopFailed", e))?
 }
 
 /// 从缓存里拿一个可共享的整段引擎（录音线程和文件转写共用同一份模型）。
 
 #[tauri::command]
 fn cancel_recording(state: State<AppState>) -> Result<(), String> {
+    state.recording_starting.store(false, Ordering::SeqCst);
     let recorder = {
         let mut slot = state
             .recorder
@@ -811,12 +881,12 @@ async fn download_model(app: AppHandle, state: State<'_, AppState>) -> Result<St
     if state.downloading.swap(true, Ordering::SeqCst) {
         return Err(code("setup.busy"));
     }
+    let _download = DownloadFlagGuard::new(state.downloading.clone());
     state.cancel_download.store(false, Ordering::SeqCst);
     let dir = models::install_dir(&app)?;
     log::info(format!("开始下载离线模型：{}", dir.display()));
     let sink = EventSink::new(app.clone(), "offline");
     let result = models::download_all(&dir, state.cancel_download.clone(), &sink).await;
-    state.downloading.store(false, Ordering::SeqCst);
     result?;
     log::info("离线模型下载完成");
     // 流式模式用不到整段引擎：别为了下载把它常驻在内存里（文件转写会按需加载）。
@@ -870,7 +940,8 @@ fn save_text(
     }
     let settings = state.settings();
     let dir = output_dir(&app, &settings);
-    fs::create_dir_all(&dir).map_err(|e| code_detail("error.createOutputDir", format!("{}: {e}", dir.display())))?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| code_detail("error.createOutputDir", format!("{}: {e}", dir.display())))?;
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -902,6 +973,13 @@ fn client_log(level: String, message: String) {
     log::write(level, format!("[ui] {message}"));
 }
 
+#[tauri::command]
+fn set_menu_locale(app: AppHandle, locale: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    menu::set_locale(&app, &locale).map_err(|e| code_detail("error.menuFailed", e))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -929,9 +1007,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 use tauri::window::{Effect, EffectsBuilder};
-                let _ = window.set_effects(
-                    EffectsBuilder::new().effect(Effect::Sidebar).build(),
-                );
+                let _ = window.set_effects(EffectsBuilder::new().effect(Effect::Sidebar).build());
             }
             #[cfg(target_os = "macos")]
             install_menu(app)?;
@@ -939,6 +1015,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             status,
+            reserve_session,
             set_language,
             set_itn,
             set_output_dir,
@@ -952,7 +1029,8 @@ pub fn run() {
             list_input_devices,
             warm_up_mic,
             set_input_device,
-            start_recording,
+            start_streaming_recording,
+            start_offline_recording,
             stop_recording,
             cancel_recording,
             transcribe_file,
@@ -962,6 +1040,7 @@ pub fn run() {
             open_output_dir,
             save_text,
             client_log,
+            set_menu_locale,
         ])
         .run(tauri::generate_context!())
         .expect("error while running voice-notes");

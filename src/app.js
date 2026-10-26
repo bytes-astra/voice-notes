@@ -96,6 +96,7 @@ export function applyLocale(preference) {
   renderMicLabel()
   renderHint()
   refreshSelectItems(stored)
+  void invoke('set_menu_locale', { locale: after }).catch((error) => logEvent('ERROR', `原生菜单语言同步失败: ${errorText(error)}`))
   els.viewTitle.textContent = viewTitle(state.view)
   // 原生窗口标题也跟着界面语言走（tauri.conf.json 里的只是启动默认值）。
   try {
@@ -239,10 +240,13 @@ export function bindUI() {
   })
 
   els.itnToggle.addEventListener('change', async () => {
+    if (state.phase !== 'idle') return
+    const previous = els.itnToggle.checked
     try {
       state.status = await invoke('set_itn', { enabled: els.itnToggle.checked })
       renderStatus()
     } catch (error) {
+      els.itnToggle.checked = !previous
       toast(fmtError(error), 'error')
     }
   })

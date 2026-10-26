@@ -14,7 +14,7 @@ pub fn install_menu(app: &mut tauri::App) -> tauri::Result<()> {
         .separator()
         .item(&PredefinedMenuItem::quit(handle, None)?)
         .build()?;
-    let edit_menu = SubmenuBuilder::new(handle, "编辑")
+    let edit_menu = SubmenuBuilder::new(handle, "Edit")
         .item(&PredefinedMenuItem::undo(handle, None)?)
         .item(&PredefinedMenuItem::redo(handle, None)?)
         .separator()
@@ -23,12 +23,31 @@ pub fn install_menu(app: &mut tauri::App) -> tauri::Result<()> {
         .item(&PredefinedMenuItem::paste(handle, None)?)
         .item(&PredefinedMenuItem::select_all(handle, None)?)
         .build()?;
-    let view_menu = SubmenuBuilder::new(handle, "视图")
+    let view_menu = SubmenuBuilder::new(handle, "View")
         .item(&PredefinedMenuItem::fullscreen(handle, None)?)
         .build()?;
     let menu = MenuBuilder::new(handle)
         .items(&[&app_menu, &edit_menu, &view_menu])
         .build()?;
     app.set_menu(menu)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn set_locale(app: &tauri::AppHandle, locale: &str) -> tauri::Result<()> {
+    use tauri::menu::MenuItemKind;
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let items = menu.items()?;
+    let english = locale == "en";
+    for (index, text) in [
+        (1, if english { "Edit" } else { "编辑" }),
+        (2, if english { "View" } else { "视图" }),
+    ] {
+        if let Some(MenuItemKind::Submenu(item)) = items.get(index) {
+            item.set_text(text)?;
+        }
+    }
     Ok(())
 }

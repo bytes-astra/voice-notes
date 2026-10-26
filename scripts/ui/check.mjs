@@ -50,6 +50,16 @@ await context.addInitScript(() => {
   }
   window.__mockCalls = []
   window.__mockTranscript = ''
+  window.__mockStopError = null
+  window.__mockStopWarning = null
+  window.__mockStopGate = null
+  window.__mockStartGate = null
+  window.__mockReserveError = null
+  window.__mockSessionId = 0
+  window.__mockFileSessionId = 0
+  window.__mockCancelGate = null
+  window.__mockError = null
+  window.__mockStatusError = null
   window.__mockStatus = { ...base }
   const clone = (value) => JSON.parse(JSON.stringify(value))
   const result = { text: '浏览器结果', segments: [], durationSeconds: 2, elapsedMs: 100, language: 'zh' }
@@ -57,8 +67,10 @@ await context.addInitScript(() => {
     core: {
       invoke: async (cmd, args) => {
         window.__mockCalls.push([cmd, args])
+        if (window.__mockError) throw window.__mockError
         switch (cmd) {
           case 'status':
+            if (window.__mockStatusError) throw window.__mockStatusError
             return clone(window.__mockStatus)
           case 'set_language':
             window.__mockStatus = { ...window.__mockStatus, language: args.language }
@@ -74,6 +86,19 @@ await context.addInitScript(() => {
             return clone(window.__mockStatus)
           case 'default_hotwords':
             return ['产品评审会', '玄戒芯片', '张三']
+          case 'reserve_session':
+            if (window.__mockReserveError) throw window.__mockReserveError
+            return ++window.__mockSessionId
+          case 'transcribe_file':
+            return { ...clone(result), text: '文件结果' }
+          case 'cancel_recording':
+            if (window.__mockCancelGate) await window.__mockCancelGate
+            return undefined
+          case 'start_offline_recording':
+          case 'start_streaming_recording':
+            if (window.__mockStartGate) await window.__mockStartGate
+            window.__mockTranscript = ''
+            return args.sessionId
           case 'set_itn':
             window.__mockStatus = { ...window.__mockStatus, itn: args.enabled }
             return clone(window.__mockStatus)
@@ -89,8 +114,10 @@ await context.addInitScript(() => {
           case 'list_input_devices':
             return [{ name: 'Mock Mic', isDefault: true }]
           case 'stop_recording':
+            if (window.__mockStopGate) await window.__mockStopGate
+            if (window.__mockStopError) throw window.__mockStopError
             // 跟真后端一致：返回这次会话累积出来的全文
-            return { ...clone(result), text: window.__mockTranscript || result.text }
+            return { ...clone(result), text: window.__mockTranscript || result.text, warning: window.__mockStopWarning || null }
           case 'save_text':
             return { path: '/out/x.txt', name: 'x.txt' }
           default:
@@ -140,7 +167,7 @@ await page.screenshot({ path: `${SHOTS}/01-zh-light.png` })
 // 2. 麦克风流程：开始 → 设备下拉 Esc 不取消 → Esc 取消清空
 await page.locator('#mic-btn').click()
 await page.waitForTimeout(200)
-check('点麦克风进入录音', (await phase()) === 'recording')
+check('点麦克风进入录音', (await phase()) === 'recording', await text('#toast'))
 await page.locator('#device-select .select-button').click()
 await page.waitForTimeout(150)
 check('设备下拉打开', (await page.locator('.select-popup').count()) === 1)
@@ -195,6 +222,10 @@ check('切英文标题', (await text('#view-title')) === 'Settings')
 check('英文术语表标签', (await page.locator('h3', { hasText: 'Terminology' }).count()) >= 1)
 check('切英文结果保留', (await page.locator('#text').inputValue()) === '浏览器结果')
 check('切英文历史不重复', (await historyCount()) === 1)
+check('原生菜单同步英文', await page.evaluate(() => {
+  const call = window.__mockCalls.filter(([cmd]) => cmd === 'set_menu_locale').pop()
+  return call?.[1]?.locale === 'en'
+}))
 check('切英文 meta 跟随', (await text('#meta')).includes('Audio 2.0s'))
 check('无未翻译 key（英文）', !(await page.evaluate(() => /\b(view|record|result|history|settings|mode|model|setup|progress|duration|drop|theme|nav)\.[a-z]+\b/.test(document.body.innerText))))
 await page.screenshot({ path: `${SHOTS}/03-en-settings.png` })
@@ -256,12 +287,16 @@ check('切回整段', (await page.locator('.mode-chip[data-mode="offline"]').get
 await page.locator('#mic-btn').click()
 await page.waitForTimeout(200)
 check('录音中', (await page.locator('.app').getAttribute('data-phase')) === 'recording')
+check('录音中语言与 ITN 锁定', await page.evaluate(() =>
+  [...document.querySelectorAll('#lang-row .chip')].every((chip) => chip.disabled) &&
+  document.getElementById('itn-toggle').disabled
+), await page.evaluate(() => JSON.stringify({ phase: document.querySelector('.app').dataset.phase, itn: document.getElementById('itn-toggle').disabled, langs: [...document.querySelectorAll('#lang-row .chip')].map((chip) => chip.disabled) })))
 
 const say = async (text) => {
   await page.evaluate((t) => {
     // 模拟后端：先累积到 parts，再发事件
     window.__mockTranscript = window.__mockTranscript ? window.__mockTranscript + t : t
-    window.__emit('stream:segment', { segment: t, start: 0, end: 1 })
+    window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: t, start: 0, end: 1 })
   }, text)
 }
 await say('第一句')
@@ -290,6 +325,88 @@ check(
   final.slice(0, 60)
 )
 check('停止后回到空闲', (await page.locator('.app').getAttribute('data-phase')) === 'idle')
+check('停止后语言与 ITN 解锁', await page.evaluate(() =>
+  [...document.querySelectorAll('#lang-row .chip')].every((chip) => !chip.disabled) &&
+  !document.getElementById('itn-toggle').disabled
+))
+check('按模式调用录音命令', await page.evaluate(() =>
+  window.__mockCalls.some(([cmd]) => cmd === 'start_offline_recording') &&
+  window.__mockCalls.every(([cmd]) => cmd !== 'start_recording')
+))
+
+// ── 麦克风异常：保存已有转写，不能像 Esc 一样清空 ──
+const historyBeforeMicError = await historyCount()
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(200)
+await say('故障前的一句')
+await page.evaluate(() => window.__emit('audio:error', { code: 'record.micError', fatal: true }))
+await page.waitForTimeout(400)
+check('麦克风异常后回到空闲', (await phase()) === 'idle')
+check('麦克风异常保留部分结果', (await page.locator('#text').inputValue()) === '故障前的一句')
+check('麦克风异常写入历史', (await historyCount()) === historyBeforeMicError + 1)
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(200)
+await say('带警告的部分结果')
+await page.evaluate(() => {
+  window.__mockStopWarning = 'record.micError'
+  window.__emit('audio:error', { code: 'record.micError', fatal: false })
+})
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(400)
+check('部分结果警告不被完成提示覆盖', (await text('#toast')) === '麦克风发生异常')
+await page.evaluate(() => { window.__mockStopWarning = null })
+
+// 启动尚未完成时的致命采集错误：不得继续进入 failed recording。
+await page.evaluate(() => {
+  window.__mockStartGate = new Promise((resolve) => { window.__releaseStart = resolve })
+})
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(100)
+await page.evaluate(() => {
+  window.__emit('audio:error', { code: 'record.micError', fatal: true })
+  window.__releaseStart()
+})
+await page.waitForTimeout(400)
+check('启动期麦克风异常不进入录音', (await phase()) === 'idle')
+await page.evaluate(() => { window.__mockStartGate = null })
+
+// Esc 取消与致命事件竞态：迟到的停止结果不能复活已取消的录音。
+const historyBeforeCancelRace = await historyCount()
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(200)
+await say('取消时不能保存')
+await page.evaluate(() => {
+  let cancelReady
+  let stopReady
+  window.__mockCancelGate = new Promise((resolve) => { cancelReady = resolve })
+  window.__mockStopGate = new Promise((resolve) => { stopReady = resolve })
+  window.__releaseCancelRace = () => { cancelReady(); stopReady() }
+})
+await page.locator('#view-title').click()
+await page.keyboard.press('Escape')
+await page.waitForTimeout(50)
+await page.evaluate(() => {
+  window.__emit('audio:error', { code: 'record.micError', fatal: true })
+  window.__releaseCancelRace()
+})
+await page.waitForTimeout(400)
+check('取消竞态不写历史', (await historyCount()) === historyBeforeCancelRace)
+check('取消竞态结果仍为空', (await page.locator('#text').inputValue()) === '')
+await page.evaluate(() => window.__emit('stream:segment', { sessionId: 0, segment: '旧会话不能入新结果' }))
+check('旧会话分段被忽略', !(await page.locator('#text').inputValue()).includes('旧会话'))
+await page.evaluate(() => window.__emit('stream:partial', { sessionId: 0, partial: '旧中间结果' }))
+check('旧会话中间结果被忽略', (await page.locator('#live-line').textContent()) === '')
+
+// 停止彻底失败：保留并保存已经上屏的文本，空文本不写历史。
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(200)
+await say('停止失败前的一句')
+await page.evaluate(() => { window.__mockStopError = 'record.streamTimeout' })
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(400)
+check('停止失败保留已有文本', (await page.locator('#text').inputValue()) === '停止失败前的一句')
+check('停止失败保留已有历史', (await historyCount()) === historyBeforeMicError + 3)
+check('停止失败仍显示错误', (await text('#toast')).includes('超时'))
 
 // ── 下载进度分流：两个下载可以同时跑，进度事件同名，靠 kind 区分 ──
 await page.evaluate(() =>
@@ -322,6 +439,33 @@ const setupText2 = await page.locator('#setup-progress-text').innerText()
 const streamText2 = await page.locator('#stream-progress-text').innerText()
 check('整段进度显示在整段面板', setupText2.includes('model.int8.onnx'), setupText2.slice(0, 40))
 check('整段进度不串到流式面板', !streamText2.includes('model.int8.onnx'), streamText2.slice(0, 40))
+
+// 正常文件转写：后端 ID 用于事件过滤，不能误当本地代号导致卡死。
+await page.evaluate(async () => {
+  const { transcribeFilePath } = await import('./files.js')
+  const task = transcribeFilePath('/tmp/demo.mp3')
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: '文件句' })
+  await task
+})
+await page.waitForTimeout(200)
+check('文件转写成功恢复空闲', (await phase()) === 'idle')
+check('文件转写保存结果', (await page.locator('#text').inputValue()) === '文件结果')
+
+// 文件会话预留失败也必须复位，不能卡住之后的工作。
+await page.evaluate(async () => {
+  window.__mockReserveError = 'record.stopFailed'
+  const { transcribeFilePath } = await import('./files.js')
+  await transcribeFilePath('/tmp/demo.mp3')
+})
+await page.waitForTimeout(200)
+check('文件预留失败恢复空闲', (await phase()) === 'idle')
+await page.evaluate(() => { window.__mockReserveError = null })
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(250)
+check('文件预留失败后可录音', (await phase()) === 'recording')
+await page.keyboard.press('Escape')
+await page.waitForTimeout(300)
 
 // ── 错误提示：只能显示字典文案，不能把错误码 / 本地路径原样弹给用户 ──
 await page.evaluate(() =>
@@ -356,6 +500,26 @@ await page.evaluate(() =>
 await page.waitForTimeout(200)
 const downloadErrorToast = await page.locator('#toast').innerText()
 check('下载失败不弹原始错误串', !downloadErrorToast.includes('hf-mirror'), downloadErrorToast)
+
+// 非应用错误码只能进日志，不能把系统路径或异常原文显示出来。
+await page.evaluate(async () => {
+  const { refreshStatus } = await import('./status.js')
+  window.__mockStatusError = { detail: '/tmp/private-model' }
+  await refreshStatus()
+})
+await page.waitForTimeout(200)
+check('未知对象错误不泄露细节', (await text('#toast')).includes('发生未知错误') && !(await text('#toast')).includes('/tmp/'))
+check('未知对象细节写入日志', await page.evaluate(() =>
+  window.__mockCalls.some(([cmd, args]) => cmd === 'client_log' && args.message.includes('/tmp/private-model'))
+))
+await page.evaluate(async () => {
+  const { refreshStatus } = await import('./status.js')
+  window.__mockStatusError = 'permission denied /tmp/private-model'
+  await refreshStatus()
+})
+await page.waitForTimeout(200)
+check('未知字符串错误不泄露细节', (await text('#toast')).includes('发生未知错误') && !(await text('#toast')).includes('/tmp/'))
+await page.evaluate(() => { window.__mockStatusError = null })
 
 // ── 结果 ────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)
