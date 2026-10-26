@@ -161,6 +161,7 @@ check('6 个语言芯片', (await page.locator('#lang-row .chip').count()) === 6
 check('波形 48 根', (await page.locator('#wave span').count()) === 48)
 check('空闲剪影有高度', (await page.locator('#wave span').nth(4).evaluate((el) => el.style.height)) === '18px')
 check('无横向溢出', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+check('macOS 根背景保持透明', await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor === 'rgba(0, 0, 0, 0)'))
 check('无未翻译 key', !(await page.evaluate(() => /\b(view|record|result|history|settings|mode|model|setup|progress|duration|drop|theme|nav)\.[a-z]+\b/.test(document.body.innerText))))
 await page.screenshot({ path: `${SHOTS}/01-zh-light.png` })
 

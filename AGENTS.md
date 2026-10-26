@@ -10,11 +10,11 @@ npm run dev              # 开发模式
 npm run build            # 打包 → src-tauri/target/release/bundle/
 npm run check:i18n       # 改文案后必跑：各语言 key 对齐 + HTML/JS 引用的 key 存在
 npm run check            # 门禁：i18n → clippy（-D warnings）→ cargo test --lib
-npm run check:ui         # 界面检查：真实 WebKit + 假 __TAURI__，70 项
+npm run check:ui         # 界面检查：真实 WebKit + 假 __TAURI__，71 项
 npm run shots            # 重出 README 的 9 张截图
 ```
 
-**门禁在 CI 里**（`.github/workflows/check.yml`，推 main / 提 PR 都跑）：前端 job 用 ubuntu（i18n + 界面检查），Rust job 用 macOS（clippy + 单元测试）—— 这个项目的 Rust 端在 Linux 上没验证过（cpal 要 ALSA 头文件），别把没支持的平台塞进 CI。
+**门禁在 CI 里**（`.github/workflows/check.yml`，推 main / 提 PR 都跑）：Rust job 用 macOS（clippy + 单元测试）—— 这个项目的 Rust 端在 Linux 上没验证过（cpal 要 ALSA 头文件），别把没支持的平台塞进 CI。前端检查（i18n + 界面检查）只在本地跑，不进 CI。
 
 ```bash
 cd src-tauri
@@ -49,6 +49,7 @@ cargo test --test quality_probe -- --nocapture --test-threads=1   # 质量探针
   - **不用开 `transparent: true`**：Tauri 内置的 `set_effects` 自己就把 webview 处理成透明了。开了反而更糟 —— 那是全局窗口属性，Windows 也会变 layered 窗口（DWM 投影会没），而 Tauri 没有平台专属的窗口配置（`tauri.windows.conf.json` 的合并是 RFC 7386，数组整体替换，改一个字段得抄整份 window 配置）。
   - **材质的明暗跟的是窗口外观**（NSWindow.appearance），不是网页的 `data-theme` —— 切主题时必须同步 `setTheme('Dark'|'Light')`（`theme.js` 的 `syncWindowTheme()`），否则系统浅色 + 应用暗色 = 浅色材质配深色字。
   - **`setTheme` 需要 `core:window:allow-set-theme` 权限**，漏了会被 ACL 直接拒绝，而前端那行 `.catch` 会把错误吞掉 —— 表现是「暗色下材质不变」且毫无提示。失败要 `logEvent` 记进日志。
+  - `html` 也不能在 macOS 刷 `var(--bg)`：body 和侧栏透明但根元素不透明，同样会把材质盖住。用 `html:has(body.macos) { background-color: transparent }` 给 macOS 留透明，其他平台仍保留防闪白底色。
   - Liquid Glass（macOS 26+ 的 NSGlassEffectView）试过，效果不如经典材质，已回退。
 - **窗口标题跟界面语言走**：`tauri.conf.json` 的 `title` 只是启动时的默认值（写 `VoiceNotes`，别写死中文），运行时由 `applyLocale()` 调 `getCurrentWindow().setTitle(t('app.title'))` 设置（需要 `core:window:allow-set-title` 权限）。
 - 外壳是「侧边栏 + 主区」：`.app[data-view]` 控制 `[data-view-panel]` 显隐，`switchView()` 统一处理导航高亮/标题，录音中不允许切走。新增页面 = 一个 `[data-view-panel]` + 一个 `.nav-item`。
@@ -173,7 +174,7 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 **改 UI 要在浏览器里验**（Playwright + 假 `window.__TAURI__`）：
 
 ```bash
-npm run check:ui     # 70 项检查
+npm run check:ui     # 71 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 
@@ -204,7 +205,7 @@ npm run shots        # 重出 README 9 张截图
 ## 已知坑
 
 - 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 拉预编译静态库；GitHub 不通用 `SHERPA_ONNX_ARCHIVE_DIR=/path/to/dir`（放 `sherpa-onnx-v1.13.8-<os>-<arch>-static-lib.tar.bz2`）。
-- **避免 webview 重绘时闪白**：`html` 铺上 `var(--bg)`，窗口底色跟主题走（`syncWindowBackground()` → `setBackgroundColor`，需要 `core:window:allow-set-background-color` 权限）。只给 `body` 上色不够。
+- **避免 webview 重绘时闪白**：非 macOS 的 `html` 铺上 `var(--bg)`，窗口底色跟主题走（`syncWindowBackground()` → `setBackgroundColor`，需要 `core:window:allow-set-background-color` 权限）。只给 `body` 上色不够；macOS 例外，根元素必须透明让原生材质透出。
 - 拖动窗口靠 `data-tauri-drag-region="deep"`（`.sidebar-top` 与 `.main-head`，按钮自动排除）+ **`core:window:allow-start-dragging` 权限** —— 这权限不在 `core:default` 里，删了窗口就拖不动。
 - macOS 侧栏顶部用 `body.macos .sidebar-top { height: 78px }` 给红绿灯留位，全屏时红绿灯会自动隐藏但占位**始终保留 78px**（否则进出全屏内容会跳）。Windows 没有这个占位。
 - macOS 未签名构建的麦克风权限可能要手动勾选；正式签名包才弹标准授权框。

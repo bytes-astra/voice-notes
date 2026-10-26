@@ -71,6 +71,9 @@ html, body { height: 100%; }
 
 html { background-color: var(--bg); }
 
+/* macOS 的原生材质在 WebView 后面：根元素不能刷不透明底色盖住侧栏。 */
+html:has(body.macos) { background-color: transparent; }
+
 body {
   margin: 0;
   color: var(--ink);

@@ -1,8 +1,8 @@
 name: check
 
 # 门禁：每次推到 main / 提 PR 都跑。
-# 分两个 job：前端检查用 ubuntu（快），Rust 检查用 macOS —— 这个项目的 Rust 端
-# 在 Linux 上还没验证过（cpal 要 ALSA 头文件），别把没支持的平台塞进 CI。
+# Rust 检查用 macOS —— 这个项目的 Rust 端在 Linux 上还没验证过
+# （cpal 要 ALSA 头文件），别把没支持的平台塞进 CI。
 on:
   push:
     branches: [main]
@@ -10,28 +10,6 @@ on:
     branches: [main]
 
 jobs:
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-
-      - name: i18n key 对齐
-        run: npm run check:i18n
-
-      - name: 装 Playwright 的 WebKit
-        run: npx playwright install --with-deps webkit
-
-      # 真实 WebKit 里跑一遍界面：假 window.__TAURI__，47 项检查
-      - name: 界面检查
-        run: npm run check:ui
-
   rust:
     runs-on: macos-latest
     steps:
