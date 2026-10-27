@@ -46,7 +46,7 @@ Tauri 2 桌面应用，CPU 本地推理，不需要独立显卡；除了下载�
 从 [Releases](https://github.com/bytes-astra/voice-notes/releases) 下载 dmg（Apple Silicon；Intel Mac 暂未出包，需自己构建），装完把应用拖进「应用程序」即可。
 
 > [!IMPORTANT]
-> 包是 **ad-hoc 签名、未公证** —— 首次打开会提示「无法验证开发者」，选「仍要打开」或右键 → 打开。自己构建的 `dist/VoiceNotes.app` 同理。
+> 包是 **ad-hoc 签名、未公证** —— 首次打开会提示「无法验证开发者」，选「仍要打开」或右键 → 打开。自己构建的 `src-tauri/target/release/bundle/macos/VoiceNotes.app` 同理。
 
 ```bash
 sudo xattr -dr com.apple.quarantine /Applications/VoiceNotes.app
