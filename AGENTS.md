@@ -11,7 +11,7 @@
   - `src/core.js`：全局状态、DOM 引用、格式化、错误码翻译 —— 其他模块都从它取。
 - **禁止直接修改产物**：`src-tauri/target/`、`src-tauri/gen/schemas/` 是构建产物（已 gitignore），`docs/screenshots/*.png` 由 `npm run shots` 生成。**永远不要直接编辑这些文件** —— 改逻辑改源文件，改截图跑脚本。
 - **构建工具链**：Tauri 2 CLI（`@tauri-apps/cli`）+ cargo；前端没有打包器、框架、TypeScript。
-- **单向依赖**：`core.js` / `tauri.js` → `theme.js` / `export.js` → `history.js` → `result.js` → `status.js` → `recorder.js` → `files.js` / `events.js` → `app.js`。不能反，也不能成环。
+- **单向依赖**：`icons.js`（零依赖叶子）→ `core.js` / `tauri.js` → `theme.js` / `export.js` → `history.js` → `result.js` → `status.js` → `recorder.js` → `files.js` / `events.js` → `app.js`。不能反，也不能成环。
 - **单一事实源**：同一件事只写一处。用户可见的功能与安装说明在 `README.md`，验证与基线在 `docs/HOW_TO_VERIFY.md`，本文件只放工程约定与踩过的坑。
 
 ## 🛠️ 开发与构建工作流
