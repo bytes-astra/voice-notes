@@ -163,6 +163,23 @@ check('空闲剪影有高度', (await page.locator('#wave span').nth(4).evaluate
 check('无横向溢出', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 check('macOS 根背景保持透明', await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor === 'rgba(0, 0, 0, 0)'))
 check('无未翻译 key', !(await page.evaluate(() => /\b(view|record|result|history|settings|mode|model|setup|progress|duration|drop|theme|nav)\.[a-z]+\b/.test(document.body.innerText))))
+check(
+  '结果区按钮是纯图标且有可访问名称',
+  await page.evaluate(() => {
+    const want = { 'copy-btn': '复制', 'save-btn': '保存', 'clear-btn': '清空' }
+    return Object.entries(want).every(([id, label]) => {
+      const btn = document.getElementById(id)
+      if (!btn) return false
+      return (
+        Boolean(btn.querySelector('svg')) &&
+        btn.getAttribute('aria-label') === label &&
+        btn.title === label &&
+        !btn.textContent.trim()
+      )
+    })
+  }),
+  await page.evaluate(() => document.getElementById('copy-btn')?.outerHTML.slice(0, 140) || '(没有 copy-btn)'),
+)
 await page.screenshot({ path: `${SHOTS}/01-zh-light.png` })
 
 // 2. 麦克风流程：开始 → 设备下拉 Esc 不取消 → Esc 取消清空
@@ -238,6 +255,17 @@ check('原生菜单同步英文', await page.evaluate(() => {
   return call?.[1]?.edit === 'Edit' && call?.[1]?.view === 'View'
 }))
 check('切英文 meta 跟随', (await text('#meta')).includes('Audio 2.0s'))
+check(
+  '切英文后结果区按钮跟随',
+  await page.evaluate(() => {
+    const want = { 'copy-btn': 'Copy', 'save-btn': 'Save', 'clear-btn': 'Clear' }
+    return Object.entries(want).every(([id, label]) => {
+      const btn = document.getElementById(id)
+      return Boolean(btn) && btn.getAttribute('aria-label') === label && btn.title === label
+    })
+  }),
+  await page.evaluate(() => document.getElementById('copy-btn')?.getAttribute('aria-label') || '(没有 copy-btn)'),
+)
 check('无未翻译 key（英文）', !(await page.evaluate(() => /\b(view|record|result|history|settings|mode|model|setup|progress|duration|drop|theme|nav)\.[a-z]+\b/.test(document.body.innerText))))
 await page.screenshot({ path: `${SHOTS}/03-en-settings.png` })
 
