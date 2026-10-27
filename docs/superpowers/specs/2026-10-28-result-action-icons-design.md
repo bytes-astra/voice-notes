@@ -77,9 +77,14 @@
 - **注入**：由 `result.js` 新增 `renderResultActions()` 写三个按钮的 `innerHTML`，
   `app.js` 的 `init()` 里调一次。图标是静态的，切语言不用重绘；
   `title` / `aria-label` 由 `i18n.js` 的 `apply()` 按 `data-i18n-title` / `-aria` 填。
+  **SVG 不内联进 HTML** —— 图标只有 `src/icons.js` 一处来源。
 - **尺寸**：结果区用 `.icon-btn`（32×32，跟现在的 `.btn small` 30px 接近）；
   历史记录继续用 `.icon-btn sm`（28×28）。
-- **「清空」用垃圾桶**：跟历史记录的删除按钮同一图标，语义是「丢弃这段内容」。
+- **主次层级**：复制 / 保存是主操作，保留描边（`.icon-btn.outlined`，新增的 CSS 变体，
+  不改 `.icon-btn` 本身）；清空是次要操作，不描边。改之前是「复制/保存有边框、清空是
+  ghost」的层级，图标化之后三个不能长得一模一样。
+- **「清空」用橡皮擦**（`clearIcon()`），不用垃圾桶 —— 垃圾桶已经表示「删掉这条历史」
+  （不可恢复），清空只是抹掉文本框里的字，两个强度不同的操作不该用同一个图形。
 - **无障碍**：纯图标按钮必须带 `aria-label`（`data-i18n-aria`）和 `title`
   （`data-i18n-title`），两者共用现有 key，不新增字典条目。
 - **`AGENTS.md`**：单向依赖链那一行补上 `icons.js`（零依赖叶子）。
@@ -87,15 +92,18 @@
 ## 验证
 
 - `npm run check:i18n` —— `data-i18n-title` / `-aria` 用的 key 已存在，不应新增报错。
-- `npm run check:ui` —— 补一条断言：三个按钮是图标按钮（内含 `svg`）、有 `aria-label`、
-  没有可见文字。已有的「清空后切中文不复原」用例继续按 `#clear-btn` 点，不受影响。
+- `npm run check:ui` —— 补断言：三个按钮是图标按钮（内含 `svg`）、有 `aria-label`、
+  没有可见文字；复制/保存带 `outlined`、清空不带；清空的图标与历史删除按钮不同。
+  已有的「清空后切中文不复原」用例继续按 `#clear-btn` 点，不受影响。
 - `npm run shots` —— 改了界面，重出 README 截图并提交更新后的 PNG。
 
 ## 交给实现的部分
 
-- 写 `src/icons.js`，搬 `history.js` 的三个图标函数并统一 16×16。
+- 写 `src/icons.js`，搬 `history.js` 的三个图标函数并统一 16×16；再加 `clearIcon()`。
 - `history.js` 改为从 `icons.js` import，删掉本地定义。
-- `index.html` 三个按钮换成 `.icon-btn` + `data-i18n-title` / `data-i18n-aria`。
+- `index.html` 三个按钮换成 `.icon-btn` + `data-i18n-title` / `data-i18n-aria`
+  （复制/保存再加 `outlined`）。
 - `result.js` 加 `renderResultActions()`，`app.js` 的 `init()` 调一次。
+- `style.css` 加 `.icon-btn.outlined` 变体。
 - `check:ui` 补断言；跑 `check:i18n` / `check:ui` / `shots`。
 - `AGENTS.md` 依赖链补一行。

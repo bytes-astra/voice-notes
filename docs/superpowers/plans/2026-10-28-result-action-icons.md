@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-28-result-action-icons-design.md`
 
+> **后续调整（2026-10-28，整分支评审之后）**：评审提的 3 个 Minor 采纳了 2 个 ——
+> 「清空」改用橡皮擦图标 `clearIcon()`（垃圾桶留给「删除历史条目」）、
+> 复制/保存加 `.icon-btn.outlined` 描边恢复主次层级。Minor 3（SVG 内联进 HTML）
+> 不采纳 —— 用户明确要求**不要内连**，图标只留在 `src/icons.js` 一处。
+> 下面的计划正文保留执行时的原样，最终形态以 spec 为准。
+
 ## Global Constraints
 
 - 前端是原生 JS + ES Modules：没有打包器、没有框架、没有 TypeScript，**不要引入构建步骤、图标库或字体图标**。
