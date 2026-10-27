@@ -33,6 +33,22 @@ pub struct FinishedRecording {
     pub capture_error: Option<String>,
 }
 
+/// 停止时等待识别线程收尾失败：调用方据此换成对应模式的超时文案。
+pub const STOP_FAILED: &str = "record.stopFailed";
+
+/// 等识别线程交回结果：超时或通道关闭都算失败，不返回半截结果。
+fn wait_transcript(
+    rx: &Receiver<Transcript>,
+    discard: &AtomicBool,
+    timeout_secs: u64,
+) -> Result<Transcript, String> {
+    rx.recv_timeout(Duration::from_secs(timeout_secs))
+        .map_err(|_| {
+            discard.store(true, Ordering::SeqCst);
+            crate::code(STOP_FAILED)
+        })
+}
+
 /// 采集故障不等于取消：先让识别线程收尾，保住已有的转写。
 pub fn finish_recording(
     recorder: audio::Recorder,
@@ -42,13 +58,7 @@ pub fn finish_recording(
     let stopped = recorder.stop();
     run.stop.store(true, Ordering::SeqCst);
     let discard = run.discard.clone();
-    let transcript = run
-        .rx
-        .recv_timeout(Duration::from_secs(timeout_secs))
-        .map_err(|_| {
-            discard.store(true, Ordering::SeqCst);
-            crate::code("record.stopFailed")
-        })?;
+    let transcript = wait_transcript(&run.rx, &discard, timeout_secs)?;
     if let Err(error) = stopped {
         if transcript.text.trim().is_empty() {
             return Err(error);
@@ -633,6 +643,21 @@ mod tests {
         assert!(
             matches!(finish_recording(recorder, run, 1), Err(error) if error == "record.micError")
         );
+    }
+
+    /// 等待收尾失败时必须报错，不能把半截结果当成成功交出去。
+    ///
+    /// 这条路径不需要麦克风与模型：识别线程一直不回传结果就触发超时。
+    #[test]
+    fn wait_failure_returns_no_partial_result() {
+        let (tx, rx) = mpsc::channel::<Transcript>();
+        let discard = AtomicBool::new(false);
+        assert!(matches!(
+            wait_transcript(&rx, &discard, 0),
+            Err(error) if error == STOP_FAILED
+        ));
+        assert!(discard.load(Ordering::SeqCst), "超时要置 discard，别再让旧线程发射");
+        drop(tx);
     }
 
     /// 停止录音时，识别期间麦克风采到的那段音频不能被丢掉。

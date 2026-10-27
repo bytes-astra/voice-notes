@@ -31,7 +31,7 @@ use log::on_off;
 #[cfg(target_os = "macos")]
 use menu::install_menu;
 use output::{sanitize_name, write_text_file, Saved};
-use record::{finish_recording, log_transcript, run_offline, run_streaming_core, RecordingRun};
+use record::{finish_recording, log_transcript, run_offline, run_streaming_core, RecordingRun, STOP_FAILED};
 
 /// 错误码：后端只返回字典 key（前端 i18n 翻译），不返回展示文案。
 ///
@@ -718,7 +718,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     if let Some(stream) = stream {
         let finished = tauri::async_runtime::spawn_blocking(move || {
             finish_recording(recorder, stream, 20).map_err(|error| {
-                if error == "record.stopFailed" {
+                if error == STOP_FAILED {
                     code("record.streamTimeout")
                 } else {
                     error
@@ -726,7 +726,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
             })
         })
         .await
-        .map_err(|e| code_detail("record.stopFailed", e))??;
+        .map_err(|e| code_detail(STOP_FAILED, e))??;
         let mut transcript = finished.transcript;
         if finished.capture_error.is_some() {
             transcript.warning = Some(code("record.micError"));
@@ -746,7 +746,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     };
     let finished = tauri::async_runtime::spawn_blocking(move || {
         let finished = finish_recording(recorder, offline, 30).map_err(|error| {
-            if error == "record.stopFailed" {
+            if error == STOP_FAILED {
                 code("record.offlineTimeout")
             } else {
                 error
@@ -761,7 +761,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
         Ok(finished)
     })
     .await
-    .map_err(|e| code_detail("record.stopFailed", e))??;
+    .map_err(|e| code_detail(STOP_FAILED, e))??;
     let mut transcript = finished.transcript;
     if finished.capture_error.is_some() {
         transcript.warning = Some(code("record.micError"));
@@ -840,7 +840,7 @@ async fn transcribe_file(
         Ok(transcript)
     })
     .await
-    .map_err(|e| code_detail("record.stopFailed", e))?
+    .map_err(|e| code_detail(STOP_FAILED, e))?
 }
 
 /// 从缓存里拿一个可共享的整段引擎（录音线程和文件转写共用同一份模型）。
