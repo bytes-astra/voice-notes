@@ -26,13 +26,13 @@ Tauri 2 桌面应用，CPU 本地推理，不需要独立显卡；除了下载�
 
 - **点麦克风开始、再点一次结束**；空格键快捷开关，Esc 取消；录音时有实时电平波形和计时。
 - **两种识别方式，都是边录边出字**：
-  - **整段**：SenseVoiceSmall，支持中 / 英 / 粤 / 日 / 韩 / 自动检测；按 VAD 切句后逐句识别。
-  - **流式**：Zipformer transducer，仅中文；实时出字，中间结果单独一行。
-- **流式术语表（热词）**：一行一句填常用说法、人名、地名（最多 100 条），解码时按热词加权，专有名词不容易再听错。
+  - **整段**：SenseVoiceSmall，支持中 / 英 / 粤 / 日 / 韩 / 自动检测；按停顿分句后逐句识别。
+  - **流式**：Zipformer，仅中文；实时出字，中间结果单独一行。
+- **流式术语表（热词）**：一行一句填常用说法、人名、地名（最多 100 条），识别时按热词加权，专有名词不容易再听错。
 - **标点可选**：流式结果按句自动补标点（CT-Transformer，随流式模型一起下载）。
-- **录音时长不限**：采集缓冲是消费式的，识别完就释放，录 1 小时和录 1 分钟占的内存一样。
+- **录音时长不限**：用过的音频识别完就释放，录 1 小时和录 1 分钟占的内存一样。
 - **可选输入设备**：多麦、外接声卡、回环设备都能选。
-- **文件转写**：把音频 / 视频拖进窗口，或按 `⌘O` / `Ctrl+O` 选文件；后端解码（symphonia，纯 Rust，不需要 ffmpeg），支持 mp3 / wav / flac / ogg / m4a / mp4 / mov（视频轨忽略），长文件边解边转。
+- **文件转写**：把音频 / 视频拖进窗口，或按 `⌘O` / `Ctrl+O` 选文件；支持 mp3 / wav / flac / ogg / m4a / mp4 / mov（视频轨忽略），长文件边解边转，不需要另外装 ffmpeg。
 - **界面语言**：中文 / English，设置里可切。
 - **历史记录**：只存本地（最多 100 条），一键复制、保存。
 - **保存目录可指定**，默认 `~/Documents/VoiceNotes`（目录名用 ASCII，跨平台工具不用转义；旧版的中文目录「语音转文字」会在启动时自动改名，只在新目录不存在时才搬、不覆盖已有数据），文件是 UTF-8 的 `.txt`。
@@ -80,7 +80,7 @@ Tauri 本身支持，但 CI 不出 Linux 包，需要自己构建（依赖 `liba
 ```
 model.int8.onnx   # 或 model.onnx
 tokens.txt
-silero_vad.onnx   # 必需：没有 VAD 就无法分句，这个目录会被判为「未就绪」
+silero_vad.onnx   # 必需：缺少它无法分句，这个目录会被判为「未就绪」
 ```
 
 5. 术语表在 **设置 → 术语表** 里填（一行一句），只对流式模式生效。
@@ -94,18 +94,14 @@ silero_vad.onnx   # 必需：没有 VAD 就无法分句，这个目录会被判�
 | 模式 | 模型 | 语言 | 特点 |
 | --- | --- | --- | --- |
 | 整段 | SenseVoiceSmall INT8 | 中 / 英 / 粤 / 日 / 韩 / 自动 | 按句识别，长句更准；分句处会有停顿延迟 |
-| 流式 | Zipformer transducer | 仅中文 | 逐字出字，首字约 1 个分片（200 ms）；支持术语表 |
+| 流式 | Zipformer | 仅中文 | 逐字出字，开口后约 0.2 秒出第一个字；支持术语表 |
 
-实测（`src-tauri/tests/quality_probe.rs` 探针，40 条真人中文电话录音 + TTS / 数字 / 长句 / 噪声变体，语料只在本机）：
+两种模式都用同一个语音模型，区别只在识别方式：
 
-- 整段模式字符错误率：**真人 11.41%**，加噪变体 **1.39%**，长句 15.00%；
-- 流式在 5 条中文样本上是 99%，而且出字更快。
+- **整段**：一句话说完再出这一句的字，识别得更准，但要先等一个停顿。
+- **流式**：边说边出字，适合边讲边看；只支持中文。
 
-三个容易踩的坑，代码里都处理了：
-
-- **流式收尾要补 300 ms 静音**：解码器需要尾部上下文才会吐出最后一个字，不补就丢句尾（「产品评审会」→「产品评审」）。
-- **SenseVoice 开 ITN 时自己就带标点**：标点模型只补没有标点的句子，两者叠加会变成「。。」。
-- **VAD 会切掉开头第一个字**（音频开头直接是语音时）：整段模式做了带门控的 0.4 秒回扩补回来。
+各语料的当前实测字符错误率见 [AGENTS.md](AGENTS.md#验证)。
 
 ## 开发
 
@@ -116,107 +112,27 @@ npm install          # 只装 devDependencies（@tauri-apps/cli + playwright）
 npm run dev          # 开发模式
 npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
 npm run check:i18n   # 改文案后跑：检查各语言 key 对齐、HTML/JS 引用的 key 是否存在
+npm run check        # 门禁：i18n → clippy → 单元测试
+npm run check:ui     # 界面检查：真实 WebKit + 假 __TAURI__
+npm run shots        # 重出 README 截图
 ```
 
 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 下载对应平台的**预编译静态库**（onnxruntime 等），之后走缓存。
 
 前端是原生 JS + ES Modules，没有打包器、没有框架、不要为 UI 引入构建步骤；界面文案统一放在 `src/locales/*.js` 的字典里（`src/i18n.js` 只放查字典的机制），改完跑一次 `npm run check:i18n`。
 
-## 质量探针与语料
-
-改模型、调参数、加热词之前，先用探针做前后对比，别凭感觉：
-
-```bash
-cd src-tauri
-VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
-  cargo test --test quality_probe -- --nocapture --test-threads=1
-```
-
-探针只打印不断言，会把 ITN 开关、语言指定方式、流式 greedy/beam/热词、VAD 模型与静音阈值、端点硬切行为在同一段音频上的实际表现打出来。
-
-语料（wav 只在本机，不入库）：
-
-```bash
-node scripts/fetch-quality-corpus.mjs 12   # 真人中文电话录音 + 转写（minds14）
-bash scripts/gen-tts-corpus.sh             # TTS / 数字 / 长句 / 噪声变体
-```
-
-调研过程与优化方案在 `docs/research/`，先看 `2026-10-23-asr-quality-roadmap.md`。
-
-## 结构
-
-```
-src/                     前端（原生 JS，无构建）
-  index.html             应用外壳（侧边栏 + 三个视图）
-  app.js                 入口：init / bindUI / switchView / applyLocale
-  core.js                全局状态、DOM 引用、常量、格式化、toast、错误码翻译
-  tauri.js               Tauri 插件的唯一解构处
-  status.js              模型状态、识别模式、语言、输入设备、模型下载
-  recorder.js            录音流程：阶段、波形、计时、开始/停止/取消
-  files.js               文件转写、输出目录
-  result.js              结果区渲染（转写结果、实时中间结果）
-  history.js             历史记录读写与渲染
-  events.js              后端事件 → 前端动作（事件名只在这里出现）
-  export.js              复制 / 保存文本
-  theme.js               深浅色主题、窗口底色、按钮图标
-  style.css              深浅色主题样式
-  i18n.js                国际化机制：t() / data-i18n 填充（经典脚本，不放文案）
-  select.js              自绘下拉框（原生 select 样式不可控，经典脚本）
-  locales/zh-CN.js       中文字典（加语言 = 加一个字典文件 + 一行 script）
-  locales/en.js          英文字典
-src-tauri/
-  src/lib.rs             Tauri 命令与事件载荷（只放命令层）
-  src/record.rs          录音编排：采集队列 → 识别会话 → 出字（纯逻辑）
-  src/engine.rs          三个引擎的构造与加载 + AppState + Status
-  src/asr.rs             识别会话（整段/流式）+ 转写数据结构 + 文本规则
-  src/audio.rs           cpal 采集、设备选择、电平、重采样、缺口占位符格式
-  src/decode.rs          symphonia 后端解码（mp3/wav/flac/ogg/m4a/mp4/mov）
-  src/models.rs          模型定位 / 下载 / 校验
-  src/output.rs          转写结果落盘（同名自动加序号）
-  src/settings.rs        设置持久化
-  src/log.rs             应用日志（写文件 + stderr 镜像）
-  src/menu.rs            macOS 原生菜单
-  assets/hotwords.txt    流式术语表种子
-  tests/quality_probe.rs 转写质量对比探针（只打印不断言）
-  tests/*_long_probe.rs  长录音丢音频排查探针（vad / offline / streaming / resample）
-  tests/common/mod.rs    探针共用的小工具（集成测试之间只能这样共享）
-  tests/fixtures/        冒烟与探针用的短音频
-scripts/                 i18n 体检、图标生成、语料拉取与生成
-docs/research/           转写质量调研与优化方案
-```
-
-## 测试
-
-```bash
-cd src-tauri
-cargo test --lib                  # 逻辑、设置清洗、设备选择、重采样
-cargo test --test asr_smoke       # 真模型转写（缺模型自动跳过）
-cargo test --test streaming_smoke # 流式识别、句尾冲刷
-cargo test --test decode_smoke    # 后端解码 + 文件全链路转写
-```
-
-`asr_smoke` 需要 `VOICE_NOTES_MODEL_DIR`（整段模型目录），`streaming_smoke` 需要 `VOICE_NOTES_STREAMING_MODEL_DIR`（流式四个文件：`encoder.int8.onnx` / `decoder.onnx` / `joiner.int8.onnx` / `tokens.txt`），未设置就跳过。要跑真实网络的用例，得显式加 `VOICE_NOTES_DOWNLOAD_TEST=1` 或 `VOICE_NOTES_RECORD_TEST=1`。
-
-怀疑「录音丢了」（长录音后面少字、句子断在半截）先跑探针，别猜 —— 只打印不断言：
-
-```bash
-cargo test --test vad_long_probe -- --nocapture        # VAD 吞不吞音频
-cargo test --test offline_long_probe -- --nocapture    # 整段会话覆盖了哪几段
-cargo test --test streaming_long_probe -- --nocapture  # 流式会话（需 VOICE_NOTES_STREAMING_MODEL_DIR）
-cargo test --test resample_probe -- --nocapture        # 48k→16k 重采样对识别的影响
-```
-
-2026-10-24 实测（176 秒连续语音）：VAD、整段会话、流式会话、重采样四条路都不丢音频，误差只有句边界。唯一的丢失点是采集队列上限（60 秒）—— 超了会丢最旧的并留 `[[gap:N]]` 标记，日志里同时会写「识别跟不上，丢掉 X 秒音频」。
-
-实测（Apple Silicon）：5.6 秒中文音频转写约 200 ms，实时率约 0.04×。
+完整工程约定、模块边界、测试与探针用法见 [AGENTS.md](AGENTS.md)。
 
 ## 已知限制
 
 - 流式模型只支持中文；粤语 / 日语 / 韩语请用整段模式。
-- **术语表只对流式生效**：SenseVoice 上加 beam search 或热词会让识别进程直接崩掉，所以整段模式没有这个开关；改术语表会清空流式引擎，下次录音重新加载 161 MB。
+- **术语表只对流式生效**：整段模式加术语表会让识别直接崩溃，所以整段模式没有这个开关；改完术语表要重新加载流式模型（约 161 MB），下次录音才生效。
 - **语言选择只是提示，不是过滤器**：选中「中文」后，中英混说里的英文词仍会保留；选错语言反而更差。
-- 整段模式每句独立识别，**跨句上下文不保留**（SenseVoice 是无状态模型）。
-- 整段模式连续说话时要等停顿才出这一句；单句默认整句一次识别，超过 90 秒才切成 30 秒窗口加 2 秒重叠合并。
+- 整段模式一句一句单独识别，上一句的上下文不会带到下一句。
+- 整段模式连续说话时要等停顿才出这一句；特别长的句子（超过 90 秒）才会拆成 30 秒一段再合并回来（相邻两段有重叠，避免把词切开）。
+- **开头直接是说话时，整段模式偶尔会丢掉第一个字**：音频开头没有停顿，分句的边界正好切在第一个字上。
+- **整段模式的结果自带标点**，不需要再开标点模型。标点模型只用于流式模式，两个一起用会出现「。。」这样的重复标点。
+- **流式模式停止后会多等一小段静音再输出**，否则句子的最后一个字会丢。这段静音不计入录音时长。
 - 说话人分离、时间戳导出没做。
 - 打包 `.dmg` 需要能调用 `hdiutil`；受限沙箱里可能只产出 `.app`（`--bundles app` 可跳过 dmg）。
 
@@ -238,3 +154,9 @@ cargo test --test resample_probe -- --nocapture        # 48k→16k 重采样对�
 - 里面记的是**技术细节**（错误码、系统错误文本、耗时、丢了几秒音频），界面上的提示只给一句话，原因都在日志里。
 - 反馈问题时把这个文件发过来就行 —— 前端的异常和关键操作也在同一个文件里。
 - 在 Finder 里按 `⌘⇧G` 输入 `~/Library/Logs` 就能找到；或者在终端 `tail -f ~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`。
+
+## 文档索引
+
+- [AGENTS.md](AGENTS.md) —— 工程约定、模块边界、测试与质量探针
+- [docs/research/2026-10-23-asr-quality-roadmap.md](docs/research/2026-10-23-asr-quality-roadmap.md) —— 质量调研与优化方案
+- [docs/research/](docs/research/) —— 全部调研文档
