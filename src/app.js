@@ -6,7 +6,7 @@ import {
 } from './core.js'
 import { getCurrentWindow, getCurrentWebview, invoke, logEvent } from './tauri.js'
 import { renderHistory, saveHistory } from './history.js'
-import { clearResult, showTranscript } from './result.js'
+import { clearResult, renderResultActions, showTranscript } from './result.js'
 import {
   downloadModel, downloadStreamingModel, loadDevices,
   localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
@@ -358,6 +358,7 @@ async function init() {
   buildWave()
   renderLang()
   renderHistory()
+  renderResultActions()
   bindUI()
   // 界面画完再去列设备：列设备会触发 macOS 的麦克风权限弹窗，
   // 放在渲染之后弹，用户看到的是已经画好的界面。
