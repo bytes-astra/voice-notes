@@ -193,6 +193,16 @@ check('结果框有文本', (await page.locator('#text').inputValue()) === '浏�
 const historyCount = () =>
   page.evaluate(() => JSON.parse(localStorage.getItem('voicenotes.history.v1') || '[]').length)
 check('历史写了一条', (await historyCount()) === 1)
+check(
+  '历史行内三个图标按钮都在',
+  await page.evaluate(() => {
+    const actions = document.querySelector('.history-item .history-actions')
+    if (!actions) return false
+    const buttons = [...actions.querySelectorAll('button.icon-btn')]
+    return buttons.length === 3 && buttons.every((b) => b.querySelector('svg') && b.getAttribute('aria-label'))
+  }),
+  await page.evaluate(() => document.querySelector('.history-item .history-actions')?.innerHTML.slice(0, 120) || '(没有历史行)'),
+)
 await page.screenshot({ path: `${SHOTS}/02-zh-result.png` })
 
 // 4. 设置页切英文：结果不被覆盖、历史不重复

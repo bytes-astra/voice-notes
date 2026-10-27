@@ -2,6 +2,7 @@
 
 import { I18N, els, fmtDuration, historyStorageSet, state, t } from './core.js'
 import { copyText, saveText } from './export.js'
+import { copyIcon, saveIcon, trashIcon } from './icons.js'
 
 export function saveHistory() {
   historyStorageSet(state.history)
@@ -91,14 +92,3 @@ export function iconAction(label, icon, onClick) {
   return button
 }
 
-export function copyIcon() {
-  return '<svg viewBox="0 0 24 24" width="15" height="15"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M15 5.5A2.5 2.5 0 0 0 12.5 3H6.5A2.5 2.5 0 0 0 4 5.5v6A2.5 2.5 0 0 0 6.5 14" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>'
-}
-
-export function saveIcon() {
-  return '<svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 4v10m0 0 3.5-3.5M12 14l-3.5-3.5M5 16v3h14v-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-}
-
-export function trashIcon() {
-  return '<svg viewBox="0 0 24 24" width="15" height="15"><path d="M5 7h14M10 7V5h4v2m-7 0 .8 12h8.4L17 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-}
