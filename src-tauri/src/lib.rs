@@ -977,6 +977,9 @@ fn client_log(level: String, message: String) {
 fn set_menu_texts(app: AppHandle, edit: String, view: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     menu::set_texts(&app, &edit, &view).map_err(|e| code_detail("error.menuFailed", e))?;
+    // 非 macOS 没有原生菜单：参数照收（命令签名与前端一致），只是用不上。
+    #[cfg(not(target_os = "macos"))]
+    let _ = (&app, &edit, &view);
     Ok(())
 }
 
