@@ -65,7 +65,7 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 71 项检查
+npm run check:ui     # 78 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 

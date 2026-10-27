@@ -158,8 +158,7 @@ export function fmtError(error) {
   const vars = detail ? { value: detail, seconds: detail } : undefined
   const text = translateCode(key, vars)
   if (text) return text
-  // 是个错误码但字典里没有 → 未知错误（别把码和细节原样甩给用户）。
-  // 不是错误码（系统 / 第三方库原文）→ 照旧显示原文。
+  // 字典里没有这个 key → 未知错误，原文和细节只进日志，不往界面上贴。
   return isErrorCode(key) ? t('error.unknown') : unknown()
 }
 

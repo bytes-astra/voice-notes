@@ -103,7 +103,7 @@
 
 **窗口标题跟界面语言走**：`tauri.conf.json` 的 `title` 只是启动时的默认值（写 `VoiceNotes`），运行时由 `applyLocale()` 调 `getCurrentWindow().setTitle(t('app.title'))` 设置（需要 `core:window:allow-set-title` 权限）。
 
-**原生菜单**：`menu.rs` 创建，界面切语言时 `applyLocale()` 调 `set_menu_locale` 更新子菜单；预定义编辑项交给系统本地化，Rust 里不写死一份不随语言变化的中文菜单。
+**原生菜单**：`menu.rs` 创建，界面切语言时 `applyLocale()` 把 `t('menu.edit')` / `t('menu.view')` 传给 `set_menu_texts` 更新子菜单；预定义编辑项交给系统本地化，**Rust 里不存任何菜单文案**（加语言只改字典）。
 
 **拖动窗口**：`data-tauri-drag-region="deep"`（`.sidebar-top` 与 `.main-head`，按钮自动排除）+ **`core:window:allow-start-dragging` 权限** —— 这权限不在 `core:default` 里，删了窗口就拖不动。
 
@@ -126,7 +126,8 @@
 
 - **事件名只出现在 `src/events.js`**：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`。改名字要同步前端。
 - **会话 ID**：录音/文件都先 `reserve_session`，启动/文件命令携带 `sessionId`，分段、partial、采集错误带同一个 ID；前端只接收当前会话，超时同时置 discard 阻止旧线程继续发射。
-- **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续）。致命 `record.micError` 由前端停止录音并保存非空部分结果；用户主动 Esc 才走取消并清空，其他致命错误仍取消。
+- **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal, sessionId? }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续）。致命 `record.micError` 由前端停止录音并保存非空部分结果；用户主动 Esc 才走取消并清空，其他致命错误仍取消。
+- **停止时的采集故障走 `Transcript.warning`**：`finish_recording` 先让识别线程收尾、保住非空转写，再由 `stop_recording` 把 `record.micError` 写进 `Transcript.warning`；正常转写不带这个字段（`skip_serializing_if` 保证载荷不变）。前端据此提示「麦克风发生异常」而不是「完成」，也不丢结果。
 - **事件载荷是增量的**：`stream:segment` 只带新句子，`stream:partial` 只带中间结果。累计全文在长时间会话里是 O(n²) 的传输与重绘。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）。
 - **拖拽用 Tauri 的 `onDragDropEvent`**：Tauri v2 默认拦截系统拖放，HTML5 `drop` 事件在真应用里不触发。`tauri.conf.json` 的 `dragDropEnabled` 必须保持 `true` —— 关掉它 wry 就不装拖放 handler，`onDragDropEvent` 永远不触发，拖拽转写直接变成死代码（而且没有 HTML5 兜底）。
 - **模型下载是两条独立的线**（可以同时下）：各自有 `downloading` / `cancel_download` 标志（`engine.rs` 的 `AppState` 里 `downloading_streaming` / `cancel_download_streaming`）。共用一个标志的话，整段在下载时点流式下载会直接报 busy 失败。
