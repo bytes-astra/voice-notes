@@ -2,7 +2,7 @@
 
 ![主界面](docs/screenshots/ready.png)
 
-[![Release](https://img.shields.io/github/v/release/bytes-astra/voice-notes.svg?cacheSeconds=300)](https://github.com/bytes-astra/voice-notes/releases/latest)
+[![Release](https://img.shields.io/github/v/release/bytes-astra/voice-notes.svg)](https://github.com/bytes-astra/voice-notes/releases/latest)
 
 在 Mac / Windows 上把语音转成文字，**音频不出本机**。默认用 **SenseVoiceSmall INT8**（约 228 MB）离线识别，另有**流式模式**（Zipformer，边说边出字）。
 
