@@ -2,7 +2,7 @@
 
 欢迎！如果你是协助人类开发者参与本项目贡献的 AI Agent，或是想了解项目结构的贡献者，请务必阅读以下开发流与规范。
 
-规范之外还有两份文档：质量调研与实测数据在 [`docs/research/`](docs/research/)，验证流程（探针 / 语料 / 界面检查 / 当前基线）在 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md)。
+规范之外还有两份文档：质量调研与实测数据在 [`docs/research/`](docs/research/)，验证手段与基线全在 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md) —— **改任何模型 / 参数 / 热词之前，先跑探针做前后对比，别凭感觉。**
 
 ## 🎯 核心架构与原则
 
@@ -35,7 +35,7 @@
 
 3. Rust 侧测试：`cargo test --lib`（纯逻辑），以及 `src-tauri/tests/` 下的 `asr_smoke`（整段真模型，需 `VOICE_NOTES_MODEL_DIR`）、`streaming_smoke`（流式，需 `VOICE_NOTES_STREAMING_MODEL_DIR`）、`decode_smoke`（后端解码全链路）、`quality_probe`（质量探针，只打印不断言）。
 
-> **建议**：提交前在终端跑 `npm run check`，前端改动再跑 `npm run check:ui`。**纯文档改动不用跑门禁** —— 改的是 markdown，跑它没有信息量；只有动了 `src/locales/*.js` 才需要 `npm run check:i18n`。
+> **建议**：提交前在终端跑 `npm run check`，前端改动再跑 `npm run check:ui`。**纯文档改动不用跑门禁** —— 改的是 markdown；只有动了 `src/locales/*.js` 才需要 `npm run check:i18n`。
 
 ### 首次编译
 
@@ -178,10 +178,6 @@
 - **下载走镜像优先**（`[MIRROR, HF]`）：国内直连 huggingface.co 经常连不上，镜像失败再回退官方源。顺序保持镜像优先。
 - **模型目录必须有 `silero_vad.onnx`**：整段分句、文件转写都靠 VAD，`models::resolve()` 会直接跳过没有 VAD 的目录（否则录完只得空结果）。
 - 已存在且大小正确的文件直接跳过下载；`.part` + Range 支持断点续传；下完做 sha256 校验。应用数据目录里的文件按**字节数**判定是否就绪（`app_data_file_ok`，含流式 VAD），所以换 VAD 版本后会自动重下；截断文件不能显示「已就绪」。下载忙碌标志用 `DownloadFlagGuard` 在所有退出路径复位，别在目录创建前裸 `?` 留下永久 busy。
-
-## 🧪 验证
-
-质量探针、长录音排查探针、语料生成、界面检查、当前实测基线全在 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md)。**改任何模型 / 参数 / 热词之前，先跑探针做前后对比，别凭感觉。**
 
 ## 📦 提交与 PR 规范
 
