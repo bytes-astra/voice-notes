@@ -191,6 +191,9 @@ body.macos .topbar { padding-left: 84px; }
   transition: background 0.15s, color 0.15s;
 }
 .icon-btn:hover { background: var(--line); color: var(--ink); }
+/* 结果卡片的动作按钮：复制 / 保存是主操作，保留描边；清空是次要操作，不描边。 */
+.icon-btn.outlined { border: 1px solid var(--line-strong); }
+.icon-btn.outlined:hover { border-color: var(--accent); background: transparent; color: var(--accent); }
 
 /* ── 卡片 ─────────────────────────────────────────────── */
 

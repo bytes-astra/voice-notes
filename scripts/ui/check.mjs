@@ -180,6 +180,14 @@ check(
   }),
   await page.evaluate(() => document.getElementById('copy-btn')?.outerHTML.slice(0, 140) || '(没有 copy-btn)'),
 )
+check(
+  '结果区复制/保存是主操作，清空不是',
+  await page.evaluate(() => {
+    const cls = (id) => document.getElementById(id)?.className || ''
+    return cls('copy-btn').includes('outlined') && cls('save-btn').includes('outlined') && !cls('clear-btn').includes('outlined')
+  }),
+  await page.evaluate(() => ['copy-btn', 'save-btn', 'clear-btn'].map((id) => `${id}:${document.getElementById(id)?.className}`).join(' | ')),
+)
 await page.screenshot({ path: `${SHOTS}/01-zh-light.png` })
 
 // 2. 麦克风流程：开始 → 设备下拉 Esc 不取消 → Esc 取消清空
@@ -219,6 +227,16 @@ check(
     return buttons.length === 3 && buttons.every((b) => b.querySelector('svg') && b.getAttribute('aria-label'))
   }),
   await page.evaluate(() => document.querySelector('.history-item .history-actions')?.innerHTML.slice(0, 120) || '(没有历史行)'),
+)
+check(
+  '结果区清空按钮不是垃圾桶（与历史删除按钮不同图标）',
+  await page.evaluate(() => {
+    const clearSvg = document.getElementById('clear-btn')?.querySelector('svg')?.outerHTML || ''
+    const deleteSvg = document.querySelector('.history-item .history-actions button:nth-child(3) svg')?.outerHTML || ''
+    if (!clearSvg || !deleteSvg) return false
+    return clearSvg !== deleteSvg
+  }),
+  await page.evaluate(() => document.getElementById('clear-btn')?.querySelector('svg')?.outerHTML.slice(0, 120) || '(没有清空按钮图标)'),
 )
 await page.screenshot({ path: `${SHOTS}/02-zh-result.png` })
 

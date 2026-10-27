@@ -22,3 +22,9 @@ export function saveIcon() {
 export function trashIcon() {
   return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2m-7 0 .8 12h8.4L17 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 }
+
+/// 清空：橡皮擦。
+/// 跟垃圾桶分开：垃圾桶是「删掉这条历史」（不可恢复），橡皮擦是「抹掉这段文字」。
+export function clearIcon() {
+  return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M22 21H7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="m5 11 9 9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>'
+}

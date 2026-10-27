@@ -2,14 +2,14 @@
 
 import { els, fmtDuration, joinText, localizeText, state, t } from './core.js'
 import { addHistory } from './history.js'
-import { copyIcon, saveIcon, trashIcon } from './icons.js'
+import { clearIcon, copyIcon, saveIcon } from './icons.js'
 
 /// 结果卡片右上角的三个动作按钮：纯图标，文字放在 title / aria-label 里。
 /// 图标是静态的，切语言不用重绘 —— title / aria-label 由 i18n.apply() 填。
 export function renderResultActions() {
   els.copyBtn.innerHTML = copyIcon()
   els.saveBtn.innerHTML = saveIcon()
-  els.clearBtn.innerHTML = trashIcon()
+  els.clearBtn.innerHTML = clearIcon()
 }
 
 /// 清空结果区：文本框清空，元信息区只留一条提示。
