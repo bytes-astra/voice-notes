@@ -33,18 +33,18 @@ pub fn install_menu(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 更新 Edit / View 两个子菜单的标题。
+///
+/// 文案由前端字典（`menu.edit` / `menu.view`）传进来：Rust 里不存任何菜单文案，
+/// 加语言只改字典。
 #[cfg(target_os = "macos")]
-pub fn set_locale(app: &tauri::AppHandle, locale: &str) -> tauri::Result<()> {
+pub fn set_texts(app: &tauri::AppHandle, edit: &str, view: &str) -> tauri::Result<()> {
     use tauri::menu::MenuItemKind;
     let Some(menu) = app.menu() else {
         return Ok(());
     };
     let items = menu.items()?;
-    let english = locale == "en";
-    for (index, text) in [
-        (1, if english { "Edit" } else { "编辑" }),
-        (2, if english { "View" } else { "视图" }),
-    ] {
+    for (index, text) in [(1, edit), (2, view)] {
         if let Some(MenuItemKind::Submenu(item)) = items.get(index) {
             item.set_text(text)?;
         }

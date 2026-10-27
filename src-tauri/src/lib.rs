@@ -974,9 +974,9 @@ fn client_log(level: String, message: String) {
 }
 
 #[tauri::command]
-fn set_menu_locale(app: AppHandle, locale: String) -> Result<(), String> {
+fn set_menu_texts(app: AppHandle, edit: String, view: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    menu::set_locale(&app, &locale).map_err(|e| code_detail("error.menuFailed", e))?;
+    menu::set_texts(&app, &edit, &view).map_err(|e| code_detail("error.menuFailed", e))?;
     Ok(())
 }
 
@@ -1040,7 +1040,7 @@ pub fn run() {
             open_output_dir,
             save_text,
             client_log,
-            set_menu_locale,
+            set_menu_texts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running voice-notes");
