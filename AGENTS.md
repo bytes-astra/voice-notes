@@ -54,6 +54,7 @@
 - **`state` / `els` 只在 `core.js` 创建一次**，其他模块 `import` 引用（live binding 是同一个对象）。
 - **Tauri 插件调用面集中在 `src/tauri.js` 解构**，其他模块从那里 import。新增插件命令要同步在 `src-tauri/capabilities/default.json` 加权限，否则运行时直接拒绝。
 - **外壳是「侧边栏 + 主区」**：`.app[data-view]` 控制 `[data-view-panel]` 显隐，`switchView()` 统一处理导航高亮/标题，录音中不允许切走。新增页面 = 一个 `[data-view-panel]` + 一个 `.nav-item`。
+- **默认窗口尺寸要容得下整张转写卡片**：窗口默认宽高写在 `src-tauri/tauri.conf.json`，它是唯一的尺寸来源 —— `scripts/ui/check.mjs` 和 `scripts/ui/shots.mjs` 都从那里读 viewport（界面检查和 README 截图永远等于用户启动后看到的样子）。改窄了或改矮了，转写结果卡片会被裁掉、`check:ui` 里「默认窗口尺寸下没有纵向滚动条」那条断言会红。
 
 ### i18n 与文案
 

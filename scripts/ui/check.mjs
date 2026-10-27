@@ -2,16 +2,23 @@
 // 运行：npm run check:ui
 // 浏览器不在默认位置时：PLAYWRIGHT_BROWSERS_PATH=/path/to/browsers npm run check:ui
 import { webkit } from 'playwright'
-import { startServer, SRC } from './server.mjs'
+import { startServer, SRC, REPO } from './server.mjs'
 import { join } from 'node:path'
 import { mkdtemp } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+
+// 界面检查用「应用真实的默认窗口尺寸」：尺寸写在 src-tauri/tauri.conf.json 里，
+// 这里读出来当 viewport —— 改了窗口大小，界面断言自动跟着，不会跟实际默认值脱节。
+const tauriConf = JSON.parse(readFileSync(join(REPO, 'src-tauri/tauri.conf.json'), 'utf8'))
+const mainWindow = tauriConf.app.windows.find((w) => w.label === 'main')
+const viewport = { width: mainWindow.width, height: mainWindow.height }
 
 const SHOTS = await mkdtemp(join(tmpdir(), 'vn-ui-shots-'))
 const { server, base } = await startServer(SRC)
 
 const browser = await webkit.launch()
-const context = await browser.newContext({ viewport: { width: 980, height: 760 }, locale: 'zh-CN' })
+const context = await browser.newContext({ viewport, locale: 'zh-CN' })
 const page = await context.newPage()
 
 const errors = []
@@ -161,6 +168,28 @@ check('6 个语言芯片', (await page.locator('#lang-row .chip').count()) === 6
 check('波形 48 根', (await page.locator('#wave span').count()) === 48)
 check('空闲剪影有高度', (await page.locator('#wave span').nth(4).evaluate((el) => el.style.height)) === '18px')
 check('无横向溢出', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+check(
+  '默认窗口尺寸下没有纵向滚动条',
+  await page.evaluate(() => {
+    const scroll = document.querySelector('.main-scroll')
+    return scroll.scrollHeight <= scroll.clientHeight
+  }),
+  await page.evaluate(() => {
+    const scroll = document.querySelector('.main-scroll')
+    return `内容 ${scroll.scrollHeight} / 可视 ${scroll.clientHeight}`
+  }),
+)
+check(
+  '默认窗口尺寸下转写结果卡片完整可见',
+  await page.evaluate(() => {
+    const card = document.querySelector('.result').getBoundingClientRect()
+    return card.top >= 0 && card.bottom <= window.innerHeight
+  }),
+  await page.evaluate(() => {
+    const card = document.querySelector('.result').getBoundingClientRect()
+    return `卡片 ${Math.round(card.top)}..${Math.round(card.bottom)} / 窗口 ${window.innerHeight}`
+  }),
+)
 check('macOS 根背景保持透明', await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor === 'rgba(0, 0, 0, 0)'))
 check('无未翻译 key', !(await page.evaluate(() => /\b(view|record|result|history|settings|mode|model|setup|progress|duration|drop|theme|nav)\.[a-z]+\b/.test(document.body.innerText))))
 check(

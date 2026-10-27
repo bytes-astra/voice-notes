@@ -1,9 +1,16 @@
-// 重新生成 README 用截图：9 张，980x760 @2x。
+// 重新生成 README 用截图：9 张，@2x。
+// 视口用「应用真实的默认窗口尺寸」（src-tauri/tauri.conf.json），README 里的图
+// 就是用户启动后看到的样子。
 // 运行：npm run shots
 import { webkit } from 'playwright'
 import { startServer, SRC, REPO } from './server.mjs'
 import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+
+const tauriConf = JSON.parse(readFileSync(join(REPO, 'src-tauri/tauri.conf.json'), 'utf8'))
+const mainWindow = tauriConf.app.windows.find((w) => w.label === 'main')
+const viewport = { width: mainWindow.width, height: mainWindow.height }
 
 const OUT = join(REPO, 'docs/screenshots')
 await mkdir(OUT, { recursive: true })
@@ -82,7 +89,7 @@ const SIDEBAR_MATERIAL_FALLBACK = 'body.macos .sidebar { background: var(--panel
 
 async function makePage({ status = {}, locale = 'zh-CN', theme = null, history = null } = {}) {
   const context = await browser.newContext({
-    viewport: { width: 980, height: 760 },
+    viewport,
     deviceScaleFactor: 2,
     locale,
     colorScheme: theme === 'dark' ? 'dark' : 'light',
