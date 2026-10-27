@@ -101,7 +101,7 @@ silero_vad.onnx   # 必需：缺少它无法分句，这个目录会被判为「
 - **整段**：一句话说完再出这一句的字，识别得更准，但要先等一个停顿。
 - **流式**：边说边出字，适合边讲边看；只支持中文。
 
-各语料的当前实测字符错误率见 [AGENTS.md](AGENTS.md#验证)。
+各语料的当前实测字符错误率见 [docs/HOW_TO_VERIFY.md](docs/HOW_TO_VERIFY.md)。
 
 ## 开发
 
@@ -121,7 +121,7 @@ npm run shots        # 重出 README 截图
 
 前端是原生 JS + ES Modules，没有打包器、没有框架、不要为 UI 引入构建步骤；界面文案统一放在 `src/locales/*.js` 的字典里（`src/i18n.js` 只放查字典的机制），改完跑一次 `npm run check:i18n`。
 
-完整工程约定、模块边界、测试与探针用法见 [AGENTS.md](AGENTS.md)。
+完整工程约定、模块边界、提交与发布规范见 [AGENTS.md](AGENTS.md)；质量探针、语料与当前实测基线见 [docs/HOW_TO_VERIFY.md](docs/HOW_TO_VERIFY.md)。
 
 ## 已知限制
 
@@ -157,6 +157,7 @@ npm run shots        # 重出 README 截图
 
 ## 文档索引
 
-- [AGENTS.md](AGENTS.md) —— 工程约定、模块边界、测试与质量探针
+- [AGENTS.md](AGENTS.md) —— 工程约定、模块边界、参数不变式、提交与发布规范
+- [docs/HOW_TO_VERIFY.md](docs/HOW_TO_VERIFY.md) —— 质量探针、语料、界面检查与当前实测基线
 - [docs/research/2026-10-23-asr-quality-roadmap.md](docs/research/2026-10-23-asr-quality-roadmap.md) —— 质量调研与优化方案
 - [docs/research/](docs/research/) —— 全部调研文档
