@@ -224,8 +224,8 @@ check('英文术语表标签', (await page.locator('h3', { hasText: 'Terminology
 check('切英文结果保留', (await page.locator('#text').inputValue()) === '浏览器结果')
 check('切英文历史不重复', (await historyCount()) === 1)
 check('原生菜单同步英文', await page.evaluate(() => {
-  const call = window.__mockCalls.filter(([cmd]) => cmd === 'set_menu_locale').pop()
-  return call?.[1]?.locale === 'en'
+  const call = window.__mockCalls.filter(([cmd]) => cmd === 'set_menu_texts').pop()
+  return call?.[1]?.edit === 'Edit' && call?.[1]?.view === 'View'
 }))
 check('切英文 meta 跟随', (await text('#meta')).includes('Audio 2.0s'))
 check('无未翻译 key（英文）', !(await page.evaluate(() => /\b(view|record|result|history|settings|mode|model|setup|progress|duration|drop|theme|nav)\.[a-z]+\b/.test(document.body.innerText))))
@@ -242,6 +242,10 @@ await page.waitForTimeout(150)
 await page.locator('.select-popup .select-item', { hasText: '简体中文' }).first().click()
 await page.waitForTimeout(300)
 check('清空后切中文不复原', (await page.locator('#text').inputValue()) === '')
+check('原生菜单同步中文', await page.evaluate(() => {
+  const call = window.__mockCalls.filter(([cmd]) => cmd === 'set_menu_texts').pop()
+  return call?.[1]?.edit === '编辑' && call?.[1]?.view === '视图'
+}))
 
 // 6. 深色主题 + 截图
 await page.locator('.nav-item[data-view="transcribe"]').click()
@@ -335,6 +339,21 @@ check('按模式调用录音命令', await page.evaluate(() =>
   window.__mockCalls.every(([cmd]) => cmd !== 'start_recording')
 ))
 
+// 流式模式必须调 start_streaming_recording：mock 里两个启动命令走同一分支，
+// 不显式断言就测不出「流式误调成整段」。
+await page.locator('.mode-chip[data-mode="streaming"]').click()
+await page.waitForTimeout(200)
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(200)
+check('流式调用流式启动命令', await page.evaluate(() =>
+  window.__mockCalls.some(([cmd]) => cmd === 'start_streaming_recording')
+))
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(400)
+check('流式停止后回到空闲', (await phase()) === 'idle')
+await page.locator('.mode-chip[data-mode="offline"]').click()
+await page.waitForTimeout(200)
+
 // ── 麦克风异常：保存已有转写，不能像 Esc 一样清空 ──
 const historyBeforeMicError = await historyCount()
 await page.locator('#mic-btn').click()
@@ -408,6 +427,16 @@ await page.waitForTimeout(400)
 check('停止失败保留已有文本', (await page.locator('#text').inputValue()) === '停止失败前的一句')
 check('停止失败保留已有历史', (await historyCount()) === historyBeforeMicError + 3)
 check('停止失败仍显示错误', (await text('#toast')).includes('超时'))
+
+// 停止彻底失败且编辑区没有文本：不写历史、不留结果（__mockStopError 还是上一条留下的）。
+const historyBeforeEmptyStop = await historyCount()
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(200)
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(400)
+check('停止失败且无文本时不写历史', (await historyCount()) === historyBeforeEmptyStop)
+check('停止失败且无文本时结果区为空', (await page.locator('#text').inputValue()) === '')
+await page.evaluate(() => { window.__mockStopError = null })
 
 // ── 下载进度分流：两个下载可以同时跑，进度事件同名，靠 kind 区分 ──
 await page.evaluate(() =>
@@ -520,6 +549,16 @@ await page.evaluate(async () => {
 })
 await page.waitForTimeout(200)
 check('未知字符串错误不泄露细节', (await text('#toast')).includes('发生未知错误') && !(await text('#toast')).includes('/tmp/'))
+await page.evaluate(async () => {
+  const { refreshStatus } = await import('./status.js')
+  window.__mockStatusError = new Error('boom /tmp/private-model')
+  await refreshStatus()
+})
+await page.waitForTimeout(200)
+check('Error 对象不泄露原文', (await text('#toast')).includes('发生未知错误') && !(await text('#toast')).includes('/tmp/'))
+check('Error 对象细节写入日志', await page.evaluate(() =>
+  window.__mockCalls.some(([cmd, args]) => cmd === 'client_log' && args.message.includes('/tmp/private-model'))
+))
 await page.evaluate(() => { window.__mockStatusError = null })
 
 // ── 结果 ────────────────────────────────────────────────────
