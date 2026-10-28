@@ -1,6 +1,6 @@
 /* 结果区：转写结果 + 实时中间结果 */
 
-import { els, joinText, localizeText, renderResultMeta, state } from './core.js'
+import { els, gapMarkerTexts, joinText, localizeText, renderResultMeta, state } from './core.js'
 import { addHistory } from './history.js'
 import { clearIcon, copyIcon, saveIcon } from './icons.js'
 
@@ -14,36 +14,46 @@ export function renderResultActions() {
 
 function setResultView(rawText, meta) {
   const rendered = localizeText(rawText)
-  state.resultView = { rawText, rendered, meta }
+  state.resultView = { rawText, rendered, meta, markers: gapMarkerTexts(rawText) }
   els.text.value = rendered
   renderResultMeta()
+}
+
+/// 把编辑后文本里的旧占位符换成新语言的占位符。
+///
+/// 找不到就跳过 —— 用户把那一段改了，就别动它。
+function swapGapMarkers(text, oldMarkers, newMarkers) {
+  let out = text
+  let from = 0
+  for (let i = 0; i < oldMarkers.length; i++) {
+    const oldMark = oldMarkers[i]
+    const newMark = newMarkers[i]
+    if (!oldMark || !newMark || oldMark === newMark) continue
+    const at = out.indexOf(oldMark, from)
+    if (at < 0) continue
+    out = out.slice(0, at) + newMark + out.slice(at + oldMark.length)
+    from = at + newMark.length
+  }
+  return out
 }
 
 /// 切语言只重画缺口占位符和元信息，不覆盖用户其他编辑。
 export function relocalizeResult() {
   const view = state.resultView
   if (!view) return
+  const rendered = localizeText(view.rawText)
+  const markers = gapMarkerTexts(view.rawText)
   if (els.text.value === view.rendered) {
-    els.text.value = localizeText(view.rawText)
-  } else if (view.previousRaw) {
-    // 用户编辑后的文本仍保留原文快照，只替换缺口占位符，不动其他字符。
-    let edited = els.text.value
-    let from = 0
-    for (const marker of view.rawText.matchAll(/\[\[gap:\d+\]\]/g)) {
-      const rawBefore = view.rawText.slice(from, marker.index)
-      const renderedBefore = localizeText(rawBefore)
-      const at = edited.indexOf(renderedBefore)
-      if (at >= 0) {
-        const start = at + renderedBefore.length
-        const end = start + localizeText(marker[0]).length
-        edited = edited.slice(0, start) + localizeText(marker[0]) + edited.slice(end)
-        from = marker.index + marker[0].length
-      }
-    }
-    els.text.value = edited
+    // 用户没动过：整段按新语言重画。
+    els.text.value = rendered
+  } else {
+    // 用户动过：只换缺口占位符，其他字符一个都不动。
+    els.text.value = swapGapMarkers(els.text.value, view.markers || [], markers)
   }
-  view.rendered = els.text.value
-  view.previousRaw = view.rawText
+  // rendered 永远存「原文的本地化结果」，不能写成用户文本 ——
+  // 否则第二次切语言时守卫会误判成「用户没动过」，把编辑盖回原文。
+  view.rendered = rendered
+  view.markers = markers
   renderResultMeta()
 }
 

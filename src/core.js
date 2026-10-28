@@ -307,6 +307,15 @@ export function localizeText(text) {
   return text.replace(GAP_RE, (_, seconds) => gapText(Number(seconds)))
 }
 
+/// 文本里的缺口占位符，按出现顺序返回**已本地化**的文本。
+///
+/// 切语言时要用「上次渲染出来的占位符」去定位再替换 ——
+/// 用户编辑后文本里躺的是旧语言的占位符，拿新语言的模板找不到位置。
+export function gapMarkerTexts(rawText) {
+  if (!rawText) return []
+  return [...rawText.matchAll(GAP_RE)].map((match) => gapText(Number(match[1])))
+}
+
 /// 拼接两段文本：中日韩之间直接连，其余用空格。
 ///
 /// 规则必须和后端 asr::join_segments 一致 —— 实时出字是逐句追加的，

@@ -714,6 +714,36 @@ check('Error 对象细节写入日志', await page.evaluate(() =>
 ))
 await page.evaluate(() => { window.__mockStatusError = null })
 
+// ── 切语言不覆盖用户编辑（连续两次切换）────────────────────
+// 结果区里放一段带缺口占位符的文本：切语言时占位符要跟着变，
+// 用户手改的正文一个字符都不能动 —— 而且连续切两次也不能被原文盖回去。
+await page.evaluate(async () => {
+  const { showTranscript } = await import('./result.js')
+  showTranscript(
+    { text: '原始文本 [[gap:3]]', segments: [], durationSeconds: 2, elapsedMs: 100, language: 'zh' },
+    { record: false },
+  )
+})
+await page.waitForTimeout(150)
+check('缺口占位符初始为中文', (await page.locator('#text').inputValue()).includes('（约 3 秒未识别）'))
+
+// 用户手改正文，占位符留着不动。
+await page.locator('#text').fill('用户手改的内容 （约 3 秒未识别）')
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.waitForTimeout(150)
+await page.locator('#locale-select .select-button').click()
+await page.locator('.select-popup .select-item', { hasText: 'English' }).first().click()
+await page.waitForTimeout(250)
+check('切英文占位符跟着变', (await page.locator('#text').inputValue()).includes('(3s not recognised)'))
+check('切英文不覆盖用户编辑', (await page.locator('#text').inputValue()).includes('用户手改的内容'))
+
+// 再切一次中文：第二次切换也不能覆盖编辑。
+await page.locator('#locale-select .select-button').click()
+await page.locator('.select-popup .select-item', { hasText: '简体中文' }).first().click()
+await page.waitForTimeout(250)
+check('连续切两次语言不覆盖用户编辑', (await page.locator('#text').inputValue()).includes('用户手改的内容'))
+check('连续切两次占位符回到中文', (await page.locator('#text').inputValue()).includes('（约 3 秒未识别）'))
+
 // ── 结果 ────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.extra ? ' — ' + r.extra : ''}`)
