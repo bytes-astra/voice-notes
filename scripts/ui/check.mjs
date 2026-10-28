@@ -119,7 +119,8 @@ await context.addInitScript(() => {
             // 挂起：模拟「正在下载」，这样界面上的 busy 状态能保持住
             return new Promise(() => {})
           case 'list_input_devices':
-            return [{ name: 'Mock Mic', isDefault: true }]
+            // 第二个设备名字是空的：宿主偶尔会返回无名设备，界面要有回退标签。
+            return [{ name: 'Mock Mic', isDefault: true }, { name: '', isDefault: false }]
           case 'stop_recording':
             if (window.__mockStopGate) await window.__mockStopGate
             if (window.__mockStopError) throw window.__mockStopError
@@ -229,6 +230,7 @@ check('设备下拉打开', (await page.locator('.select-popup').count()) === 1)
 // 断言设备项本身带后缀：下拉首项本来就叫「系统默认」，
 // 断言整段文本里有没有「系统默认」是恒真的，等于没测。
 check('默认设备标记使用真实后端字段', (await page.locator('.select-popup').innerText()).includes('Mock Mic · 系统默认'))
+check('空设备名有回退标签', (await page.locator('.select-popup').innerText()).includes('未命名设备'))
 await page.evaluate(async () => {
   const { toast } = await import('./core.js')
   let now = 0

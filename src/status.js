@@ -173,9 +173,12 @@ let deviceCache = []
 export function deviceItems() {
   const items = [{ value: '', label: t('record.deviceDefault') }]
   for (const device of deviceCache) {
+    // 宿主偶尔会返回没有名字的设备：给个回退标签，
+    // 否则下拉里是一条空白项，用户不知道那是台设备。
+    const name = device.name || t('record.deviceUnnamed')
     items.push({
       value: device.name,
-      label: device.isDefault ? `${device.name} · ${t('record.deviceSystemDefault')}` : device.name,
+      label: device.isDefault ? `${name} · ${t('record.deviceSystemDefault')}` : name,
     })
   }
   return items

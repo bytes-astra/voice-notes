@@ -61,6 +61,7 @@ window.I18N_LOCALES['en'] = {
   'record.micDenied': 'No microphone permission',
   'record.deviceDefault': 'System default',
   'record.deviceSystemDefault': 'system default',
+  'record.deviceUnnamed': 'Unnamed device',
   'record.deviceChanged': 'Input device: {name}',
   'record.deviceChangedDefault': 'Using the system default input device',
   // Backend error codes: the backend returns the key, the frontend renders it
