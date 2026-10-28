@@ -60,12 +60,30 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 识别是同步阻塞在消费线程里的（`record.rs` 的 `run_offline` → `asr.rs` 的 `drain()`），但 RTF 只有 0.01，
 实际落后不到 1 秒，**离 60 秒上限差得很远** —— 所以「加 buffer」不是解法。
 
+## 🧷 单元测试
+
+```bash
+npm run check     # 门禁：i18n → 前端依赖图 → clippy(-D warnings) → cargo test --lib
+```
+
+- **门禁跑绿 ≠ 流式时间轴验证过**：`src-tauri/src/record/tests.rs` 里几个用例要真模型
+  （`VOICE_NOTES_MODEL_DIR` / `VOICE_NOTES_STREAMING_MODEL_DIR`）。没设这两个环境变量时，
+  它们**静默跳过**（打印一行「跳过：未设置…」），退出码仍是 0 —— CI 上就是这么跑的。
+  本机验证要设上，并且带 `--nocapture` 才看得到跳过了哪几条：
+
+  ```bash
+  VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
+    cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
+  ```
+
+- `npm run check:deps` 查前端 import 图：单向依赖不能反、也不能成环（链见 AGENTS.md）。
+
 ## 🖥️ 界面检查
 
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 78 项检查
+npm run check:ui     # 103 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 
@@ -77,6 +95,7 @@ npm run shots        # 重出 README 9 张截图
 - **截图 harness 要给 macOS 侧栏垫一层不透明底**（`shots.mjs` 的 `SIDEBAR_MATERIAL_FALLBACK`）：真机上侧栏透明、透出原生材质（NSVisualEffectView），浏览器里没有那一层材质 —— 透明侧栏会直接露出白色画布，深色主题下就成了「白侧栏 + 深色主区」，品牌字都看不见。去掉这行，深色截图立刻坏回去。
 - **截图 harness 的 mock status 要跟真实值对得上**：设置页会直接把模型目录、保存目录打在屏幕上。bundle id 是 `com.github.bytes-astra.voicenotes`，默认输出目录是 ASCII 的 `~/Documents/VoiceNotes`。
 - **mock 的 `reserve_session` 必须返回会话 ID，`stream:segment` / `stream:partial` 事件必须带同一个 `sessionId`**：前端只认当前会话（`events.js` 里比对 `state.recordingSessionId`），缺了就当成旧会话丢掉 —— 表现是流式截图的结果区一片空白。
+- **mock 的字段名要跟后端序列化后的一致**：后端 `InputDevice` 带 `#[serde(rename_all = "camelCase")]`，载荷是 `isDefault` 不是 `is_default`。写错了设备「· 系统默认」标记就不显示 —— 而且断言还可能因为下拉首项本来就叫「系统默认」而**恒真**，等于没测。断言要盯设备项本身（`Mock Mic · 系统默认`），别盯整段文本里有没有「系统默认」。
 
 ## 📚 相关文档
 
