@@ -4,6 +4,27 @@ use super::*;
 use crate::models;
 use std::path::PathBuf;
 
+/// 太短的转写要报出秒数 —— 界面显示「至少说 0.2 秒」，
+/// 不是把字典里的 {seconds} 占位符原样甩出去。
+#[test]
+fn too_short_transcript_reports_seconds() {
+    let err = ensure_transcript_usable("你好", 0.1).unwrap_err();
+    assert_eq!(err, "record.tooShort:0.2");
+}
+
+/// 文本为空（只有空白）也算没有内容。
+#[test]
+fn empty_transcript_is_rejected() {
+    let err = ensure_transcript_usable("   ", 3.0).unwrap_err();
+    assert_eq!(err, "record.empty");
+}
+
+/// 时长够、文本非空就放行。
+#[test]
+fn usable_transcript_passes() {
+    assert!(ensure_transcript_usable("你好", 3.0).is_ok());
+}
+
 /// 测试用的整段引擎 + VAD 配置（没有模型就跳过）。
 fn offline_engine() -> Option<(Arc<Engine>, sherpa_onnx::VadModelConfig)> {
     let dir = std::env::var("VOICE_NOTES_MODEL_DIR")

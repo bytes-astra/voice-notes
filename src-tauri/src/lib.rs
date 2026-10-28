@@ -31,7 +31,10 @@ use log::on_off;
 #[cfg(target_os = "macos")]
 use menu::install_menu;
 use output::{sanitize_name, write_text_file, Saved};
-use record::{finish_recording, log_transcript, run_offline, run_streaming_core, RecordingRun, STOP_FAILED};
+use record::{
+    ensure_transcript_usable, finish_recording, log_transcript, run_offline, run_streaming_core,
+    FinishedRecording, RecordingRun, STOP_FAILED,
+};
 
 /// 错误码：后端只返回字典 key（前端 i18n 翻译），不返回展示文案。
 ///
@@ -718,12 +721,10 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
         })
         .await
         .map_err(|e| code_detail(STOP_FAILED, e))??;
-        if finished.transcript.duration_seconds < 0.2 {
-            return Err(code("record.tooShort"));
-        }
-        if finished.transcript.text.trim().is_empty() {
-            return Err(code("record.empty"));
-        }
+        ensure_transcript_usable(
+            &finished.transcript.text,
+            finished.transcript.duration_seconds,
+        )?;
         let mut transcript = finished.transcript;
         if finished.capture_error.is_some() {
             transcript.warning = Some(code("record.micError"));
@@ -741,7 +742,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     let Some(offline) = offline else {
         return Err(code("record.threadExited"));
     };
-    let finished = tauri::async_runtime::spawn_blocking(move || {
+    let finished = tauri::async_runtime::spawn_blocking(move || -> Result<FinishedRecording, String> {
         let finished = finish_recording(recorder, offline, 30).map_err(|error| {
             if error == STOP_FAILED {
                 code("record.offlineTimeout")
@@ -749,12 +750,10 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
                 error
             }
         })?;
-        if finished.transcript.duration_seconds < 0.2 {
-            return Err(code_detail("record.tooShort", "0.2"));
-        }
-        if finished.transcript.text.trim().is_empty() {
-            return Err(code("record.empty"));
-        }
+        ensure_transcript_usable(
+            &finished.transcript.text,
+            finished.transcript.duration_seconds,
+        )?;
         Ok(finished)
     })
     .await

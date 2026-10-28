@@ -36,6 +36,23 @@ pub struct FinishedRecording {
 /// 停止时等待识别线程收尾失败：调用方据此换成对应模式的超时文案。
 pub const STOP_FAILED: &str = "record.stopFailed";
 
+/// 界面能接受的最低音频时长（秒）。
+pub const MIN_TRANSCRIPT_SECONDS: f32 = 0.2;
+
+/// 这段转写能不能交给界面：太短或空文本都返回字典错误码。
+///
+/// 流式和整段走同一套判定 —— 两条路径的文案必须一致，
+/// 否则一边显示「至少说 0.2 秒」、另一边显示「至少说 {seconds} 秒」。
+pub fn ensure_transcript_usable(text: &str, duration_seconds: f32) -> Result<(), String> {
+    if duration_seconds < MIN_TRANSCRIPT_SECONDS {
+        return Err(crate::code_detail("record.tooShort", MIN_TRANSCRIPT_SECONDS));
+    }
+    if text.trim().is_empty() {
+        return Err(crate::code("record.empty"));
+    }
+    Ok(())
+}
+
 /// 等识别线程交回结果：超时或通道关闭都算失败，不返回半截结果。
 fn wait_transcript(
     rx: &Receiver<Transcript>,
