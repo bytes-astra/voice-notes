@@ -28,8 +28,9 @@
 
 2. 门禁与检查（逐条说明）：
 
-   - `npm run check`：门禁 —— i18n → clippy（`-D warnings`）→ `cargo test --lib`。
+   - `npm run check`：门禁 —— i18n → 前端依赖图 → clippy（`-D warnings`）→ `cargo test --lib`。
    - `npm run check:i18n`：各语言 key 对齐 + HTML/JS 引用的 key 存在（改文案后必跑）。
+   - `npm run check:deps`：前端 import 图 —— 单向依赖不能反、也不能成环（改前端依赖后必跑）。
    - `npm run check:ui`：界面检查（真实 WebKit + 假 `__TAURI__`），前端改动后跑。
    - `npm run shots`：重出 README 截图，改了界面后跑。
 
