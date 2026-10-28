@@ -181,16 +181,7 @@ fn ensure_config_unlocked(recording: bool) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod command_tests {
-    #[test]
-    fn recognition_config_is_locked_while_recording() {
-        assert!(super::ensure_config_unlocked(false).is_ok());
-        assert_eq!(
-            super::ensure_config_unlocked(true),
-            Err("record.configLocked".into())
-        );
-    }
-}
+mod command_tests;
 
 #[tauri::command]
 fn reserve_session(state: State<AppState>) -> u64 {
