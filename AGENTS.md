@@ -173,7 +173,7 @@
 - **停止录音时 `Recorder::stop()` 只关流、不取采样**（`audio.rs` 的 `stop`；收尾取样在 `record.rs`）：句尾最后一段要留给识别线程收尾时 `take_new()`。主线程先取走会切掉最后一个字（离线/流式都中招）。
 - **麦克风权限在界面渲染完之后申请**：macOS 是第一次碰输入设备才弹权限框，而「列出输入设备」就会触发。流程：启动 → 界面画完（约 0.9 s）→ `list_input_devices` → 弹框（这一步同时把设备列表填好）。
 - **启动时不列设备**：弹框会打断用户，实测弹框期间窗口是空白的。点麦克风时仍先 `warm_up_mic` 探权限，用户拒绝过要能给出明确报错。
-- **输入设备可选**：`list_input_devices` 列出 cpal 输入设备（默认设备带标记），`set_input_device` 存 settings（None = 系统默认），`audio::start` 按名字挑，挑不到退回默认。下拉框每次展开重新列一次（`select.js` 的 `onBeforeOpen`），中途插拔也能看到。
+- **输入设备可选**：`list_input_devices` 列出 cpal 输入设备（默认设备带标记），`set_input_device` 存 settings（None = 系统默认），`audio::start` 按名字挑，挑不到退回默认。下拉框每次展开重新列一次（`select.js` 的 `onBeforeOpen`），中途插拔也能看到。**没有名字的设备直接不列**（`audio::device_entry`）：按名字挑不中它，列出来只会让界面出现一条选不中的项 —— 设备名是身份，不能拿展示文案（本地化回退标签）当身份传给后端。
 - 录音**没有时长上限**。
 
 ### 模型与下载

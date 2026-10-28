@@ -336,6 +336,12 @@ git commit -m "fix(ui): 切语言按占位符替换，不再覆盖用户编辑"
 
 ### Task 5: 设备标签空时有回退
 
+> **已撤销（2026-10-29）**：原方案用本地化回退标签「未命名设备」当设备身份，
+> 但设备名就是后端的身份（`audio::pick_device_name` 只做精确匹配）——
+> 把展示文案当身份传过去，用户选了设备却静默录到系统默认麦，且标签随界面语言变。
+> 现行做法：无名设备**根本不列**（`audio::device_entry`），界面上不出现选不中的项。
+> 本节保留原计划记录。
+
 **Files:**
 - Modify: `src/locales/zh-CN.js`、`src/locales/en.js`（新 key）
 - Modify: `src/status.js:178`（标签回退）
