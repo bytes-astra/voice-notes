@@ -64,7 +64,6 @@ export function clearResult(label = 'result.waiting') {
 
 /// 渲染一次转写结果。`record: false` 只重绘、不写历史。
 export function showTranscript(transcript, { record = true } = {}) {
-  state.lastTranscript = transcript
   const raw = (transcript.text || '').trim()
   if (!raw) {
     setResultView('', { kind: 'label', key: 'record.empty' })

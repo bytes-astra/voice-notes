@@ -122,7 +122,6 @@ export function bindUI() {
   els.copyBtn.addEventListener('click', () => copyText(els.text.value))
   els.saveBtn.addEventListener('click', () => saveText(els.text.value))
   els.clearBtn.addEventListener('click', () => {
-    state.lastTranscript = null
     clearResult()
     els.text.focus()
   })
@@ -157,7 +156,6 @@ export function bindUI() {
       return
     }
     switchView('transcribe')
-    state.lastTranscript = null
     clearResult()
     els.timer.textContent = '00:00'
     els.text.focus()

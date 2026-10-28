@@ -55,7 +55,6 @@ export function renderHistory() {
     main.append(text, sub)
     main.addEventListener('click', () => {
       // 载入的是一条历史，不是「上次转写」：切语言时不能再把它重绘回去。
-      state.lastTranscript = null
       els.text.value = item.text
       state.resultView = { rawText: item.text, rendered: item.text, meta: { kind: 'label', key: 'history.from', at: item.at } }
       renderResultMeta()

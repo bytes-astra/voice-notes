@@ -33,7 +33,6 @@ export async function transcribeFilePath(path) {
   setPhase('transcribing')
   const name = fileName(path)
   // 新的一次转写：先清掉上一次的结果，否则分句会追加在旧文本后面。
-  state.lastTranscript = null
   clearResult()
   els.hint.textContent = t('result.fileDecoding', { name })
   state.fileSegments = 0

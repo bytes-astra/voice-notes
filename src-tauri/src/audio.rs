@@ -134,9 +134,9 @@ impl LevelRing {
 /// 占位符前后拼句不加空格（后端 `asr::join_segments` 与前端 `joinText()` 一致）。
 pub const GAP_MARKER_PREFIX: &str = "[[gap:";
 
-/// 丢掉音频折算成多少秒（向上取整，至少 1 秒）。
+/// 重采样到识别用的采样率（16 kHz）之后有多少采样。
 pub fn resampled_len(samples: u32, sample_rate: u32) -> usize {
-    (samples as u64 * 16_000).div_ceil(sample_rate as u64) as usize
+    (samples as u64 * crate::asr::SAMPLE_RATE as u64).div_ceil(sample_rate as u64) as usize
 }
 
 pub fn gap_seconds(dropped_samples: u32, sample_rate: u32) -> u32 {

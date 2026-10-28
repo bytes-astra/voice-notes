@@ -48,7 +48,6 @@ export const state = {
   downloading: false,
   downloadingStreaming: false,
   view: 'transcribe',
-  lastTranscript: null,
   recordingSessionId: 0,
   fileSessionId: 0,
   fileAttemptId: 0,

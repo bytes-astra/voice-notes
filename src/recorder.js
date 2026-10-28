@@ -144,7 +144,6 @@ async function runStart(requestId, streaming) {
     state.startedAt = performance.now()
     els.timer.textContent = '00:00'
     // 两种模式都是边录边出字：先把结果区清空
-    state.lastTranscript = null
     clearResult('record.live')
     startTimer()
     setPhase('recording')
