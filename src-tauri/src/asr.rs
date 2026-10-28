@@ -14,6 +14,7 @@ use sherpa_onnx::{VadModelConfig, VoiceActivityDetector};
 
 use crate::audio::{ends_with_gap_marker, is_gap_marker};
 use crate::engine::{Engine, PunctuationEngine, StreamingEngine};
+use crate::log;
 
 pub const SAMPLE_RATE: i32 = 16_000;
 
@@ -89,6 +90,40 @@ pub struct Segment {
 /// 但输入越长，编码器的注意力越吃显存（帧数平方级），所以留一个上限：
 /// 超过 90 秒就切成 30 秒窗口 + 2 秒重叠，避免极端情况下把内存吃光。
 const MAX_SINGLE_SHOT_SECONDS: usize = 90;
+
+/// 连续多久没切出句子就要报一次（秒）。
+///
+/// sherpa 的 VAD 把判为非语音的音频直接丢掉，没有日志、没有缺口标记 —— 这段
+/// 音频会凭空消失。这个阈值是「多久算异常」的门槛：正常说话停顿几秒是常事，
+/// 超过 10 秒还没有一句，且这段时间音频有能量，就值得报。
+const NO_SEGMENT_WARN_SECONDS: f32 = 10.0;
+
+/// 判定「这段时间有声音」的峰值下限（0..1）。低于它就是静音，不报。
+const NO_SEGMENT_PEAK_FLOOR: f32 = 0.01;
+
+/// 「长时间没切出句子」的告警文案。返回 `None` = 不用报。
+///
+/// 拆成自由函数是为了能单测：会话要真模型才跑得起来，单测里没有。
+///
+/// `vad_holding_speech` = VAD 此刻正在攒一句话（`detector.detected()`）。
+/// **这时的「没有句子」是正常的** —— 连续说话时 VAD 要等到句尾才切段，
+/// 音频没丢，只是还在攒。真正要报的是「有能量、VAD 却没在攒」：那种情况下
+/// 音频被判成非语音，被 sherpa 直接丢掉了。
+fn no_segment_warning(
+    silence_seconds: f32,
+    peak: f32,
+    vad_holding_speech: bool,
+) -> Option<String> {
+    if vad_holding_speech {
+        return None;
+    }
+    if silence_seconds < NO_SEGMENT_WARN_SECONDS || peak < NO_SEGMENT_PEAK_FLOOR {
+        return None;
+    }
+    Some(format!(
+        "连续 {silence_seconds:.1}s 没切出句子（期间音频峰值 {peak:.4}）——这段音频可能已被 VAD 判为非语音丢弃"
+    ))
+}
 
 /// 超长句的窗口参数：30 秒窗口 + 2 秒重叠 + 28 秒步进。
 ///
@@ -422,6 +457,23 @@ mod tests {
         assert_eq!(clean("  <|en|>hello   there "), "hello there");
     }
 
+    /// 「有声音却长时间没切出句子」要告警；停顿几秒、纯静音、以及「VAD 正在攒
+    /// 这一句」都不该报。
+    ///
+    /// 这是给 sherpa 那个「非语音直接丢弃」的漏洞兜底：没有它，这段音频
+    /// 在日志、转写、界面上都是零痕迹。
+    #[test]
+    fn warns_only_when_speech_went_missing() {
+        // 有能量、VAD 也没在攒 → 音频被当非语音丢了，要报
+        assert!(no_segment_warning(30.0, 0.3, false).is_some());
+        // 停顿几秒是正常说话节奏
+        assert!(no_segment_warning(3.0, 0.3, false).is_none());
+        // 纯静音：不是丢样本，是本来就没声音
+        assert!(no_segment_warning(30.0, 0.001, false).is_none());
+        // VAD 正在攒这一句：音频没丢，只是还没到句尾
+        assert!(no_segment_warning(30.0, 0.3, true).is_none());
+    }
+
     /// 前端读 transcript.durationSeconds / elapsedMs：序列化必须是 camelCase，
     /// 否则结果区的时长/耗时/RTF 和历史记录里的时长全是 0。
     #[test]
@@ -476,6 +528,12 @@ pub struct OfflineSession {
     merger: SegmentMerger,
     /// 纯推理耗时累计（毫秒）
     elapsed_ms: u64,
+    /// 上一句的时间（会话时间轴，秒）
+    last_segment_at: f32,
+    /// 上次做「长时间没切出句子」检查的时间（秒）
+    last_check_at: f32,
+    /// 自上次检查以来收到的音频峰值
+    window_peak: f32,
 }
 
 /// 整段会话产出的事件。
@@ -502,12 +560,16 @@ impl OfflineSession {
             drained_first: false,
             merger: SegmentMerger::new(),
             elapsed_ms: 0,
+            last_segment_at: 0.0,
+            last_check_at: 0.0,
+            window_peak: 0.0,
         }
     }
 
     /// 喂入 16 kHz 单声道采样，返回这一轮识别出来的句子。
     pub fn push(&mut self, samples: &[f32]) -> Vec<OfflineEvent> {
         let mut events = Vec::new();
+        self.note_audio_energy(samples);
         if !self.drained_first && self.head.len() < PRE_ROLL_MAX_START {
             let take = (PRE_ROLL_MAX_START - self.head.len()).min(samples.len());
             self.head.extend_from_slice(&samples[..take]);
@@ -522,6 +584,33 @@ impl OfflineSession {
         // 短句等太久（后面一直是静音）→ 别让用户干等，先定稿
         self.flush_stale_pending(&mut events);
         events
+    }
+
+    /// 记下收到的音频能量，并检查「有声音却长时间切不出句子」。
+    ///
+    /// sherpa 的 VAD 对判为非语音的音频是**直接丢弃**的
+    /// （`voice-activity-detector.cc` 的 else 分支只 `buffer_.Pop`，不产生
+    /// segment、不报错）。所以「这段话被整段吞掉」在日志、转写、界面上都是
+    /// 零痕迹 —— 只有在这里补一条告警才看得见。
+    ///
+    /// 峰值低于 `NO_SEGMENT_PEAK_FLOOR` 的就是静音，不值得报（否则纯静音的
+    /// 录音会刷屏）。
+    fn note_audio_energy(&mut self, samples: &[f32]) {
+        let peak = samples.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        self.window_peak = self.window_peak.max(peak);
+        let now = self.fed_samples as f32 / SAMPLE_RATE as f32;
+        if now - self.last_check_at < NO_SEGMENT_WARN_SECONDS {
+            return;
+        }
+        if let Some(message) = no_segment_warning(
+            now - self.last_segment_at,
+            self.window_peak,
+            self.detector.detected(),
+        ) {
+            log::warn(message);
+        }
+        self.window_peak = 0.0;
+        self.last_check_at = now;
     }
 
     /// 短句已经等够了（后面一直没人说话）→ 定稿。
@@ -597,6 +686,12 @@ impl OfflineSession {
         let text = self.recognize_segment(&merged.samples);
         self.elapsed_ms += started.elapsed().as_millis() as u64;
         if text.trim().is_empty() {
+            // 识别不出东西的音频段直接丢掉 —— 但不能悄无声息：记一条，
+            // 否则这段音频在日志里也是零痕迹。
+            log::warn(format!(
+                "识别结果为空，{:.1}s 的音频被丢掉",
+                merged.end - merged.start
+            ));
             return;
         }
         let segment = Segment {
@@ -604,6 +699,7 @@ impl OfflineSession {
             start: merged.start,
             end: merged.end,
         };
+        self.last_segment_at = merged.end;
         events.push(OfflineEvent::Segment(segment.clone()));
         self.segments.push(segment);
     }

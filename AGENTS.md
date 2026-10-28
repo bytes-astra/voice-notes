@@ -240,11 +240,33 @@ ad-hoc 签名的 designated requirement **就是代码签名哈希本身**（`co
 
 `signingIdentity` 留空时，打包版不会弹标准授权框，麦克风权限可能要在系统设置里手动勾选；带上 `audio-input` entitlement 的包才会弹。
 
+### 静默丢音频
+
+**症状**：整段模式录了十几分钟，日志里只有零星几句；中间某几分钟**一句都没有**，也没有任何告警 —— 转写结果里那段时间是空白，用户以为是自己没说话。
+
+**机制**：sherpa 的 VAD 把**判为非语音的音频直接丢掉**（`sherpa-onnx/csrc/voice-activity-detector.cc` 的 `AcceptWaveform`：非语音且没有在进行的句子时，只 `buffer_.Pop(...)`，不产生 segment、不报错）。所以这类音频在日志、转写、界面上**零痕迹** —— 它不是「采集缓冲溢出」（那种会有 `[[gap:N]]` 标记和「识别跟不上」的 WARN）。
+
+**两条防线**（`src-tauri/src/asr.rs`）：
+
+- `no_segment_warning()`：**有能量、VAD 也没在攒这一句**、且超过 10 秒没切出句子 → 记一条 WARN。判别条件里的「VAD 正在攒」（`detector.detected()`）是关键 —— 连续说话时 VAD 要等到句尾才切段，那段时间没有句子是正常的，别误报。
+- `recognize_and_emit()`：识别结果为空时记一条 WARN（原来直接 `return`，音频白丢）。
+
+**排查手法**（别凭感觉，先跑探针）：
+
+```bash
+VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test vad_long_probe -- --nocapture   # VAD 吞了多少
+VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test gain_probe   -- --nocapture   # 电平多低还认得出
+VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test noise_probe  -- --nocapture   # 噪声/背景人声
+```
+
+已实测：VAD 不吞长连续语音（140 秒只吞 0.4 秒）、-56.5 dBFS 仍认出 99.2% 的语音、背景人声 -10 dB 下 264 秒的长句也照样出字（走「切 30 秒窗 + 2 秒重叠」路径）。**这三样都不是根因** —— 真要定位只能靠用户自己的音频（波形平 = 麦克风侧；波形起伏但没字 = VAD 侧）。
+
 ### 症状索引
 
 | 现象 | 去哪 |
 | --- | --- |
 | 打包版能录没字 / 没有授权弹窗 / 录音被判空 | [麦克风权限排查](#麦克风权限排查) |
+| 整段模式某段录音整段没转写、日志里一句都没有 | [静默丢音频](#静默丢音频) |
 | 切主题后材质不变 / 重绘闪白 / 窗口拖不动 / 进全屏跳动 | [macOS 原生层](#macos-原生层) |
 | 切语言后部分文案不更新 | [i18n 与文案](#i18n-与文案) |
 | 界面提示直接露出后端细节 | [文本分层](#文本分层) |
