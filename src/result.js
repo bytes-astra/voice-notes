@@ -1,6 +1,6 @@
 /* 结果区：转写结果 + 实时中间结果 */
 
-import { els, fmtDuration, I18N, joinText, localizeText, state, t } from './core.js'
+import { els, joinText, localizeText, renderResultMeta, state } from './core.js'
 import { addHistory } from './history.js'
 import { clearIcon, copyIcon, saveIcon } from './icons.js'
 
@@ -17,32 +17,6 @@ function setResultView(rawText, meta) {
   state.resultView = { rawText, rendered, meta }
   els.text.value = rendered
   renderResultMeta()
-}
-
-/// 动态内容也要保存字典 key 和参数：I18N.apply 只处理静态 HTML。
-export function renderResultMeta() {
-  const view = state.resultView
-  els.meta.innerHTML = ''
-  if (!view) return
-  const parts = view.meta.kind === 'transcript'
-    ? [
-        t('result.audio', { duration: fmtDuration(view.meta.audio) }),
-        t('result.elapsed', { duration: fmtDuration(view.meta.elapsed) }),
-        t('result.rtf', { rtf: view.meta.rtf }),
-        t('result.chars', { count: [...els.text.value].length }),
-      ]
-    : [t(view.meta.key, {
-        ...view.meta.vars,
-        ...(view.meta.at ? { when: new Date(view.meta.at).toLocaleString(I18N.locale, {
-          month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
-        }) } : {}),
-      })]
-  for (const part of parts) {
-    if (!part) continue
-    const span = document.createElement('span')
-    span.textContent = part
-    els.meta.appendChild(span)
-  }
 }
 
 /// 切语言只重画缺口占位符和元信息，不覆盖用户其他编辑。

@@ -213,6 +213,37 @@ export function fmtDuration(seconds) {
   return t('duration.minutes', { minutes: m, seconds: s })
 }
 
+/// 结果卡片下方的动态元信息（时长 / 耗时 / RTF / 字数）。
+///
+/// 放在 core 是因为 history.js 也要重画它 —— 它俩都在 result.js 之下，
+/// 让 result.js 提供就会形成 history ↔ result 的环。
+///
+/// 动态内容也要保存字典 key 和参数：I18N.apply 只处理静态 HTML。
+export function renderResultMeta() {
+  const view = state.resultView
+  els.meta.innerHTML = ''
+  if (!view) return
+  const parts = view.meta.kind === 'transcript'
+    ? [
+        t('result.audio', { duration: fmtDuration(view.meta.audio) }),
+        t('result.elapsed', { duration: fmtDuration(view.meta.elapsed) }),
+        t('result.rtf', { rtf: view.meta.rtf }),
+        t('result.chars', { count: [...els.text.value].length }),
+      ]
+    : [t(view.meta.key, {
+        ...view.meta.vars,
+        ...(view.meta.at ? { when: new Date(view.meta.at).toLocaleString(I18N.locale, {
+          month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+        }) } : {}),
+      })]
+  for (const part of parts) {
+    if (!part) continue
+    const span = document.createElement('span')
+    span.textContent = part
+    els.meta.appendChild(span)
+  }
+}
+
 export function toast(message, type = 'info') {
   clearTimeout(state.toastTimer)
   clearTimeout(state.toastHideTimer)

@@ -1,7 +1,6 @@
 /* 历史记录：本地存储 + 列表渲染 */
 
-import { I18N, els, fmtDuration, historyStorageSet, state, t } from './core.js'
-import { renderResultMeta } from './result.js'
+import { I18N, els, fmtDuration, historyStorageSet, renderResultMeta, state, t } from './core.js'
 import { copyText, saveText } from './export.js'
 import { copyIcon, saveIcon, trashIcon } from './icons.js'
 
