@@ -3,6 +3,7 @@
 use super::*;
 use crate::models;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// 太短的转写要报出秒数 —— 界面显示「至少说 0.2 秒」，
 /// 不是把字典里的 {seconds} 占位符原样甩出去。
@@ -52,24 +53,6 @@ fn offline_engine() -> Option<(Arc<Engine>, sherpa_onnx::VadModelConfig)> {
     let engine = Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
     let vad = engine.vad_config().expect("VAD 配置");
     Some((engine, vad))
-}
-
-fn streaming_engine() -> Option<Arc<StreamingEngine>> {
-    let dir = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
-        .ok()
-        .map(PathBuf::from)?;
-    let paths = models::StreamingPaths {
-        dir: dir.display().to_string(),
-        encoder: dir.join("encoder.int8.onnx").display().to_string(),
-        decoder: dir.join("decoder.onnx").display().to_string(),
-        joiner: dir.join("joiner.int8.onnx").display().to_string(),
-        tokens: dir.join("tokens.txt").display().to_string(),
-        vad: [dir.join("silero_vad.onnx")]
-            .into_iter()
-            .find(|path| path.is_file())
-            .map(|path| path.display().to_string()),
-    };
-    Some(Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型")))
 }
 
 /// 测试用的 VAD（只要 VAD 模型，不用整段识别模型）。
@@ -132,7 +115,7 @@ fn vad_queue_is_cleared_after_each_check() {
 
 #[test]
 fn streaming_duration_includes_leading_silence() {
-    let Some(engine) = streaming_engine() else {
+    let Some(engine) = crate::engine::streaming_engine_for_test() else {
         eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
         return;
     };
@@ -164,7 +147,7 @@ fn streaming_duration_includes_leading_silence() {
 
 #[test]
 fn streaming_duration_includes_audio_arriving_after_stop() {
-    let Some(engine) = streaming_engine() else {
+    let Some(engine) = crate::engine::streaming_engine_for_test() else {
         eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
         return;
     };
@@ -184,7 +167,7 @@ fn streaming_duration_includes_audio_arriving_after_stop() {
 
 #[test]
 fn streaming_dropped_audio_advances_recording_clock() {
-    let Some(engine) = streaming_engine() else {
+    let Some(engine) = crate::engine::streaming_engine_for_test() else {
         eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
         return;
     };
@@ -204,25 +187,10 @@ fn streaming_dropped_audio_advances_recording_clock() {
 
 #[test]
 fn streams_from_buffer_with_resampling() {
-    let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
-        .ok()
-        .map(PathBuf::from)
-    else {
+    let Some(engine) = crate::engine::streaming_engine_for_test() else {
         eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
         return;
     };
-    let paths = models::StreamingPaths {
-        dir: dir.display().to_string(),
-        encoder: dir.join("encoder.int8.onnx").display().to_string(),
-        decoder: dir.join("decoder.onnx").display().to_string(),
-        joiner: dir.join("joiner.int8.onnx").display().to_string(),
-        tokens: dir.join("tokens.txt").display().to_string(),
-        vad: [dir.join("silero_vad.onnx")]
-            .into_iter()
-            .find(|path| path.is_file())
-            .map(|path| path.display().to_string()),
-    };
-    let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
     let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
 
     // 模拟 48 kHz 设备：每个 16 kHz 样本重复三次。
@@ -268,25 +236,10 @@ fn streams_from_buffer_with_resampling() {
 /// 回归测试：之前流式路径完全忽略了 `dropped`，音频被静默丢弃。
 #[test]
 fn streaming_gap_marker_reaches_transcript() {
-    let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
-        .ok()
-        .map(PathBuf::from)
-    else {
+    let Some(engine) = crate::engine::streaming_engine_for_test() else {
         eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
         return;
     };
-    let paths = models::StreamingPaths {
-        dir: dir.display().to_string(),
-        encoder: dir.join("encoder.int8.onnx").display().to_string(),
-        decoder: dir.join("decoder.onnx").display().to_string(),
-        joiner: dir.join("joiner.int8.onnx").display().to_string(),
-        tokens: dir.join("tokens.txt").display().to_string(),
-        vad: [dir.join("silero_vad.onnx")]
-            .into_iter()
-            .find(|path| path.is_file())
-            .map(|path| path.display().to_string()),
-    };
-    let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
     let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
     let mut upsampled = Vec::with_capacity(wave.samples().len() * 3);
     for sample in wave.samples() {

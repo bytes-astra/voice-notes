@@ -50,6 +50,7 @@ fn streams_chinese_fixture() {
 
     // 100ms 一片，模拟 16 kHz 实时输入。
     for chunk in samples.chunks(1_600) {
+        session.advance_samples(chunk.len());
         for event in session.push(chunk) {
             match event {
                 StreamEvent::Partial(text) => {
@@ -99,6 +100,7 @@ fn flushes_trailing_words_on_finish() {
 
         let mut session = StreamingSession::new(engine, None);
         for chunk in wave.samples().chunks(3_200) {
+            session.advance_samples(chunk.len());
             session.push(chunk);
         }
         session.finish();

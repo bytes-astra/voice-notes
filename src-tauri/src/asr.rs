@@ -620,10 +620,7 @@ pub struct StreamingSession {
     partial: String,
     segments: Vec<Segment>,
     pending: Vec<f32>,
-    fed_samples: usize,
-    tail_silence_samples: usize,
     recorded_samples: usize,
-    externally_timed: bool,
     segment_start: usize,
     started: Instant,
 }
@@ -645,25 +642,21 @@ impl StreamingSession {
             partial: String::new(),
             segments: Vec::new(),
             pending: Vec::new(),
-            fed_samples: 0,
-            tail_silence_samples: 0,
             recorded_samples: 0,
-            externally_timed: false,
             segment_start: 0,
             started: Instant::now(),
         }
     }
 
     /// 真实录音时钟：即使音频只用于预录或被 VAD 门控，也占录音时长。
-    /// 每块重采样后的输入只调用一次；缺口和补入的尾部静音不在这里计数。
-    pub fn advance_time(&mut self, samples: &[f32]) {
-        self.advance_samples(samples.len());
-    }
-
-    /// 丢弃的音频也占录音时间；调用方负责换算到 16 kHz。
+    ///
+    /// 时钟只由调用方推进 —— 会话自己不数喂进去的采样：
+    /// 调用方喂进去的可能只是「说话中」的那部分，其余（预录、门控掉的、
+    /// 采集丢掉的）同样占录音时间。
+    ///
+    /// `samples` 是 16 kHz 采样数；调用方负责换算。
     pub fn advance_samples(&mut self, samples: usize) {
         self.recorded_samples += samples;
-        self.externally_timed = true;
     }
 
     /// 当前真实录音时间，供缺口标记和句子使用同一时间轴。
@@ -674,10 +667,6 @@ impl StreamingSession {
     /// 按 200ms 一块送入（与官方示例的 chunk_size=3200 对齐），避免过小分片。
     fn accept(&mut self, chunk: &[f32], events: &mut Vec<StreamEvent>) {
         self.stream.accept_waveform(SAMPLE_RATE, chunk);
-        if !self.externally_timed {
-            self.recorded_samples += chunk.len();
-        }
-        self.fed_samples += chunk.len();
         self.pump(events);
     }
 
@@ -750,17 +739,10 @@ impl StreamingSession {
         }
         // 结尾补一小段静音：解码器需要一点尾部上下文才会吐出最后一个字，
         // 否则句尾会被丢掉（“产品评审会” → “产品评审”）。
+        // 补的静音不算录音时长 —— 时钟只由调用方推进，这里不碰。
         let silence = vec![0.0f32; TAIL_SILENCE_SAMPLES];
         for chunk in silence.chunks(STREAM_CHUNK) {
-            self.tail_silence_samples += chunk.len();
             self.accept(chunk, &mut events);
-        }
-        // 补的静音不算音频时长，但未喂出的真实尾包必须保留。
-        self.fed_samples = self.fed_samples.saturating_sub(TAIL_SILENCE_SAMPLES);
-        if !self.externally_timed {
-            self.recorded_samples = self
-                .recorded_samples
-                .saturating_sub(self.tail_silence_samples);
         }
         self.stream.input_finished();
         self.pump(&mut events);

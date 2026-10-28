@@ -323,7 +323,7 @@ where
         if samples.is_empty() {
             continue;
         }
-        session.advance_time(&samples);
+        session.advance_samples(samples.len());
 
         let Some(detector) = vad.as_ref() else {
             if !discard.load(Ordering::Relaxed) {
@@ -401,8 +401,8 @@ where
         None => chunk,
     };
     if !tail.is_empty() {
-        // 循环退出后才采到的尾包也占真实录音时长；会话内不会再次推进外部时钟。
-        session.advance_time(&tail);
+        // 循环退出后才采到的尾包也占真实录音时长。
+        session.advance_samples(tail.len());
         // 尾部即使仍被门控判为语音，也保持原有识别行为。
         emit(session.push(&tail));
     }

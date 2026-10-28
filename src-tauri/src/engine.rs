@@ -645,6 +645,27 @@ fn decode(recognizer: &OfflineRecognizer, samples: &[f32]) -> String {
         .unwrap_or_default()
 }
 
+/// 测试用的流式引擎：没有 `VOICE_NOTES_STREAMING_MODEL_DIR` 就返回 None，
+/// 调用方自己跳过整条用例。
+#[cfg(test)]
+pub(crate) fn streaming_engine_for_test() -> Option<Arc<StreamingEngine>> {
+    let dir = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
+        .ok()
+        .map(PathBuf::from)?;
+    let paths = crate::models::StreamingPaths {
+        dir: dir.display().to_string(),
+        encoder: dir.join("encoder.int8.onnx").display().to_string(),
+        decoder: dir.join("decoder.onnx").display().to_string(),
+        joiner: dir.join("joiner.int8.onnx").display().to_string(),
+        tokens: dir.join("tokens.txt").display().to_string(),
+        vad: [dir.join("silero_vad.onnx")]
+            .into_iter()
+            .find(|path| path.is_file())
+            .map(|path| path.display().to_string()),
+    };
+    Some(Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型")))
+}
+
 // ──────────────────── 识别规则（pre-roll）────────────────────
 
 #[cfg(test)]
