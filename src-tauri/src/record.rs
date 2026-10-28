@@ -244,6 +244,20 @@ where
     transcript
 }
 
+/// 判一次 VAD 并立刻清空队列。
+///
+/// 这里只拿 VAD 做门控，不消费识别句段 —— 判完必须 clear()，
+/// 否则已切出的音频会一直压在队列里，越攒越多。
+fn vad_is_speech(detector: &sherpa_onnx::VoiceActivityDetector, samples: &[f32]) -> bool {
+    for window in samples.chunks(512) {
+        detector.accept_waveform(window);
+    }
+    let detected = detector.detected();
+    // 取完状态立即释放已切出的音频：门控不需要那些句段。
+    detector.clear();
+    detected
+}
+
 /// 边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
 pub fn run_streaming_core<F>(
     engine: Arc<StreamingEngine>,
@@ -318,12 +332,7 @@ where
             continue;
         };
 
-        for window in samples.chunks(512) {
-            detector.accept_waveform(window);
-        }
-        let detected = detector.detected();
-        // 这里只拿 VAD 做门控，不消费识别句段；取完状态立即释放已切出的音频。
-        detector.clear();
+        let detected = vad_is_speech(detector, &samples);
         if detected {
             last_voice = std::time::Instant::now();
         }

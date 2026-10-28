@@ -72,6 +72,64 @@ fn streaming_engine() -> Option<Arc<StreamingEngine>> {
     Some(Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型")))
 }
 
+/// 测试用的 VAD（只要 VAD 模型，不用整段识别模型）。
+fn vad_detector() -> Option<sherpa_onnx::VoiceActivityDetector> {
+    let dir = std::env::var("VOICE_NOTES_MODEL_DIR")
+        .ok()
+        .map(PathBuf::from)?;
+    let mut candidates = vec![dir.join("silero_vad.onnx")];
+    if let Some(parent) = dir.parent() {
+        candidates.push(parent.join("silero_vad.onnx"));
+    }
+    let vad = candidates.into_iter().find(|path| path.is_file())?;
+    let config = sherpa_onnx::VadModelConfig {
+        silero_vad: sherpa_onnx::SileroVadModelConfig {
+            model: Some(vad.display().to_string()),
+            threshold: 0.5,
+            min_silence_duration: 0.3,
+            min_speech_duration: 0.25,
+            window_size: 512,
+            max_speech_duration: 60.0,
+        },
+        sample_rate: 16_000,
+        num_threads: 1,
+        provider: Some("cpu".into()),
+        debug: false,
+        ..Default::default()
+    };
+    sherpa_onnx::VoiceActivityDetector::create(&config, 60.0)
+}
+
+/// VAD 只用来门控：判完必须清空队列。
+///
+/// 不清的话已切出的音频会一直压在队列里，越攒越多 ——
+/// 而且门控判断的是「当前有没有人说话」，压着旧音频会一直判成说话中。
+#[test]
+fn vad_queue_is_cleared_after_each_check() {
+    let Some(detector) = vad_detector() else {
+        eprintln!("跳过：未设置 VOICE_NOTES_MODEL_DIR 或找不到 VAD 模型");
+        return;
+    };
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    // 整段喂：开头半秒是静音，喂太短 VAD 根本判不出说话。
+    let speech = wave.samples();
+    let silence = vec![0.0f32; 16_000];
+
+    // 先确认这段音频真的会让 VAD 切出一段（不然下面的断言是空的）
+    detector.accept_waveform(speech);
+    detector.accept_waveform(&silence);
+    if detector.is_empty() {
+        eprintln!("跳过：这段音频没让 VAD 切出句子");
+        return;
+    }
+    detector.clear();
+
+    // 走门控的判断路径：判完队列必须是空的
+    vad_is_speech(&detector, speech);
+    vad_is_speech(&detector, &silence);
+    assert!(detector.is_empty(), "VAD 判完必须清空队列");
+}
+
 #[test]
 fn streaming_duration_includes_leading_silence() {
     let Some(engine) = streaming_engine() else {
@@ -449,3 +507,4 @@ fn offline_stop_keeps_the_tail() {
         queue.pending()
     );
 }
+

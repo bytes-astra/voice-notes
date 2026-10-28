@@ -97,6 +97,9 @@ await context.addInitScript(() => {
             if (window.__mockReserveError) throw window.__mockReserveError
             return ++window.__mockSessionId
           case 'transcribe_file':
+            // 挂起 / 失败：用来测「转写进行中」和「过期任务退出」这两条路径
+            if (window.__mockFileGate) await window.__mockFileGate
+            if (window.__mockFileError) throw window.__mockFileError
             return { ...clone(result), text: '文件结果' }
           case 'cancel_recording':
             if (window.__mockCancelGate) await window.__mockCancelGate
@@ -611,14 +614,48 @@ check('整段进度不串到流式面板', !streamText2.includes('model.int8.onn
 // 正常文件转写：后端 ID 用于事件过滤，不能误当本地代号导致卡死。
 await page.evaluate(async () => {
   const { transcribeFilePath } = await import('./files.js')
+  let release
+  window.__mockFileGate = new Promise((resolve) => { release = resolve })
   const task = transcribeFilePath('/tmp/demo.mp3')
   await new Promise((resolve) => setTimeout(resolve, 50))
   window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: '文件句' })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  // 转写还在进行中：进度提示要按当前数据（句数、已用时）重绘
+  window.__fileHint = document.getElementById('hint').textContent
+  release()
   await task
+  window.__mockFileGate = null
 })
 await page.waitForTimeout(200)
+check('文件进度按当前数据重绘', (await page.evaluate(() => window.__fileHint)).includes('已识别 1 句'))
 check('文件转写成功恢复空闲', (await phase()) === 'idle')
 check('文件转写保存结果', (await page.locator('#text').inputValue()) === '文件结果')
+
+// 过期任务退出时也要复位：不能把界面卡在「转写中」。
+await page.evaluate(async () => {
+  const { transcribeFilePath } = await import('./files.js')
+  const { state } = await import('./core.js')
+  let release
+  window.__mockFileGate = new Promise((resolve) => { release = resolve })
+  window.__mockFileError = 'record.stopFailed'
+  const task = transcribeFilePath('/tmp/stale.mp3')
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  state.fileAttemptId += 1 // 这次任务过期了（被后来的任务顶掉）
+  release()
+  await task
+  window.__mockFileGate = null
+  window.__mockFileError = null
+  window.__staleState = {
+    transcribingFile: state.transcribingFile,
+    fileSessionId: state.fileSessionId,
+    phase: state.phase,
+  }
+})
+await page.waitForTimeout(150)
+check('过期文件任务退出仍复位', await page.evaluate(() => {
+  const s = window.__staleState
+  return s.transcribingFile === false && s.fileSessionId === 0 && s.phase === 'idle'
+}))
 
 // 文件会话预留失败也必须复位，不能卡住之后的工作。
 await page.evaluate(async () => {
