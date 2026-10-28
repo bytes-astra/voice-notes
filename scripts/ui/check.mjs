@@ -122,8 +122,7 @@ await context.addInitScript(() => {
             // 挂起：模拟「正在下载」，这样界面上的 busy 状态能保持住
             return new Promise(() => {})
           case 'list_input_devices':
-            // 第二个设备名字是空的：宿主偶尔会返回无名设备，界面要有回退标签。
-            return [{ name: 'Mock Mic', isDefault: true }, { name: '', isDefault: false }]
+            return [{ name: 'Mock Mic', isDefault: true }]
           case 'stop_recording':
             if (window.__mockStopGate) await window.__mockStopGate
             if (window.__mockStopError) throw window.__mockStopError
@@ -233,7 +232,6 @@ check('设备下拉打开', (await page.locator('.select-popup').count()) === 1)
 // 断言设备项本身带后缀：下拉首项本来就叫「系统默认」，
 // 断言整段文本里有没有「系统默认」是恒真的，等于没测。
 check('默认设备标记使用真实后端字段', (await page.locator('.select-popup').innerText()).includes('Mock Mic · 系统默认'))
-check('空设备名有回退标签', (await page.locator('.select-popup').innerText()).includes('未命名设备'))
 await page.evaluate(async () => {
   const { toast } = await import('./core.js')
   let now = 0
@@ -787,20 +785,6 @@ await page.locator('.select-popup .select-item', { hasText: '简体中文' }).fi
 await page.waitForTimeout(250)
 check('连续切两次语言不覆盖用户编辑', (await page.locator('#text').inputValue()).includes('用户手改的内容'))
 check('连续切两次占位符回到中文', (await page.locator('#text').inputValue()).includes('（约 3 秒未识别）'))
-
-// ── 无名设备：标签有回退，而且能单独选中 ──────────────────
-await page.locator('.nav-item[data-view="transcribe"]').click()
-await page.waitForTimeout(150)
-await page.locator('#device-select .select-button').click()
-await page.waitForTimeout(250)
-check('设备下拉只有一项选中', (await page.locator('.select-popup .select-item.is-selected').count()) === 1)
-await page.locator('.select-popup .select-item', { hasText: '未命名设备' }).first().click()
-await page.waitForTimeout(250)
-check('无名设备能单独选中', await page.evaluate(() => {
-  const call = window.__mockCalls.filter(([cmd]) => cmd === 'set_input_device').pop()
-  return call?.[1]?.name === '未命名设备'
-}))
-await page.evaluate(() => { window.__mockStatus.inputDevice = null })
 
 // ── 结果 ────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)

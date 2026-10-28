@@ -22,6 +22,17 @@ fn event_and_device_fields_serialize_camel_case() {
     assert!(device.get("is_default").is_none());
 }
 
+/// 没有名字的设备不能列出来：按名字选不中它（`pick_device_name` 只做精确匹配），
+/// 列出来只会让界面显示一条选不中的项。
+#[test]
+fn unnamed_devices_are_not_listed() {
+    assert!(device_entry(String::new(), None).is_none());
+    assert!(device_entry("   ".into(), None).is_none());
+    let device = device_entry("Mic".into(), Some("Mic")).expect("有名字的设备要列出");
+    assert!(device.is_default);
+    assert!(!device_entry("Mic".into(), Some("Other")).unwrap().is_default);
+}
+
 #[test]
 fn take_new_consumes_samples() {
     let q = SampleQueue::new(48_000);

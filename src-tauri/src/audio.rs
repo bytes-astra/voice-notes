@@ -301,12 +301,18 @@ pub fn list_input_devices() -> Vec<InputDevice> {
         return Vec::new();
     };
     devices
-        .filter_map(|device| {
-            let name = device.name().ok()?;
-            let is_default = default_name.as_deref() == Some(name.as_str());
-            Some(InputDevice { name, is_default })
-        })
+        .filter_map(|device| device_entry(device.name().ok()?, default_name.as_deref()))
         .collect()
+}
+
+/// 一台设备能不能列出来：名字必须能按名字选中（`pick_device_name` 只做精确匹配），
+/// 没有名字的设备列出来只会让人以为能选 —— 直接跳过。
+fn device_entry(name: String, default_name: Option<&str>) -> Option<InputDevice> {
+    if name.trim().is_empty() {
+        return None;
+    }
+    let is_default = default_name == Some(name.as_str());
+    Some(InputDevice { name, is_default })
 }
 
 /// 在设备名列表里挑一个：精确匹配才选它，其余情况用系统默认（返回 None）。

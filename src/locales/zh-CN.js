@@ -59,7 +59,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'record.micDenied': '没有麦克风权限',
   'record.deviceDefault': '系统默认',
   'record.deviceSystemDefault': '系统默认',
-  'record.deviceUnnamed': '未命名设备',
   'record.deviceChanged': '已切换输入设备：{name}',
   'record.deviceChangedDefault': '已改用系统默认输入设备',
   // 后端错误码：后端只返回字典 key，这些文案由前端查字典渲染
