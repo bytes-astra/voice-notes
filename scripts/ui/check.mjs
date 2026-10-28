@@ -119,7 +119,7 @@ await context.addInitScript(() => {
             // 挂起：模拟「正在下载」，这样界面上的 busy 状态能保持住
             return new Promise(() => {})
           case 'list_input_devices':
-            return [{ name: 'Mock Mic', is_default: true }]
+            return [{ name: 'Mock Mic', isDefault: true }]
           case 'stop_recording':
             if (window.__mockStopGate) await window.__mockStopGate
             if (window.__mockStopError) throw window.__mockStopError
@@ -226,7 +226,9 @@ check('点麦克风进入录音', (await phase()) === 'recording', await text('#
 await page.locator('#device-select .select-button').click()
 await page.waitForTimeout(150)
 check('设备下拉打开', (await page.locator('.select-popup').count()) === 1)
-check('默认设备标记使用真实后端字段', (await page.locator('.select-popup').innerText()).includes('系统默认'))
+// 断言设备项本身带后缀：下拉首项本来就叫「系统默认」，
+// 断言整段文本里有没有「系统默认」是恒真的，等于没测。
+check('默认设备标记使用真实后端字段', (await page.locator('.select-popup').innerText()).includes('Mock Mic · 系统默认'))
 await page.evaluate(async () => {
   const { toast } = await import('./core.js')
   let now = 0

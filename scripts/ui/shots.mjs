@@ -130,7 +130,7 @@ async function makePage({ status = {}, locale = 'zh-CN', theme = null, history =
                 window.__mockStatus.inputDevice = args.name
                 return JSON.parse(JSON.stringify(window.__mockStatus))
               case 'list_input_devices':
-                return [{ name: 'MacBook Pro 麦克风', is_default: true }]
+                return [{ name: 'MacBook Pro 麦克风', isDefault: true }]
               case 'warm_up':
               case 'warm_up_mic':
               case 'warm_up_streaming':
