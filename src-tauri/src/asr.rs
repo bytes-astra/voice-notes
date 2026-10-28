@@ -18,6 +18,7 @@ use crate::log;
 
 pub const SAMPLE_RATE: i32 = 16_000;
 
+
 #[derive(Clone, Debug, Serialize)]
 // 前端读的是 transcript.durationSeconds / elapsedMs：这里必须是 camelCase，
 // 否则时长和耗时会变成 undefined，结果区和历史记录里恒显示 0。
@@ -66,7 +67,7 @@ pub fn should_pre_roll(start: usize, pre: &[f32], segment: &[f32]) -> bool {
 pub const VAD_WINDOW: usize = 512;
 
 /// 流式输入分片：3200 样本 = 200ms，与官方示例一致。
-const STREAM_CHUNK: usize = 3_200;
+pub const STREAM_CHUNK: usize = 3_200;
 
 /// 收尾时补的静音长度（300ms）：让解码器把句尾最后一个字冲出来。
 const TAIL_SILENCE_SAMPLES: usize = 4_800;
@@ -752,6 +753,9 @@ pub struct StreamingSession {
     segments: Vec<Segment>,
     pending: Vec<f32>,
     fed_samples: usize,
+    tail_silence_samples: usize,
+    recorded_samples: usize,
+    externally_timed: bool,
     segment_start: usize,
     started: Instant,
 }
@@ -774,14 +778,32 @@ impl StreamingSession {
             segments: Vec::new(),
             pending: Vec::new(),
             fed_samples: 0,
+            tail_silence_samples: 0,
+            recorded_samples: 0,
+            externally_timed: false,
             segment_start: 0,
             started: Instant::now(),
         }
     }
 
+    /// 真实录音时钟：即使音频只用于预录或被 VAD 门控，也占录音时长。
+    /// 每块重采样后的输入只调用一次；缺口和补入的尾部静音不在这里计数。
+    pub fn advance_time(&mut self, samples: &[f32]) {
+        self.recorded_samples += samples.len();
+        self.externally_timed = true;
+    }
+
+    /// 当前真实录音时间，供缺口标记和句子使用同一时间轴。
+    pub fn elapsed_seconds(&self) -> f32 {
+        self.recorded_samples as f32 / SAMPLE_RATE as f32
+    }
+
     /// 按 200ms 一块送入（与官方示例的 chunk_size=3200 对齐），避免过小分片。
     fn accept(&mut self, chunk: &[f32], events: &mut Vec<StreamEvent>) {
         self.stream.accept_waveform(SAMPLE_RATE, chunk);
+        if !self.externally_timed {
+            self.recorded_samples += chunk.len();
+        }
         self.fed_samples += chunk.len();
         self.pump(events);
     }
@@ -808,7 +830,7 @@ impl StreamingSession {
 
     fn commit(&mut self, events: &mut Vec<StreamEvent>) {
         if self.partial.is_empty() {
-            self.segment_start = self.fed_samples;
+            self.segment_start = self.recorded_samples;
             return;
         }
         let text = match &self.punctuator {
@@ -818,11 +840,11 @@ impl StreamingSession {
         let segment = Segment {
             text,
             start: self.segment_start as f32 / SAMPLE_RATE as f32,
-            end: self.fed_samples as f32 / SAMPLE_RATE as f32,
+            end: self.recorded_samples as f32 / SAMPLE_RATE as f32,
         };
         events.push(StreamEvent::Segment(segment.clone()));
         self.segments.push(segment);
-        self.segment_start = self.fed_samples;
+        self.segment_start = self.recorded_samples;
         self.partial.clear();
     }
 
@@ -857,10 +879,16 @@ impl StreamingSession {
         // 否则句尾会被丢掉（“产品评审会” → “产品评审”）。
         let silence = vec![0.0f32; TAIL_SILENCE_SAMPLES];
         for chunk in silence.chunks(STREAM_CHUNK) {
+            self.tail_silence_samples += chunk.len();
             self.accept(chunk, &mut events);
         }
-        // 补的静音不算音频时长。
+        // 补的静音不算音频时长，但未喂出的真实尾包必须保留。
         self.fed_samples = self.fed_samples.saturating_sub(TAIL_SILENCE_SAMPLES);
+        if !self.externally_timed {
+            self.recorded_samples = self
+                .recorded_samples
+                .saturating_sub(self.tail_silence_samples);
+        }
         self.stream.input_finished();
         self.pump(&mut events);
         self.commit(&mut events);
@@ -873,11 +901,73 @@ impl StreamingSession {
         Transcript {
             text,
             segments: self.segments,
-            duration_seconds: self.fed_samples as f32 / SAMPLE_RATE as f32,
+            duration_seconds: self.recorded_samples as f32 / SAMPLE_RATE as f32,
             elapsed_ms: self.started.elapsed().as_millis() as u64,
             language: "zh-en".into(),
             warning: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod streaming_time_tests {
+    use super::*;
+    use crate::models;
+    use std::path::PathBuf;
+
+    #[test]
+    fn externally_advanced_audio_is_not_counted_again() {
+        let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
+            .ok()
+            .map(PathBuf::from)
+        else {
+            eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+            return;
+        };
+        let paths = models::StreamingPaths {
+            dir: dir.display().to_string(),
+            encoder: dir.join("encoder.int8.onnx").display().to_string(),
+            decoder: dir.join("decoder.onnx").display().to_string(),
+            joiner: dir.join("joiner.int8.onnx").display().to_string(),
+            tokens: dir.join("tokens.txt").display().to_string(),
+            vad: None,
+        };
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
+        let mut session = StreamingSession::new(engine, None);
+        let silence = vec![0.0f32; STREAM_CHUNK];
+        session.advance_time(&silence);
+        session.push(&silence);
+        session.advance_time(&silence);
+        session.finish();
+        let transcript = session.transcript();
+        assert_eq!(transcript.duration_seconds, 0.4);
+    }
+
+    #[test]
+    fn direct_streaming_time_excludes_only_synthetic_silence() {
+        let Some(dir) = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
+            .ok()
+            .map(PathBuf::from)
+        else {
+            eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+            return;
+        };
+        let paths = models::StreamingPaths {
+            dir: dir.display().to_string(),
+            encoder: dir.join("encoder.int8.onnx").display().to_string(),
+            decoder: dir.join("decoder.onnx").display().to_string(),
+            joiner: dir.join("joiner.int8.onnx").display().to_string(),
+            tokens: dir.join("tokens.txt").display().to_string(),
+            vad: None,
+        };
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
+        let mut session = StreamingSession::new(engine, None);
+        session.push(&vec![0.0f32; STREAM_CHUNK + 1]);
+        session.finish();
+        assert_eq!(
+            session.transcript().duration_seconds,
+            (STREAM_CHUNK + 1) as f32 / SAMPLE_RATE as f32
+        );
     }
 }
 

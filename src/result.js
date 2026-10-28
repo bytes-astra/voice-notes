@@ -12,53 +12,75 @@ export function renderResultActions() {
   els.clearBtn.innerHTML = clearIcon()
 }
 
-/// 清空结果区：文本框清空，元信息区只留一条提示。
-export function clearResult(label = 'result.waiting') {
-  els.text.value = ''
-  els.meta.innerHTML = ''
-  const span = document.createElement('span')
-  span.textContent = t(label)
-  els.meta.appendChild(span)
+function setResultView(rawText, meta) {
+  const rendered = localizeText(rawText)
+  state.resultView = { rawText, rendered, meta }
+  els.text.value = rendered
+  renderResultMeta()
 }
 
-/// 渲染一次转写结果。`record: false` 只重绘、不写历史（切语言时用）。
-export function showTranscript(transcript, { record = true } = {}) {
-  // 存原文：切语言时要按新语言重新本地化缺口占位符。
-  state.lastTranscript = transcript
-  const raw = (transcript.text || '').trim()
-  // 缺口占位符（[[gap:N]]）在这里换成本地化文案：历史与存盘里也是本地化的。
-  const text = localizeText(raw)
-  els.text.value = text
-  if (!raw) {
-    els.meta.innerHTML = '<span>' + t('record.empty') + '</span>'
-    return
-  }
-  const audio = transcript.durationSeconds || 0
-  const elapsed = (transcript.elapsedMs || 0) / 1000
-  const rtf = audio > 0 ? (elapsed / audio).toFixed(2) : '—'
-  const chars = [...text].length
+/// 动态内容也要保存字典 key 和参数：I18N.apply 只处理静态 HTML。
+export function renderResultMeta() {
+  const view = state.resultView
   els.meta.innerHTML = ''
-  for (const part of [
-    t('result.audio', { duration: fmtDuration(audio) }),
-    t('result.elapsed', { duration: fmtDuration(elapsed) }),
-    t('result.rtf', { rtf }),
-    t('result.chars', { count: chars }),
-  ]) {
+  if (!view) return
+  const parts = view.meta.kind === 'transcript'
+    ? [
+        t('result.audio', { duration: fmtDuration(view.meta.audio) }),
+        t('result.elapsed', { duration: fmtDuration(view.meta.elapsed) }),
+        t('result.rtf', { rtf: view.meta.rtf }),
+        t('result.chars', { count: [...els.text.value].length }),
+      ]
+    : [t(view.meta.key, view.meta.vars)]
+  for (const part of parts) {
     if (!part) continue
     const span = document.createElement('span')
     span.textContent = part
     els.meta.appendChild(span)
   }
-  if (record) addHistory(transcript, text)
+}
+
+/// 切语言只重画缺口占位符和元信息，不覆盖用户其他编辑。
+export function relocalizeResult() {
+  const view = state.resultView
+  if (!view) return
+  els.text.value = els.text.value === view.rendered ? localizeText(view.rawText) : localizeText(els.text.value)
+  view.rendered = els.text.value
+  renderResultMeta()
+}
+
+/// 清空结果区：文本框清空，元信息区只留一条提示。
+export function clearResult(label = 'result.waiting') {
+  setResultView('', { kind: 'label', key: label })
+}
+
+/// 渲染一次转写结果。`record: false` 只重绘、不写历史。
+export function showTranscript(transcript, { record = true } = {}) {
+  state.lastTranscript = transcript
+  const raw = (transcript.text || '').trim()
+  if (!raw) {
+    setResultView('', { kind: 'label', key: 'record.empty' })
+    return
+  }
+  const audio = transcript.durationSeconds || 0
+  const elapsed = (transcript.elapsedMs || 0) / 1000
+  setResultView(raw, {
+    kind: 'transcript',
+    audio,
+    elapsed,
+    rtf: audio > 0 ? (elapsed / audio).toFixed(2) : '—',
+  })
+  if (record) addHistory(transcript, els.text.value)
 }
 
 /// 追加一句识别好的文本（事件是增量载荷：只带新句子）。
 export function appendSegment(text) {
   // 取消 / 收尾结束之后迟到的句子不再追加，否则结果框会冒出被取消的内容。
   if (state.phase !== 'recording' && state.phase !== 'transcribing') return
-  const piece = localizeText(text || '').trim()
+  const piece = (text || '').trim()
   if (!piece) return
-  els.text.value = joinText(els.text.value, piece)
+  const rawText = joinText(state.resultView?.rawText || els.text.value, piece)
+  setResultView(rawText, { kind: 'label', key: 'record.live' })
 }
 
 export function showPartial(partial) {

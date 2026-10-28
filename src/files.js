@@ -57,7 +57,6 @@ export async function transcribeFilePath(path) {
     logEvent('ERROR', `文件转写失败: ${errorText(error)}`)
     toast(t('result.fileFailed', { error: fmtError(error) }), 'error')
   } finally {
-    if (attemptId !== state.fileAttemptId) return
     state.transcribingFile = false
     state.fileSessionId = 0
     state.fileSegments = 0

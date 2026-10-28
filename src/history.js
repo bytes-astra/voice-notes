@@ -1,6 +1,7 @@
 /* 历史记录：本地存储 + 列表渲染 */
 
 import { I18N, els, fmtDuration, historyStorageSet, state, t } from './core.js'
+import { renderResultMeta } from './result.js'
 import { copyText, saveText } from './export.js'
 import { copyIcon, saveIcon, trashIcon } from './icons.js'
 
@@ -57,10 +58,8 @@ export function renderHistory() {
       // 载入的是一条历史，不是「上次转写」：切语言时不能再把它重绘回去。
       state.lastTranscript = null
       els.text.value = item.text
-      els.meta.innerHTML = ''
-      const span = document.createElement('span')
-      span.textContent = t('history.from', { when })
-      els.meta.appendChild(span)
+      state.resultView = { rawText: item.text, rendered: item.text, meta: { kind: 'label', key: 'history.from', vars: { when } } }
+      renderResultMeta()
       els.text.focus()
     })
 
@@ -70,7 +69,7 @@ export function renderHistory() {
       iconAction(t('history.copy'), copyIcon(), () => copyText(item.text)),
       iconAction(t('history.save'), saveIcon(), () => saveText(item.text)),
       iconAction(t('history.delete'), trashIcon(), () => {
-        state.history = state.history.filter((entry) => entry.id !== item.id)
+        state.history = state.history.filter((entry) => entry !== item)
         saveHistory()
         renderHistory()
       }),

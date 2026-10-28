@@ -19,6 +19,12 @@ export function renderMicLabel() {
 export function renderHint() {
   if (state.phase === 'idle') els.hint.textContent = idleHint()
   else if (HINTS[state.phase]) els.hint.textContent = t(HINTS[state.phase])
+  if (state.transcribingFile) {
+    els.hint.textContent = t('result.fileProgress', {
+      count: state.fileSegments,
+      elapsed: fmtClock(state.fileStartedAt ? (performance.now() - state.fileStartedAt) / 1000 : 0),
+    })
+  }
 }
 
 export function setPhase(phase) {
@@ -179,7 +185,12 @@ export async function stopRecording() {
         elapsedMs: 0,
         language: state.status?.language || 'auto',
       }
-      showTranscript(partial)
+      state.resultView = {
+        rawText: state.resultView?.rawText || text,
+        rendered: text,
+        meta: { kind: 'transcript', audio: elapsed, elapsed: 0, rtf: '—' },
+      }
+      showTranscript({ ...partial, text: state.resultView.rawText })
     }
     toast(fmtError(error), 'error')
   } finally {

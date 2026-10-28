@@ -727,6 +727,12 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
         })
         .await
         .map_err(|e| code_detail(STOP_FAILED, e))??;
+        if finished.transcript.duration_seconds < 0.2 {
+            return Err(code("record.tooShort"));
+        }
+        if finished.transcript.text.trim().is_empty() {
+            return Err(code("record.empty"));
+        }
         let mut transcript = finished.transcript;
         if finished.capture_error.is_some() {
             transcript.warning = Some(code("record.micError"));

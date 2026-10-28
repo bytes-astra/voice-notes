@@ -192,7 +192,16 @@ export async function loadDevices() {
   deviceCache = devices
   const current = state.status?.inputDevice || deviceSelect.value || ''
   const items = deviceItems()
-  deviceSelect.setItems(items, items.some((item) => item.value === current) ? current : '')
+  const selected = items.some((item) => item.value === current) ? current : ''
+  deviceSelect.setItems(items, selected)
+  if (current && !selected) {
+    // 设备已拔掉：界面回到默认，后端也必须同步，否则下次仍使用旧设备名。
+    try {
+      state.status = await invoke('set_input_device', { name: null })
+    } catch (error) {
+      logEvent('ERROR', `失效输入设备回退失败: ${errorText(error)}`)
+    }
+  }
 }
 
 /// 界面语言下拉。
@@ -206,7 +215,11 @@ export function localeItems() {
 
 /// 切语言 / 重绘后同步两个下拉框的选项。
 export function refreshSelectItems(localeValue) {
-  if (deviceSelect) deviceSelect.setItems(deviceItems(), deviceSelect.value)
+  if (deviceSelect) {
+    const items = deviceItems()
+    const current = deviceSelect.value || state.status?.inputDevice || ''
+    deviceSelect.setItems(items, items.some((item) => item.value === current) ? current : '')
+  }
   if (localeSelect) localeSelect.setItems(localeItems(), localeValue)
 }
 

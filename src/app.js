@@ -6,7 +6,7 @@ import {
 } from './core.js'
 import { getCurrentWindow, getCurrentWebview, invoke, logEvent } from './tauri.js'
 import { renderHistory, saveHistory } from './history.js'
-import { clearResult, renderResultActions, showTranscript } from './result.js'
+import { clearResult, relocalizeResult, renderResultActions, showTranscript } from './result.js'
 import {
   downloadModel, downloadStreamingModel, loadDevices,
   localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
@@ -104,8 +104,8 @@ export function applyLocale(preference) {
   } catch {
     /* 标题失败不能影响界面 */
   }
-  // 只重绘，不写历史：否则每切一次语言就多一条重复记录。
-  if (state.lastTranscript) showTranscript(state.lastTranscript, { record: false })
+  // 只重绘动态结果，不写历史；用户编辑过的文字不能被后端原文覆盖。
+  relocalizeResult()
   // 启动时的初始化不算「切换」，只记用户真的改了语言的那一次。
   if (localeReady && after !== before) logEvent('INFO', `界面语言已切换: ${after}`)
   localeReady = true
@@ -294,7 +294,7 @@ export function bindUI() {
       void cancelRecording()
       return
     }
-    if (event.key === 'Escape' && state.view !== 'transcribe') {
+    if (event.key === 'Escape' && state.view !== 'transcribe' && !typing) {
       switchView('transcribe')
       return
     }

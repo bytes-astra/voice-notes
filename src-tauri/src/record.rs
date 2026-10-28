@@ -254,15 +254,13 @@ where
     let preroll_limit = (asr::SAMPLE_RATE as usize) / 5 * 2;
     let mut preroll: Vec<f32> = Vec::new();
     let mut active = false;
-    // 已经喂给识别器的 16 kHz 采样数（给缺口标记标时间；不能用设备采样率）
-    let mut fed_16k = 0usize;
     // 识别跟不上时丢掉的音频，在结果里留个可见的缺口
     let mut gaps: Vec<asr::Segment> = Vec::new();
     let mut last_voice = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) && !discard.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(60));
         let new_audio = queue.take_new();
-        let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
+        let at = session.elapsed_seconds();
         if new_audio.dropped > 0 {
             // 识别跟不上：丢掉了一段音频，标记出来，不能静默丢
             let seconds = audio::gap_seconds(new_audio.dropped, rate);
@@ -292,7 +290,7 @@ where
         if samples.is_empty() {
             continue;
         }
-        fed_16k += samples.len();
+        session.advance_time(&samples);
 
         let Some(detector) = vad.as_ref() else {
             if !discard.load(Ordering::Relaxed) {
@@ -305,6 +303,8 @@ where
             detector.accept_waveform(window);
         }
         let detected = detector.detected();
+        // 这里只拿 VAD 做门控，不消费识别句段；取完状态立即释放已切出的音频。
+        detector.clear();
         if detected {
             last_voice = std::time::Instant::now();
         }
@@ -354,7 +354,7 @@ where
         let seconds = audio::gap_seconds(last.dropped, rate);
         log::warn(format!("流式收尾丢掉 {seconds} 秒音频"));
         let marker = audio::gap_marker(last.dropped, rate);
-        let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
+        let at = session.elapsed_seconds();
         gaps.push(asr::Segment {
             text: marker.clone(),
             start: at,
@@ -372,6 +372,7 @@ where
         None => chunk,
     };
     if !tail.is_empty() {
+        // 尾部即使仍被门控判为语音，也保持原有识别行为。
         emit(session.push(&tail));
     }
     emit(session.finish());
@@ -413,6 +414,56 @@ mod tests {
         let engine = Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
         let vad = engine.vad_config().expect("VAD 配置");
         Some((engine, vad))
+    }
+
+    fn streaming_engine() -> Option<Arc<StreamingEngine>> {
+        let dir = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
+            .ok()
+            .map(PathBuf::from)?;
+        let paths = models::StreamingPaths {
+            dir: dir.display().to_string(),
+            encoder: dir.join("encoder.int8.onnx").display().to_string(),
+            decoder: dir.join("decoder.onnx").display().to_string(),
+            joiner: dir.join("joiner.int8.onnx").display().to_string(),
+            tokens: dir.join("tokens.txt").display().to_string(),
+            vad: [dir.join("silero_vad.onnx")]
+                .into_iter()
+                .find(|path| path.is_file())
+                .map(|path| path.display().to_string()),
+        };
+        Some(Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型")))
+    }
+
+    #[test]
+    fn streaming_duration_includes_leading_silence() {
+        let Some(engine) = streaming_engine() else {
+            eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+            return;
+        };
+        let queue = audio::SampleQueue::new(16_000);
+        let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+        let mut audio = vec![0.0f32; 19_200];
+        audio.extend_from_slice(&wave.samples()[..76_800]);
+        queue.push(&audio);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopper = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2_000));
+            stopper.store(true, Ordering::Relaxed);
+        });
+        let transcript = run_streaming_core(
+            engine,
+            None,
+            queue,
+            16_000,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        );
+        assert_eq!(
+            transcript.duration_seconds,
+            (audio.len() / asr::SAMPLE_RATE as usize) as f32
+        );
     }
 
     #[test]

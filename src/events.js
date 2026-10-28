@@ -52,7 +52,7 @@ export async function listenEvents() {
       setStreamProgress(progress.done || 0, progress.total || 0)
       const label =
         { downloading: t('progress.downloading'), verifying: t('progress.verifying'), connecting: t('progress.connecting'), complete: t('progress.complete') }[progress.phase] || t('progress.downloading')
-      const host = progress.source?.startsWith('http') ? new URL(progress.source).host : t('progress.cache')
+      const host = progress.source?.startsWith('http') ? new URL(progress.source).host : progress.source === 'cache' ? t('progress.cache') : ''
       els.streamProgressText.textContent = `${label} ${progress.resource} · ${fmtBytes(progress.done || 0)} / ${fmtBytes(progress.total || 0)}${host ? ` · ${host}` : ''}`
       return
     }

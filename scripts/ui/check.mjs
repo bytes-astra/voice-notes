@@ -226,6 +226,28 @@ check('点麦克风进入录音', (await phase()) === 'recording', await text('#
 await page.locator('#device-select .select-button').click()
 await page.waitForTimeout(150)
 check('设备下拉打开', (await page.locator('.select-popup').count()) === 1)
+check('默认设备标记使用真实后端字段', (await page.locator('.select-popup').innerText()).includes('系统默认'))
+await page.evaluate(async () => {
+  const { toast } = await import('./core.js')
+  let now = 0
+  const timers = new Map()
+  let next = 1
+  window.__realSetTimeout = window.setTimeout
+  window.__realClearTimeout = window.clearTimeout
+  window.setTimeout = (fn, delay) => { const id = next++; timers.set(id, { fn, at: now + delay }); return id }
+  window.clearTimeout = (id) => timers.delete(id)
+  toast('旧提示')
+  now = 2400
+  for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.fn() }
+  toast('新提示')
+  now = 2450
+  for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.fn() }
+  window.__toastHiddenByOldTimer = document.getElementById('toast').classList.contains('hidden')
+  window.setTimeout = window.__realSetTimeout
+  window.clearTimeout = window.__realClearTimeout
+})
+check('旧 toast 隐藏定时器不隐藏新提示', !(await page.evaluate(() => window.__toastHiddenByOldTimer)))
+await page.evaluate(() => { document.getElementById('toast').classList.add('hidden') })
 await page.keyboard.press('Escape')
 await page.waitForTimeout(150)
 check('下拉 Esc 关闭弹层', (await page.locator('.select-popup').count()) === 0)
@@ -302,6 +324,22 @@ check('原生菜单同步英文', await page.evaluate(() => {
   return call?.[1]?.edit === 'Edit' && call?.[1]?.view === 'View'
 }))
 check('切英文 meta 跟随', (await text('#meta')).includes('Audio 2.0s'))
+await page.locator('.nav-item[data-view="transcribe"]').click()
+await page.locator('#text').fill('用户手改的内容')
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.locator('#locale-select .select-button').click()
+await page.locator('.select-popup .select-item', { hasText: '简体中文' }).first().click()
+await page.waitForTimeout(200)
+check('切语言不覆盖用户编辑', (await page.locator('#text').inputValue()) === '用户手改的内容')
+check('切语言刷新字数', (await text('#meta')).includes('7 字'))
+await page.locator('.nav-item[data-view="transcribe"]').click()
+await page.locator('#clear-btn').click()
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.locator('#locale-select .select-button').click()
+await page.locator('.select-popup .select-item', { hasText: 'English' }).first().click()
+await page.waitForTimeout(200)
+check('空结果切语言刷新提示', (await text('#meta')).includes('Waiting'))
+await page.locator('.nav-item[data-view="settings"]').click()
 check(
   '切英文后结果区按钮跟随',
   await page.evaluate(() => {
@@ -538,6 +576,17 @@ const streamText = await page.locator('#stream-progress-text').innerText()
 const setupText = await page.locator('#setup-progress-text').innerText()
 check('流式进度显示在流式面板', streamText.includes('encoder.onnx'), streamText.slice(0, 40))
 check('流式进度不串到整段面板', !setupText.includes('encoder.onnx'), setupText.slice(0, 40))
+check('流式下载空来源不显示缓存', !streamText.includes('本地缓存'), streamText)
+await page.evaluate(async () => {
+  const { loadDevices } = await import('./status.js')
+  const { state } = await import('./core.js')
+  state.status.inputDevice = '已经拔掉的麦克风'
+  await loadDevices()
+})
+check('失效设备显示系统默认', (await page.locator('#device-select .select-label').innerText()) === '系统默认')
+check('失效设备同步后端设置', await page.evaluate(() =>
+  window.__mockCalls.some(([cmd, args]) => cmd === 'set_input_device' && args.name === null)
+))
 
 // 整段那边用 verifying 阶段：它的分支在没下载时也会更新（下载前要显示校验中）
 await page.evaluate(() =>
@@ -575,6 +624,23 @@ await page.evaluate(async () => {
 })
 await page.waitForTimeout(200)
 check('文件预留失败恢复空闲', (await phase()) === 'idle')
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.locator('#hotwords-input').focus()
+await page.keyboard.press('Escape')
+check('输入框 Esc 不跳转视图', (await page.locator('.app').getAttribute('data-view')) === 'settings')
+await page.evaluate(async () => {
+  const { state } = await import('./core.js')
+  const { renderHistory, saveHistory } = await import('./history.js')
+  state.history = [{ text: '旧一', at: 1 }, { text: '旧二', at: 2 }]
+  saveHistory()
+  renderHistory()
+})
+await page.locator('.nav-item[data-view="history"]').click()
+await page.locator('.history-item').first().locator('.history-actions button').nth(2).click()
+check('无 id 旧历史只删除当前项', await page.evaluate(() =>
+  JSON.parse(localStorage.getItem('voicenotes.history.v1')).length === 1
+))
+await page.locator('.nav-item[data-view="transcribe"]').click()
 await page.evaluate(() => { window.__mockReserveError = null })
 await page.locator('#mic-btn').click()
 await page.waitForTimeout(250)

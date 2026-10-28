@@ -55,6 +55,8 @@ export const state = {
   /// 录音/启动请求的代号：取消时 +1，让还在 await 的启动流程自己放弃。
   requestId: 0,
   toastTimer: 0,
+  toastHideTimer: 0,
+  resultView: null,
   /// 正在转写文件（用于显示「第 N 句」进度）
   transcribingFile: false,
   fileSegments: 0,
@@ -213,13 +215,14 @@ export function fmtDuration(seconds) {
 
 export function toast(message, type = 'info') {
   clearTimeout(state.toastTimer)
+  clearTimeout(state.toastHideTimer)
   els.toast.textContent = message
   els.toast.classList.toggle('error', type === 'error')
   els.toast.classList.remove('hidden')
   requestAnimationFrame(() => els.toast.classList.add('show'))
   state.toastTimer = setTimeout(() => {
     els.toast.classList.remove('show')
-    setTimeout(() => els.toast.classList.add('hidden'), 200)
+    state.toastHideTimer = setTimeout(() => els.toast.classList.add('hidden'), 200)
   }, type === 'error' ? 4200 : 2400)
 }
 
