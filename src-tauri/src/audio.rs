@@ -272,6 +272,7 @@ impl Drop for Recorder {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LevelPayload {
     session_id: Option<u64>,
     level: f32,
@@ -280,6 +281,7 @@ struct LevelPayload {
 
 /// 一个可用的输入设备。
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InputDevice {
     pub name: String,
     pub is_default: bool,
@@ -640,6 +642,26 @@ pub fn ends_with_gap_marker(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_and_device_fields_serialize_camel_case() {
+        let level = serde_json::to_value(LevelPayload {
+            session_id: Some(7),
+            level: 0.5,
+            elapsed: 2.0,
+        })
+        .unwrap();
+        assert_eq!(level["sessionId"], serde_json::json!(7));
+        assert!(level.get("session_id").is_none());
+
+        let device = serde_json::to_value(InputDevice {
+            name: "Mic".into(),
+            is_default: true,
+        })
+        .unwrap();
+        assert_eq!(device["isDefault"], serde_json::json!(true));
+        assert!(device.get("is_default").is_none());
+    }
 
     #[test]
     fn take_new_consumes_samples() {

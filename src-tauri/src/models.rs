@@ -359,6 +359,10 @@ async fn fetch_one(
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     let part = dest.with_extension("part");
+    // 旧版本/损坏的缓存不可能用于断点续传，先删掉再从头下载。
+    if fs::metadata(&part).map(|m| m.len() > asset.bytes).unwrap_or(false) {
+        let _ = fs::remove_file(&part);
+    }
     let offset = fs::metadata(&part)
         .map(|m| m.len())
         .unwrap_or(0)
@@ -421,6 +425,8 @@ async fn fetch_one(
 
     let size = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     if size != asset.bytes {
+        // 不能保留一份明知不完整的缓存：否则切换镜像也会反复失败在同一处。
+        let _ = fs::remove_file(&part);
         return Err(code_detail(
             "error.sizeMismatch",
             format!("{size} / {}", asset.bytes),
@@ -648,6 +654,63 @@ mod tests {
             .expect("下载 VAD");
         let size = fs::metadata(dir.join(VAD.name)).unwrap().len();
         assert_eq!(size, VAD.bytes);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversized_partial_file_is_replaced_by_a_fresh_download() {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                request.push_str(&line);
+            }
+            assert!(request.to_ascii_lowercase().contains("range: bytes=0-"), "{request}");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnew")
+                .unwrap();
+        });
+        struct Null;
+        impl ProgressSink for Null {
+            fn report(&self, _: Progress) {}
+        }
+        static ASSET: Asset = Asset {
+            name: "tiny.onnx",
+            path: "/tiny.onnx",
+            bytes: 3,
+            sha256: "11507a0e2f5e69d5dfa40a62a1bd7b6ee57e6bcd85c67c9b8431b36fff21c437",
+        };
+        let dir = std::env::temp_dir().join(format!("vn-oversized-part-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("tiny.part"), b"old-oversized").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(fetch_one(
+                &reqwest::Client::new(),
+                &base,
+                &ASSET,
+                &dir.join(ASSET.name),
+                &Null,
+                &AtomicBool::new(false),
+            ))
+            .expect("过大的 .part 应清理后重新下载");
+        server.join().unwrap();
+        assert_eq!(fs::read(dir.join("tiny.onnx")).unwrap(), b"new");
         let _ = fs::remove_dir_all(&dir);
     }
 

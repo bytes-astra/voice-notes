@@ -119,7 +119,7 @@ await context.addInitScript(() => {
             // 挂起：模拟「正在下载」，这样界面上的 busy 状态能保持住
             return new Promise(() => {})
           case 'list_input_devices':
-            return [{ name: 'Mock Mic', isDefault: true }]
+            return [{ name: 'Mock Mic', is_default: true }]
           case 'stop_recording':
             if (window.__mockStopGate) await window.__mockStopGate
             if (window.__mockStopError) throw window.__mockStopError
