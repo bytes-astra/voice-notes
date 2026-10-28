@@ -135,6 +135,10 @@ impl LevelRing {
 pub const GAP_MARKER_PREFIX: &str = "[[gap:";
 
 /// 丢掉音频折算成多少秒（向上取整，至少 1 秒）。
+pub fn resampled_len(samples: u32, sample_rate: u32) -> usize {
+    (samples as u64 * 16_000).div_ceil(sample_rate as u64) as usize
+}
+
 pub fn gap_seconds(dropped_samples: u32, sample_rate: u32) -> u32 {
     let rate = sample_rate.max(1);
     (dropped_samples as f32 / rate as f32).ceil().max(1.0) as u32

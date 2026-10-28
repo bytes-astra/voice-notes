@@ -18,7 +18,6 @@ use crate::log;
 
 pub const SAMPLE_RATE: i32 = 16_000;
 
-
 #[derive(Clone, Debug, Serialize)]
 // 前端读的是 transcript.durationSeconds / elapsedMs：这里必须是 camelCase，
 // 否则时长和耗时会变成 undefined，结果区和历史记录里恒显示 0。
@@ -789,7 +788,12 @@ impl StreamingSession {
     /// 真实录音时钟：即使音频只用于预录或被 VAD 门控，也占录音时长。
     /// 每块重采样后的输入只调用一次；缺口和补入的尾部静音不在这里计数。
     pub fn advance_time(&mut self, samples: &[f32]) {
-        self.recorded_samples += samples.len();
+        self.advance_samples(samples.len());
+    }
+
+    /// 丢弃的音频也占录音时间；调用方负责换算到 16 kHz。
+    pub fn advance_samples(&mut self, samples: usize) {
+        self.recorded_samples += samples;
         self.externally_timed = true;
     }
 

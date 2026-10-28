@@ -260,6 +260,8 @@ where
     while !stop.load(Ordering::Relaxed) && !discard.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(60));
         let new_audio = queue.take_new();
+        // 丢掉的输入同样占真实录音时间：缺口结束后才是后续音频的位置。
+        session.advance_samples(audio::resampled_len(new_audio.dropped, rate));
         let at = session.elapsed_seconds();
         if new_audio.dropped > 0 {
             // 识别跟不上：丢掉了一段音频，标记出来，不能静默丢
@@ -350,6 +352,7 @@ where
 
     // 收尾：把剩余采样和重采样器内部缓冲一起冲出去
     let last = queue.take_new();
+    session.advance_samples(audio::resampled_len(last.dropped, rate));
     if last.dropped > 0 {
         let seconds = audio::gap_seconds(last.dropped, rate);
         log::warn(format!("流式收尾丢掉 {seconds} 秒音频"));
@@ -372,6 +375,8 @@ where
         None => chunk,
     };
     if !tail.is_empty() {
+        // 循环退出后才采到的尾包也占真实录音时长；会话内不会再次推进外部时钟。
+        session.advance_time(&tail);
         // 尾部即使仍被门控判为语音，也保持原有识别行为。
         emit(session.push(&tail));
     }
@@ -464,6 +469,46 @@ mod tests {
             transcript.duration_seconds,
             (audio.len() / asr::SAMPLE_RATE as usize) as f32
         );
+    }
+
+    #[test]
+    fn streaming_duration_includes_audio_arriving_after_stop() {
+        let Some(engine) = streaming_engine() else {
+            eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+            return;
+        };
+        let queue = audio::SampleQueue::new(16_000);
+        queue.push(&vec![0.0f32; 3_200]);
+        let transcript = run_streaming_core(
+            engine,
+            None,
+            queue,
+            16_000,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        );
+        assert_eq!(transcript.duration_seconds, 0.2);
+    }
+
+    #[test]
+    fn streaming_dropped_audio_advances_recording_clock() {
+        let Some(engine) = streaming_engine() else {
+            eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+            return;
+        };
+        let queue = audio::SampleQueue::with_limit(Some(1_000));
+        queue.push(&vec![0.0f32; 17_000]);
+        let transcript = run_streaming_core(
+            engine,
+            None,
+            queue,
+            16_000,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        );
+        assert_eq!(transcript.duration_seconds, 17_000.0 / 16_000.0);
     }
 
     #[test]

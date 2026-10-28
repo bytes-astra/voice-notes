@@ -1,6 +1,6 @@
 /* 结果区：转写结果 + 实时中间结果 */
 
-import { els, fmtDuration, joinText, localizeText, state, t } from './core.js'
+import { els, fmtDuration, I18N, joinText, localizeText, state, t } from './core.js'
 import { addHistory } from './history.js'
 import { clearIcon, copyIcon, saveIcon } from './icons.js'
 
@@ -31,7 +31,12 @@ export function renderResultMeta() {
         t('result.rtf', { rtf: view.meta.rtf }),
         t('result.chars', { count: [...els.text.value].length }),
       ]
-    : [t(view.meta.key, view.meta.vars)]
+    : [t(view.meta.key, {
+        ...view.meta.vars,
+        ...(view.meta.at ? { when: new Date(view.meta.at).toLocaleString(I18N.locale, {
+          month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+        }) } : {}),
+      })]
   for (const part of parts) {
     if (!part) continue
     const span = document.createElement('span')
@@ -44,8 +49,27 @@ export function renderResultMeta() {
 export function relocalizeResult() {
   const view = state.resultView
   if (!view) return
-  els.text.value = els.text.value === view.rendered ? localizeText(view.rawText) : localizeText(els.text.value)
+  if (els.text.value === view.rendered) {
+    els.text.value = localizeText(view.rawText)
+  } else if (view.previousRaw) {
+    // 用户编辑后的文本仍保留原文快照，只替换缺口占位符，不动其他字符。
+    let edited = els.text.value
+    let from = 0
+    for (const marker of view.rawText.matchAll(/\[\[gap:\d+\]\]/g)) {
+      const rawBefore = view.rawText.slice(from, marker.index)
+      const renderedBefore = localizeText(rawBefore)
+      const at = edited.indexOf(renderedBefore)
+      if (at >= 0) {
+        const start = at + renderedBefore.length
+        const end = start + localizeText(marker[0]).length
+        edited = edited.slice(0, start) + localizeText(marker[0]) + edited.slice(end)
+        from = marker.index + marker[0].length
+      }
+    }
+    els.text.value = edited
+  }
   view.rendered = els.text.value
+  view.previousRaw = view.rawText
   renderResultMeta()
 }
 

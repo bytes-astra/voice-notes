@@ -186,8 +186,10 @@ export async function loadDevices() {
   let devices = []
   try {
     devices = (await invoke('list_input_devices')) || []
-  } catch {
-    devices = []
+  } catch (error) {
+    // 权限/宿主错误不等于设备被拔掉，不能清掉用户保存的选择。
+    logEvent('ERROR', `输入设备枚举失败: ${errorText(error)}`)
+    return
   }
   deviceCache = devices
   const current = state.status?.inputDevice || deviceSelect.value || ''
