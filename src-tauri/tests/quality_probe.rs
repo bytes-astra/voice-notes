@@ -788,6 +788,12 @@ fn probe_streaming_engine_hotwords() {
         vad: dir.join("silero_vad.onnx").is_file().then(|| dir.join("silero_vad.onnx").display().to_string()),
     };
     for sample in ["tests/fixtures/quality/tts-17.wav", "tests/fixtures/zh-tail2.wav"] {
+    // 语料不入库（要跑 scripts/gen-tts-corpus.sh 生成）：缺了就跳过，
+    // 别 panic —— 同族的 probe_streaming_hotwords 就是这么做的。
+    if !Path::new(sample).is_file() {
+        eprintln!("跳过：找不到 {sample}");
+        continue;
+    }
     let wave = sherpa_onnx::Wave::read(sample).expect("音频");
     for (label, words) in [("无术语表", vec![]), ("术语表", vec!["再确认一下".to_string()])] {
         let engine = StreamingEngine::new(&paths, &words).expect("加载流式引擎");
