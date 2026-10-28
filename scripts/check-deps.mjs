@@ -30,19 +30,31 @@ LAYERS.forEach((names, index) => {
 })
 
 const SRC = join(process.cwd(), 'src')
-const IMPORT_RE = /^\s*import\s[^\n]*?from\s+'\.\/([^']+)\.js'/
+
+// 三种相对 import 都要认出来，缺一种就等于给违规开了后门：
+//   import { a, b } from './x.js'   （可以跨多行写）
+//   import './x.js'                 （副作用导入）
+//   export { a } from './x.js'
+//   import('./x.js')                （动态导入）
+// 中间那段排除引号，免得副作用导入把下一条 import 的 from 一起吞掉。
+const STATEMENT_RE = /(?:^|[\n;])\s*(?:import|export)\b[^;'"]*?\bfrom\s*(['"])\.\/([^'"]+)\.js\1/g
+const BARE_RE = /(?:^|[\n;])\s*import\s*(['"])\.\/([^'"]+)\.js\1/g
+const DYNAMIC_RE = /import\s*\(\s*(['"])\.\/([^'"]+)\.js\1\s*\)/g
 
 const files = readdirSync(SRC).filter((name) => name.endsWith('.js'))
 const edges = []
 
 for (const name of files) {
   const module = name.slice(0, -3)
-  const lines = readFileSync(join(SRC, name), 'utf8').split('\n')
-  lines.forEach((line, index) => {
-    const match = IMPORT_RE.exec(line)
-    if (!match) return
-    edges.push({ from: module, to: match[1], file: name, line: index + 1 })
-  })
+  const text = readFileSync(join(SRC, name), 'utf8')
+  const lineOf = (index) => text.slice(0, index).split('\n').length
+  for (const re of [STATEMENT_RE, BARE_RE, DYNAMIC_RE]) {
+    re.lastIndex = 0
+    let match
+    while ((match = re.exec(text)) !== null) {
+      edges.push({ from: module, to: match[2], file: name, line: lineOf(match.index) })
+    }
+  }
 }
 
 const violations = []

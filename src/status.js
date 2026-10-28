@@ -175,9 +175,13 @@ export function deviceItems() {
   for (const device of deviceCache) {
     // 宿主偶尔会返回没有名字的设备：给个回退标签，
     // 否则下拉里是一条空白项，用户不知道那是台设备。
+    //
+    // 回退标签同时当 value：空 value 会和「系统默认」那条撞车 ——
+    // 两条都显示成选中，而且无名设备永远选不中（后端按名字挑设备，
+    // 空名字挑不到，录音时还是会用系统默认）。
     const name = device.name || t('record.deviceUnnamed')
     items.push({
-      value: device.name,
+      value: name,
       label: device.isDefault ? `${name} · ${t('record.deviceSystemDefault')}` : name,
     })
   }

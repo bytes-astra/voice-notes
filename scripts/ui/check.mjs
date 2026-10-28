@@ -622,12 +622,17 @@ await page.evaluate(async () => {
   await new Promise((resolve) => setTimeout(resolve, 50))
   // 转写还在进行中：进度提示要按当前数据（句数、已用时）重绘
   window.__fileHint = document.getElementById('hint').textContent
+  // renderHint 也要按当前数据重画 —— 阶段变化和切语言都会调它
+  const { renderHint } = await import('./recorder.js')
+  renderHint()
+  window.__fileHintAfterRender = document.getElementById('hint').textContent
   release()
   await task
   window.__mockFileGate = null
 })
 await page.waitForTimeout(200)
 check('文件进度按当前数据重绘', (await page.evaluate(() => window.__fileHint)).includes('已识别 1 句'))
+check('renderHint 也按当前数据重绘进度', (await page.evaluate(() => window.__fileHintAfterRender)).includes('已识别 1 句'))
 check('文件转写成功恢复空闲', (await phase()) === 'idle')
 check('文件转写保存结果', (await page.locator('#text').inputValue()) === '文件结果')
 
@@ -782,6 +787,20 @@ await page.locator('.select-popup .select-item', { hasText: '简体中文' }).fi
 await page.waitForTimeout(250)
 check('连续切两次语言不覆盖用户编辑', (await page.locator('#text').inputValue()).includes('用户手改的内容'))
 check('连续切两次占位符回到中文', (await page.locator('#text').inputValue()).includes('（约 3 秒未识别）'))
+
+// ── 无名设备：标签有回退，而且能单独选中 ──────────────────
+await page.locator('.nav-item[data-view="transcribe"]').click()
+await page.waitForTimeout(150)
+await page.locator('#device-select .select-button').click()
+await page.waitForTimeout(250)
+check('设备下拉只有一项选中', (await page.locator('.select-popup .select-item.is-selected').count()) === 1)
+await page.locator('.select-popup .select-item', { hasText: '未命名设备' }).first().click()
+await page.waitForTimeout(250)
+check('无名设备能单独选中', await page.evaluate(() => {
+  const call = window.__mockCalls.filter(([cmd]) => cmd === 'set_input_device').pop()
+  return call?.[1]?.name === '未命名设备'
+}))
+await page.evaluate(() => { window.__mockStatus.inputDevice = null })
 
 // ── 结果 ────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)
