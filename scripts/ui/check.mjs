@@ -232,26 +232,18 @@ check('设备下拉打开', (await page.locator('.select-popup').count()) === 1)
 // 断言设备项本身带后缀：下拉首项本来就叫「系统默认」，
 // 断言整段文本里有没有「系统默认」是恒真的，等于没测。
 check('默认设备标记使用真实后端字段', (await page.locator('.select-popup').innerText()).includes('Mock Mic · 系统默认'))
+// 旧 toast 的隐藏定时器不能把后来的新提示藏掉：真等 2.4s 让旧定时器到期。
 await page.evaluate(async () => {
   const { toast } = await import('./core.js')
-  let now = 0
-  const timers = new Map()
-  let next = 1
-  window.__realSetTimeout = window.setTimeout
-  window.__realClearTimeout = window.clearTimeout
-  window.setTimeout = (fn, delay) => { const id = next++; timers.set(id, { fn, at: now + delay }); return id }
-  window.clearTimeout = (id) => timers.delete(id)
   toast('旧提示')
-  now = 2400
-  for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.fn() }
-  toast('新提示')
-  now = 2450
-  for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.fn() }
-  window.__toastHiddenByOldTimer = document.getElementById('toast').classList.contains('hidden')
-  window.setTimeout = window.__realSetTimeout
-  window.clearTimeout = window.__realClearTimeout
 })
-check('旧 toast 隐藏定时器不隐藏新提示', !(await page.evaluate(() => window.__toastHiddenByOldTimer)))
+await page.waitForTimeout(2450)
+await page.evaluate(async () => {
+  const { toast } = await import('./core.js')
+  toast('新提示')
+})
+await page.waitForTimeout(300)
+check('旧 toast 隐藏定时器不隐藏新提示', !(await page.evaluate(() => document.getElementById('toast').classList.contains('hidden'))))
 await page.evaluate(() => { document.getElementById('toast').classList.add('hidden') })
 await page.keyboard.press('Escape')
 await page.waitForTimeout(150)
