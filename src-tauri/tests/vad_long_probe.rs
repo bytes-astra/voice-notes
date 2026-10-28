@@ -108,8 +108,17 @@ fn probe_long_continuous_speech() {
     // 场景 A：连续语音（段与段之间不留静音）
     // 场景 B：说话 → 静音 → 说话 → 静音 …（用户反馈的丢字场景）
     // gap 是采样数，按它插静音 —— 别只当布尔用，否则改标签会静默量同一段音频。
-    for (label, gap) in [("连续语音", 0usize), ("说话+2秒静音+说话", 16_000 * 2)] {
-        let repeat = 4usize;
+    //
+    // 连续语音要测**多个长度**：sherpa 的「收紧态」（threshold 0.5→0.9、min_silence
+    // 0.5→0.1）在 buffer 超过 sample_rate × max_speech_duration（30 s）时才触发，
+    // 只测十几秒根本碰不到它 —— 而用户丢的正是几分钟的连续说话。
+    for (label, gap, repeat) in [
+        ("连续语音 ×4", 0usize, 4usize),
+        ("连续语音 ×8", 0usize, 8usize),
+        ("连续语音 ×16", 0usize, 16usize),
+        ("连续语音 ×32", 0usize, 32usize),
+        ("说话+2秒静音+说话", 16_000 * 2, 4usize),
+    ] {
         let mut long = Vec::new();
         for i in 0..repeat {
             long.extend_from_slice(&speech);
