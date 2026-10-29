@@ -134,6 +134,116 @@ impl LevelRing {
 /// 占位符前后拼句不加空格（后端 `asr::join_segments` 与前端 `joinText()` 一致）。
 pub const GAP_MARKER_PREFIX: &str = "[[gap:";
 
+/// AGC 的目标 RMS（16 kHz 单声道，幅度 ±1.0）。
+///
+/// 取值来自实测：正常电平的房间录音 RMS ≈ 0.0225，识别率 100%（724/724 字）；
+/// 低于 0.02 就开始掉（-25 dB 那档只剩 64%）。目标定在 0.02 —— **够响的录音
+/// 一个样本都不动**，只救偏小的。
+const AGC_TARGET_RMS: f32 = 0.02;
+
+/// AGC 的增益上限（≈ +30 dB）。
+const AGC_MAX_GAIN: f32 = 32.0;
+
+/// RMS 估计的时间常数（秒）。要够长 —— 句子之间的停顿不该把估计拉低，
+/// 否则增益会一涨一落（pumping），停顿里的噪声被放大会误判成语音。
+const AGC_RMS_TAU: f32 = 3.0;
+
+/// 增益平滑的时间常数（秒）：增益本身也要跟着慢慢变，不能一块一块地跳。
+const AGC_GAIN_TAU: f32 = 0.5;
+
+/// 软限幅的边界（±1.0 之内，模型看到的是合法波形）。
+const AGC_LIMIT: f32 = 0.99;
+
+/// 输入电平自动增益（AGC）：把偏小的录音提到模型能稳定识别的电平。
+///
+/// **为什么非它不可**（2026-10-28 线上排查的结论）：
+///
+/// sherpa 的 Silero VAD 只有在语音概率**连续**高于阈值满 `min_speech_duration`
+/// 才会触发（`sherpa-onnx/csrc/silero-vad-model.cc` 的 `IsSpeech()`）：
+/// 概率一掉回阈值以下，攒的进度立刻清零。而**低电平录音的概率恰好在阈值附近抖**，
+/// 于是永远触发不了 —— `voice-activity-detector.cc` 的非语音分支只 `buffer_.Pop(...)`，
+/// 那段音频**静默消失**：日志、转写、界面上零痕迹，用户只看到「整段没转写」。
+///
+/// 实测（同一段真实房间录音，人为衰减到不同电平后的识别字数）：
+///
+/// | 电平 | 不处理 | 经过 AGC |
+/// | --- | --- | --- |
+/// | 正常（RMS 0.0225） | 724 字 | 724 字（一个样本都不动） |
+/// | -25 dB | 465 字 | 723 字 |
+/// | -30 dB | 94 字 | 717 字 |
+/// | -35 dB | 0 字 | 717 字 |
+///
+/// 只在电平低于目标时才提，所以正常录音完全不受影响。
+#[derive(Debug, Clone)]
+pub struct Agc {
+    /// 平滑后的 RMS 估计
+    rms_est: f32,
+    /// 当前增益（平滑过）
+    gain: f32,
+    /// 已经拿到过第一块音频（第一块直接建估计，不慢慢爬）
+    primed: bool,
+}
+
+impl Default for Agc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Agc {
+    pub fn new() -> Self {
+        Self {
+            rms_est: 0.0,
+            gain: 1.0,
+            primed: false,
+        }
+    }
+
+    /// 处理一块 16 kHz 单声道采样（就地修改）。
+    pub fn process(&mut self, samples: &mut [f32]) {
+        if samples.is_empty() {
+            return;
+        }
+        let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+        let dt = samples.len() as f32 / crate::asr::SAMPLE_RATE as f32;
+
+        if self.primed {
+            let a = (-dt / AGC_RMS_TAU).exp();
+            self.rms_est = a * self.rms_est + (1.0 - a) * rms;
+        } else {
+            // 第一块直接建估计：否则开头一两秒会按「太安静」慢慢爬增益，
+            // 而那正是最容易被整段丢掉的部分。
+            self.rms_est = rms;
+            self.primed = true;
+        }
+
+        // 电平够了就不动 —— 这是「正常录音零影响」的关键。
+        let target_gain = if self.rms_est >= AGC_TARGET_RMS {
+            1.0
+        } else {
+            (AGC_TARGET_RMS / self.rms_est.max(1e-6)).min(AGC_MAX_GAIN)
+        };
+        let ag = (-dt / AGC_GAIN_TAU).exp();
+        self.gain = ag * self.gain + (1.0 - ag) * target_gain;
+        if self.gain <= 1.0 {
+            return;
+        }
+        for sample in samples.iter_mut() {
+            let x = *sample * self.gain;
+            *sample = if x.abs() <= AGC_LIMIT {
+                x
+            } else {
+                AGC_LIMIT * x.tanh()
+            };
+        }
+    }
+
+    /// 当前增益（只用于日志/测试）。
+    pub fn gain(&self) -> f32 {
+        self.gain
+    }
+}
+
 /// 重采样到识别用的采样率（16 kHz）之后有多少采样。
 pub fn resampled_len(samples: u32, sample_rate: u32) -> usize {
     (samples as u64 * crate::asr::SAMPLE_RATE as u64).div_ceil(sample_rate as u64) as usize

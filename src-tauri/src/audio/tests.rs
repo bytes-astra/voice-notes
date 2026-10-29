@@ -120,3 +120,81 @@ fn records_microphone() {
     assert!(samples.len() > rate as usize, "录音样本太少");
     assert!(peak <= 1.0, "样本超出 [-1, 1]");
 }
+
+// ──────────────────── AGC ────────────────────
+
+/// 造一段「语音样」的信号：正弦 + 噪声，峰值和 RMS 可控。
+fn tone(rms: f32, len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|i| {
+            let t = i as f32 / 16_000.0;
+            rms * (2.0 * std::f32::consts::PI * 220.0 * t).sin() * 1.4
+        })
+        .collect()
+}
+
+/// 电平够的录音一个样本都不能动 —— AGC 只救偏小的，不碰正常的。
+#[test]
+fn agc_leaves_normal_level_untouched() {
+    let mut agc = Agc::new();
+    let mut samples = tone(0.0225, 16_000);
+    let before = samples.clone();
+    agc.process(&mut samples);
+    assert_eq!(samples, before, "正常电平不该被改动");
+    assert_eq!(agc.gain(), 1.0);
+}
+
+/// 电平偏低时要把 RMS 提到目标附近 —— 这是「整段没转写」的解药。
+#[test]
+fn agc_raises_quiet_signal_to_target() {
+    let mut agc = Agc::new();
+    let mut samples = tone(0.0013, 16_000); // -25 dB 那档
+    agc.process(&mut samples);
+    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    assert!(rms > 0.015, "RMS 应该被提上来，实际 {rms:.5}");
+}
+
+/// 增益有上限：纯静音不能被放大成一片嘶嘶（否则噪声会被 VAD 当成语音）。
+#[test]
+fn agc_respects_max_gain() {
+    let mut agc = Agc::new();
+    let mut samples = vec![0.0001f32; 16_000];
+    agc.process(&mut samples);
+    assert!(agc.gain() <= AGC_MAX_GAIN + 1e-3, "增益超上限");
+}
+
+/// 输出不能越界 —— 模型看到的是合法波形，削波会毁掉识别率。
+#[test]
+fn agc_output_stays_in_range() {
+    let mut agc = Agc::new();
+    let mut samples = vec![0.9f32; 16_000];
+    agc.process(&mut samples);
+    let peak = samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+    assert!(peak <= AGC_LIMIT, "峰值越界：{peak}");
+}
+
+/// 全零输入不能炸（除零 → NaN 会污染整条链路）。
+#[test]
+fn agc_handles_silence() {
+    let mut agc = Agc::new();
+    let mut samples = vec![0.0f32; 16_000];
+    agc.process(&mut samples);
+    assert!(samples.iter().all(|s| s.is_finite()));
+}
+
+/// 增益要跟着电平慢慢变，不能一块一块地跳（pumping 会切碎字头）。
+#[test]
+fn agc_gain_changes_smoothly() {
+    let mut agc = Agc::new();
+    let mut previous = agc.gain();
+    for _ in 0..20 {
+        // 每轮都要用**没被处理过**的采样：生产里每块都是新来的，
+        // 拿上一轮改写过的缓冲再喂一遍等于把增益算在增益上。
+        let mut samples = tone(0.001, 512);
+        agc.process(&mut samples);
+        let gain = agc.gain();
+        assert!(gain >= previous, "增益不该往回掉");
+        assert!(gain - previous < 2.0, "增益跳得太快：{previous} → {gain}");
+        previous = gain;
+    }
+}

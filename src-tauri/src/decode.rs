@@ -20,6 +20,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 use crate::asr::SAMPLE_RATE;
+use crate::audio::Agc;
 use crate::{code, code_detail};
 
 /// 解码结果的基本信息。
@@ -84,6 +85,8 @@ pub fn decode_to_16k(
 
     let mut resampler = LinearResampler::create(source_rate, SAMPLE_RATE);
     let mut total = 0u64;
+    // 电平自动增益：偏小的录音会被 VAD 整段当成非语音丢掉（见 audio::Agc）。
+    let mut agc = Agc::new();
     // 中途出错的原因（读包失败）
     let mut stream_error: Option<String> = None;
     // 单个包解码失败的次数与最后一次的原因（末尾垃圾数据很常见，但也不能完全无视）
@@ -129,11 +132,12 @@ pub fn decode_to_16k(
                 .map(|frame| frame.iter().sum::<f32>() / channels as f32)
                 .collect()
         };
-        let resampled = match resampler.as_mut() {
+        let mut resampled = match resampler.as_mut() {
             Some(resampler) => resampler.resample(&mono, false),
             None => mono,
         };
         if !resampled.is_empty() {
+            agc.process(&mut resampled);
             total += resampled.len() as u64;
             on_chunk(&resampled)?;
         }
@@ -141,8 +145,9 @@ pub fn decode_to_16k(
 
     // 收尾：把重采样器内部缓冲冲出来
     if let Some(resampler) = resampler.as_mut() {
-        let tail = resampler.resample(&[], true);
+        let mut tail = resampler.resample(&[], true);
         if !tail.is_empty() {
+            agc.process(&mut tail);
             total += tail.len() as u64;
             on_chunk(&tail)?;
         }

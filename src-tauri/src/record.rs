@@ -141,6 +141,8 @@ where
         sherpa_onnx::LinearResampler::create(rate as i32, asr::SAMPLE_RATE)
     };
     let mut session = asr::OfflineSession::new(engine.clone(), vad);
+    // 电平自动增益：偏小的录音会整段被 VAD 当成非语音丢掉（见 audio::Agc）。
+    let mut agc = audio::Agc::new();
     // 识别跟不上时丢掉的音频：在结果里留个可见的缺口（按时间插进句子列表）。
     let mut gaps: Vec<asr::Segment> = Vec::new();
     // 已经喂给识别器的 16 kHz 采样数（给缺口标记标时间；不能用设备采样率）
@@ -170,10 +172,12 @@ where
             }
         }
         if !new_audio.samples.is_empty() {
-            let samples = match &resampler {
+            let mut samples = match &resampler {
                 Some(resampler) => resampler.resample(&new_audio.samples, false),
                 None => new_audio.samples,
             };
+            // 提电平要在 VAD 之前 —— VAD 判的就是这段音频。
+            agc.process(&mut samples);
             fed_16k += samples.len();
             for event in session.push(&samples) {
                 let OfflineEvent::Segment(segment) = event;
@@ -212,11 +216,12 @@ where
                 end: at,
             }));
         }
-        let samples = match &resampler {
+        let mut samples = match &resampler {
             Some(resampler) => resampler.resample(&last.samples, true),
             None => last.samples,
         };
         if !samples.is_empty() {
+            agc.process(&mut samples);
             for event in session.push(&samples) {
                 let OfflineEvent::Segment(segment) = event;
                 log_segment("收尾识别出一句", &segment);
@@ -281,6 +286,8 @@ where
     let vad = vad_config
         .as_ref()
         .and_then(|config| sherpa_onnx::VoiceActivityDetector::create(config, 60.0));
+    // 电平自动增益：偏小的录音会被门控 VAD 整段丢掉（见 audio::Agc）。
+    let mut agc = audio::Agc::new();
     // 说话起点前留 0.4s，避免 VAD 起音延迟把字头切掉
     let preroll_limit = (asr::SAMPLE_RATE as usize) / 5 * 2;
     let mut preroll: Vec<f32> = Vec::new();
@@ -316,13 +323,16 @@ where
         if chunk.is_empty() {
             continue;
         }
-        let samples = match &resampler {
+        let mut samples = match &resampler {
             Some(resampler) => resampler.resample(&chunk, false),
             None => chunk,
         };
         if samples.is_empty() {
             continue;
         }
+        // 提电平要在 VAD 之前 —— 流式路径的门控 VAD 判的就是这段音频，
+        // 偏小的电平会让它整段判成非语音（见 audio::Agc）。
+        agc.process(&mut samples);
         session.advance_samples(samples.len());
 
         let Some(detector) = vad.as_ref() else {
