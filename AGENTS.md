@@ -272,7 +272,10 @@ VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test
 VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test gain_probe   -- --nocapture   # 电平多低还认得出
 VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test noise_probe  -- --nocapture   # 噪声/背景人声
 VOICE_NOTES_MIC_FILE=/tmp/x-16k.wav cargo test --manifest-path src-tauri/Cargo.toml --test mic_probe -- --nocapture   # 离线分析一段真实音频
+VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test quiet_pipeline_probe -- --nocapture   # 低电平录音走真实管线还能不能出字
 ```
+
+`quiet_pipeline_probe` 走**生产的 `record::run_offline` 管线**，对照「不经 AGC」与「经 AGC」两条路：干净人声衰减到 ×0.001 时，不经 AGC 是 **0 字**，经管线是 **113 字**。它守住的是「AGC 还接在 `record.rs` 里」—— 单测只测 `Agc` 自己，有人把它从管线里摘掉，单测照样绿。
 
 `mic_probe` 能抓真实麦克风（和 `audio.rs` 同一套设备协商 + 同一个 `LinearResampler`）落成 WAV，再对比「原样 / 去直流 / AGC」三条路径的 VAD 语音比例与字数 —— 它是唯一能拿用户真实音频说话的探针。`VOICE_NOTES_MIC_FILE` 可以喂已存的 WAV 反复迭代。
 
