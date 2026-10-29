@@ -259,9 +259,16 @@ ad-hoc 签名的 designated requirement **就是代码签名哈希本身**（`co
 VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test vad_long_probe -- --nocapture   # VAD 吞了多少
 VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test gain_probe   -- --nocapture   # 电平多低还认得出
 VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test noise_probe  -- --nocapture   # 噪声/背景人声
+VOICE_NOTES_MIC_FILE=/tmp/x-16k.wav cargo test --manifest-path src-tauri/Cargo.toml --test mic_probe -- --nocapture   # 离线分析一段真实音频
 ```
 
-已实测：VAD 不吞长连续语音（140 秒只吞 0.4 秒）、-56.5 dBFS 仍认出 99.2% 的语音、背景人声 -10 dB 下 264 秒的长句也照样出字（走「切 30 秒窗 + 2 秒重叠」路径）。**这三样都不是根因** —— 真要定位只能靠用户自己的音频（波形平 = 麦克风侧；波形起伏但没字 = VAD 侧）。
+`mic_probe` 能抓真实麦克风（和 `audio.rs` 同一套设备协商 + 同一个 `LinearResampler`）落成 WAV，再对比「原样 / 去直流 / 峰值归一化」三条路径的 VAD 语音比例与字数 —— 它是唯一能拿用户真实音频说话的探针。`VOICE_NOTES_MIC_FILE` 可以喂已存的 WAV 反复迭代。
+
+**已定案的真实案例（2026-10-28）**：15.4 分钟录音里 72% 没出字，最后查出**根本不是 bug** —— 麦克风收到的是**房间里播放的影视声**，保存下来的转写全是电视剧台词；「丢失」的那 660 秒是剧里的**音乐/环境音段（没有人声）**，Silero 判为非语音丢掉是**正确行为**。判据是保存下来的转写原文 + `mic_probe` 抓到的音频。
+
+⇒ 排查这类问题**先看转写原文**：如果内容是环境里的声音（台词、背景音乐）而不是用户的嗓音，那就是录到了别的声源 —— 让用户在设置里换一个更近的输入设备（或戴耳机避免串音），而不是改 VAD 参数。
+
+**别急着上增益**：探针实测峰值归一化（AGC 的最简形态）**反而让 VAD 语音比例从 63.9% 掉到 60.9%**（峰值归一化会把噪声底一起放大）；而把语音整体压到 -56.5 dBFS，识别结果一个字都没少。SenseVoice 对音量极其鲁棒，增益只有在「削波/过小需要提示」时才有意义。
 
 ### 症状索引
 
