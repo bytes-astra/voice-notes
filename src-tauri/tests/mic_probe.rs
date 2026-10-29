@@ -126,16 +126,41 @@ fn dc_block(samples: &[f32], sample_rate: u32, cutoff_hz: f32) -> Vec<f32> {
     out
 }
 
-/// 峰值归一化：把 99 分位的绝对值拉到 0.5（AGC 的最简形态）。
-fn peak_normalize(samples: &[f32]) -> Vec<f32> {
+/// AGC：**用生产代码**（`voice_notes_lib::audio::Agc`）逐块处理，和 record.rs 一样。
+///
+/// 探针自己写一份 AGC 就失去意义了 —— 得测真正上线的那份。
+fn agc(samples: &[f32]) -> Vec<f32> {
+    let mut agc = voice_notes_lib::audio::Agc::new();
+    let mut out = samples.to_vec();
+    for chunk in out.chunks_mut(512) {
+        agc.process(chunk);
+    }
+    out
+}
+
+/// AGC：峰值归一化 + 软限幅：目标峰值 `target`，超出部分用 tanh 压回来。
+///
+/// 这才是能用的 AGC 形态 —— 之前那个无上限的 `peak_normalize` 会把峰值推到
+/// 3.5（远超 ±1.0），模型看到的是削波信号，识别反而变差（实测 91.3% → 85.8%）。
+fn peak_normalize_limited(samples: &[f32], target: f32) -> Vec<f32> {
     let mut abs: Vec<f32> = samples.iter().map(|s| s.abs()).collect();
     abs.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p99 = abs.get(abs.len() * 99 / 100).copied().unwrap_or(0.0);
     if p99 <= 1e-9 {
         return samples.to_vec();
     }
-    let gain = 0.5 / p99;
-    samples.iter().map(|s| s * gain).collect()
+    let gain = target / p99;
+    samples
+        .iter()
+        .map(|s| {
+            let x = s * gain;
+            if x.abs() <= target {
+                x
+            } else {
+                target * x.tanh()
+            }
+        })
+        .collect()
 }
 
 fn stats(samples: &[f32]) -> (f32, f32, f32) {
@@ -170,12 +195,52 @@ fn vad_speech_ratio(
     out as f32 / samples.len() as f32 * 100.0
 }
 
-/// 跑完整会话：句数、覆盖秒数、字数。
+/// 找出「句子之间的空档」，量每段空档的时长和峰值。
+///
+/// 这就是「丢音频」问题的答案形式：空档里有声音（峰值多少）还是彻底安静。
+/// 空档里**有声音但没句子** = VAD 判它不是语音；空档里**彻底安静** = 本来就没声音。
+fn report_gaps(samples: &[f32], segments: &[(f32, f32, String)]) {
+    let mut cursor = 0.0f32;
+    let mut total_gap = 0.0f32;
+    let mut loud_gaps = 0usize;
+    for (start, end, _) in segments {
+        if *start - cursor < 1.0 {
+            cursor = cursor.max(*end);
+            continue;
+        }
+        let from = (cursor * 16_000.0) as usize;
+        let to = ((*start) * 16_000.0) as usize;
+        let slice = &samples[from.min(samples.len())..to.min(samples.len())];
+        let (peak, rms, _) = stats(slice);
+        let seconds = *start - cursor;
+        total_gap += seconds;
+        let has_sound = peak >= 0.01;
+        if has_sound {
+            loud_gaps += 1;
+        }
+        println!(
+            "  空档 {:.1}s → {:.1}s（{seconds:>6.1}s）峰值 {peak:.4}｜RMS {rms:.4} —— {}",
+            cursor,
+            *start,
+            if has_sound {
+                "**有声音但没识别出句子**"
+            } else {
+                "彻底安静"
+            }
+        );
+        cursor = *end;
+    }
+    println!(
+        "  合计空档 {total_gap:.1}s（其中 {loud_gaps} 段有声音）"
+    );
+}
+
+/// 跑完整会话：句子列表、覆盖秒数、字数。
 fn run_session(
     engine: &std::sync::Arc<Engine>,
     vad: &sherpa_onnx::VadModelConfig,
     samples: &[f32],
-) -> (usize, f32, usize) {
+) -> (Vec<(f32, f32, String)>, f32, usize) {
     let mut session = OfflineSession::new(engine.clone(), vad.clone());
     let mut segments: Vec<(f32, f32, String)> = Vec::new();
     for chunk in samples.chunks(512) {
@@ -191,12 +256,7 @@ fn run_session(
     let covered: f32 = segments.iter().map(|(_, end, _)| *end).sum::<f32>()
         - segments.iter().map(|(start, _, _)| *start).sum::<f32>();
     let chars: usize = segments.iter().map(|(_, _, t)| t.chars().count()).sum();
-    if std::env::var("VOICE_NOTES_MIC_VERBOSE").is_ok() {
-        for (start, end, text) in &segments {
-            println!("    {:.1}s → {:.1}s  {}", start, end, text);
-        }
-    }
-    (segments.len(), covered, chars)
+    (segments, covered, chars)
 }
 
 #[test]
@@ -259,24 +319,28 @@ fn probe_real_mic() {
     let variants: Vec<(&str, Vec<f32>)> = vec![
         ("原样", mono16.clone()),
         ("去直流 30Hz", dc_block(&mono16, 16_000, 30.0)),
-        ("峰值归一化", peak_normalize(&mono16)),
-        ("去直流+归一化", {
-            let mut v = dc_block(&mono16, 16_000, 30.0);
-            v = peak_normalize(&v);
-            v
-        }),
+        ("AGC(生产代码)", agc(&mono16)),
+        ("归一化+限幅 0.7", peak_normalize_limited(&mono16, 0.7)),
     ];
 
     println!("\n{:<16} {:>10} {:>10} {:>8} {:>10} {:>6}", "处理", "峰值", "RMS", "VAD语音", "覆盖", "字数");
     for (label, audio) in &variants {
         let (peak, rms, _) = stats(audio);
         let ratio = vad_speech_ratio(&vad, 60.0, audio);
-        let (segments, covered, chars) = run_session(&engine, &vad, audio);
+        let (_segments, covered, chars) = run_session(&engine, &vad, audio);
         println!(
             "{:<16} {:>10.4} {:>10.4} {:>7.1}% {:>9.1}s {:>6}",
             label, peak, rms, ratio, covered, chars
         );
-        let _ = segments;
     }
     println!("\n（素材 {:.1}s）", mono16.len() as f32 / 16_000.0);
+
+    // 缺口分析：每个空档里到底有没有声音、峰值多少 —— 「丢音频」问题的答案形式
+    let (segments, _, _) = run_session(&engine, &vad, &mono16);
+    println!("\n════ 句子时间线（{} 句）════", segments.len());
+    for (start, end, text) in &segments {
+        println!("  {:.1}s → {:.1}s  {}", start, end, text);
+    }
+    println!("\n════ 空档分析 ════");
+    report_gaps(&mono16, &segments);
 }
