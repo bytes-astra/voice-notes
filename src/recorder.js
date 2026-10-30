@@ -126,7 +126,7 @@ async function runStart(requestId, streaming) {
     if (requestId !== state.requestId) return
     setPhase('idle')
     logEvent('ERROR', `麦克风不可用: ${errorText(error)}`)
-    toast(t('record.micDenied', { error: fmtError(error) }), 'error')
+    toast(t('record.micDenied'), 'error')
     return
   }
   // 等权限的过程中取消了：不再开始。

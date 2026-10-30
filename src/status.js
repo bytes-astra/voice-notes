@@ -267,7 +267,7 @@ async function runDownload({
   } catch (error) {
     logEvent('ERROR', `模型下载失败: ${errorText(error)}`)
     toast(fmtError(error), 'error')
-    progressText.textContent = t('setup.downloadFailed', { error: fmtError(error) })
+    progressText.textContent = t('setup.downloadFailed')
   } finally {
     setBusy(false)
     button.disabled = false
