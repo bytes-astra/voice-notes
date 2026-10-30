@@ -500,8 +500,21 @@ await page.evaluate(() => { window.__mockStopWarning = null })
 await page.evaluate(() => {
   window.__mockStartGate = new Promise((resolve) => { window.__releaseStart = resolve })
 })
+const configCallsBefore = await page.evaluate(() =>
+  window.__mockCalls.filter(([cmd]) => cmd === 'set_language' || cmd === 'set_itn').length
+)
 await page.locator('#mic-btn').click()
 await page.waitForTimeout(100)
+// 启动中（requesting）也要锁住语言与 ITN：这一步后端还没开始收音频，
+// 但用户已经点开了准备界面 —— 此时改配置会让前后端语言不一致。
+check('启动中语言与 ITN 锁定', await page.evaluate(() =>
+  document.querySelector('.app').dataset.phase === 'requesting' &&
+  [...document.querySelectorAll('#lang-row .chip')].every((chip) => chip.disabled) &&
+  document.getElementById('itn-toggle').disabled
+))
+check('启动中不发送语言或 ITN 变更', (await page.evaluate(() =>
+  window.__mockCalls.filter(([cmd]) => cmd === 'set_language' || cmd === 'set_itn').length
+)) === configCallsBefore)
 await page.evaluate(() => {
   window.__emit('audio:error', { code: 'record.micError', fatal: true })
   window.__releaseStart()

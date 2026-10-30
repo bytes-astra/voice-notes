@@ -142,7 +142,6 @@ async function makePage({ status = {}, locale = 'zh-CN', theme = null, history =
                 return window.__mockSessionId
               case 'start_offline_recording':
               case 'start_streaming_recording':
-              case 'start_recording':
                 return JSON.parse(JSON.stringify(window.__mockStatus))
               case 'stop_recording':
                 return JSON.parse(JSON.stringify(RESULT))
