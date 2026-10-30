@@ -199,18 +199,87 @@ pub fn insert_gaps(transcript: &mut Transcript, gaps: Vec<Segment>) {
 }
 
 /// 去掉 SenseVoice 的 <|zh|><|NEUTRAL|> 之类控制标记，压平空白。
+///
+/// 顺带把 U+FFFD（�）扔掉：那是非法 UTF-8 被替换后的产物，
+/// 出现在转写结果里只会让用户以为识别出了乱码。来源见 `text_from_tokens`。
 pub fn clean(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_tag = false;
+    let mut had_replacement = false;
     for ch in text.chars() {
         match ch {
             '<' => in_tag = true,
             '>' if in_tag => in_tag = false,
-            _ if !in_tag => out.push(ch),
+            _ if !in_tag => {
+                if ch == '\u{FFFD}' {
+                    had_replacement = true;
+                } else {
+                    out.push(ch);
+                }
+            }
             _ => {}
         }
     }
+    if had_replacement {
+        log::warn("识别结果里有非法 UTF-8（U+FFFD），已丢弃 —— 见 asr::text_from_tokens");
+    }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// token 是不是字节级 token（`<0xE7>` 这种）。
+fn byte_token(token: &str) -> Option<u8> {
+    let hex = token.strip_prefix("<0x")?.strip_suffix('>')?;
+    if hex.len() != 2 {
+        return None;
+    }
+    u8::from_str_radix(hex, 16).ok()
+}
+
+/// 从 token 列表重建文本。
+///
+/// **为什么不能用 sherpa 给的 `text`**：这个流式模型的词表只有 1426 个汉字，
+/// 表外的字（番、茄、腩……）只能拆成字节 token `<0xE7><0x95><0xAA>` 拼出来。
+/// sherpa 的符号表把 `<0xE7>` 还原成**裸字节**放进 `text`（见
+/// `symbol-table.cc` 的 `is_bpe_with_byte_fallback_` 分支），于是：
+///
+/// - 切分点正好落在半个字上时，`text` 里就是半个字符 = 非法 UTF-8；
+/// - sherpa 自己的 `Utf8ToUtf32()` 会把非法字节**固化成 U+FFFD**（界面上的「�」）；
+/// - 位置不固定：可以是句尾（快照停在 `��` 上），也可以是句首
+///   （`Reset()` 把上一段末尾的 token 当 context 留给新段，上一段停在半个字上）。
+///
+/// token 列表是无损的 —— 这里把字节 token 还原成字节，自己按 UTF-8 解码。
+/// 末尾没解完的半个字先扣住（不进文本），等下一帧补齐再显示，
+/// 所以既不会吐「�」，也不会提前吐出半个字。
+pub fn text_from_tokens(tokens: &[String]) -> String {
+    let mut bytes: Vec<u8> = Vec::new();
+    for token in tokens {
+        match byte_token(token) {
+            Some(byte) => bytes.push(byte),
+            None => bytes.extend_from_slice(token.as_bytes()),
+        }
+    }
+    let mut text = String::new();
+    let mut rest = bytes.as_slice();
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(valid) => {
+                text.push_str(valid);
+                break;
+            }
+            Err(err) => {
+                let valid_up_to = err.valid_up_to();
+                // valid_up_to 之前一定是合法 UTF-8，from_utf8 的契约保证。
+                text.push_str(std::str::from_utf8(&rest[..valid_up_to]).unwrap_or(""));
+                match err.error_len() {
+                    // 中间真的有坏字节：跳过（正常不会出现，出现就是解码器坏了）
+                    Some(len) => rest = &rest[valid_up_to + len..],
+                    // 末尾不完整：扣住，等下一帧补齐
+                    None => break,
+                }
+            }
+        }
+    }
+    text
 }
 
 fn is_cjk(ch: char) -> bool {
@@ -675,7 +744,8 @@ impl StreamingSession {
         while self.recognizer.recognizer.is_ready(&self.stream) {
             self.recognizer.recognizer.decode(&self.stream);
             if let Some(result) = self.recognizer.recognizer.get_result(&self.stream) {
-                let text = clean(&result.text);
+                // 用 token 列表重建，不用 sherpa 的 text —— 后者会把半个字变成「�」。
+                let text = clean(&text_from_tokens(&result.tokens));
                 if text != self.partial {
                     self.partial = text.clone();
                     if !text.is_empty() {
@@ -775,3 +845,6 @@ mod merge_tests;
 
 #[cfg(test)]
 mod pre_roll_tests;
+
+#[cfg(test)]
+mod utf8_tests;

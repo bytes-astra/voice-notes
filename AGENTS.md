@@ -144,6 +144,8 @@
 
 ### 日志
 
+**逐句都要记日志**：整段录音记 `识别出一句：起 → 止，N 字`；流式（`record.rs` 的 `run_streaming_core`）记 `流式识别出一句` / `流式收尾识别出一句`，文件转写（`lib.rs` 的 `transcribe_file`）记 `文件识别出一句` —— 只记边界和字数、不记内容，配合总时长就能算出哪一段没被覆盖。**缺口占位符不算句子**（那是「丢了音频」的标记，不是识别结果）。
+
 **日志一直开着，不需要用户配置**：`log.rs`（`log::info` / `warn` / `error`）写到系统标准日志目录 —— macOS `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，Windows `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log`；超 1 MB 轮转一次保留 `.1`，同时镜像 stderr。没有开关、没有设置页 —— 用户反馈问题直接把这个文件发过来。前端那边用 `client_log` 命令写进同一个文件（`src/tauri.js` 的 `logEvent()`），这样一份文件就是完整的一份记录。
 
 ### 整段模式
@@ -163,7 +165,9 @@
 - **VAD 门控**（在 `record.rs` 的 `run_streaming_core`）：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字）；起音前留 0.4 s 预录避免切字头。
 - 流式模型是独立的一组 assets（`models.rs` 的 `STREAM_*`：`streaming-zipformer-zh-int8-2025-06-30` + `silero_vad.onnx`），只覆盖中文；选粤/日/韩时前端自动切回整段。**流式的 `silero_vad.onnx` 与整段的是同一个 v5 文件**（`STREAM_VAD` 和 `VAD` 指向同一 commit 下的 `silero_vad_v5.onnx`）—— 两种模式的切句边界要一致。
 - **流式结果就是最终结果**（不要用 SenseVoice 覆盖它，这个功能已删）：实测流式明显更准，而且覆盖要保留全部音频，和「不限时长、内存恒定」直接冲突。
+- **流式文本要从 token 列表重建，别用 sherpa 的 `text` 字段**（`asr.rs` 的 `text_from_tokens`）：流式模型词表只有 1426 个汉字，表外的字（番、茄、腩、苹、莓、酪……）只能拆成**字节 token** `<0xE7><0x95><0xAA>` 拼；sherpa 的符号表把 `<0xE7>` 还原成**裸字节**放进 `text`（`symbol-table.cc` 的 `is_bpe_with_byte_fallback_` 分支），切分点落在半个字上时 `text` 就是非法 UTF-8，sherpa 自己的 `Utf8ToUtf32()` 会把它**固化成 U+FFFD** —— 界面上就是「�」。**token 列表是无损的**：从它重建，末尾没解完的半个字先扣住、等下一帧补齐。`clean()` 里另有兜底（丢掉 U+FFFD 并记 WARN）。回归测试 `streaming_smoke::keeps_out_of_vocab_chars_intact` + fixture `tests/fixtures/zh-oov.wav`（macOS TTS 造的「番茄牛腩。苹果派要苹果。草莓奶酪。」）。**整段模式没这个问题** —— SenseVoice 的词表没有字节 token。
 - **术语表（热词）**（`settings.rs` 清洗，`engine.rs` 的 `StreamingEngine::new` 用它）：`settings.hotwords`（≤ 100 条、单条 ≤ 32 字，`settings::clean_hotwords` 清洗）。非空时 `StreamingEngine` 用 `modified_beam_search` + `config.hotwords_buf`（短音频约慢 6%），为空保持 greedy。**只能用在流式** —— SenseVoice 上给热词或 beam 会 `_Exit(-1)` 杀进程（已复现）。改词表会清空流式引擎，下次录音重载 161 MB。设置页「填入示例」用的是 `src-tauri/assets/hotwords.txt`。
+  - **热词要按模型的词表过滤**（`engine.rs` 的 `streaming_vocab_chars` / `split_hotwords_by_vocab`）：流式模型是 cjkchar **单字**词表（1426 字），sherpa 的 `EncodeHotwords` **逐字**查表 —— 任何一个字不在表里，**整条热词**就被跳过（只往 stderr 打一句 `Cannot find ID for token`，界面上看不出为什么没生效）。喂给 sherpa 之前先剔掉含表外字的条目，并记 WARN 列出是哪几条；`Status.hotwordsIgnored` 把这个数给界面，保存后提示「其中 N 个含模型不认识的字，不会生效」。**读不到词表时全部放行** —— 别因为词表读不出来就把用户的术语表清空。
 - 标点模型（`PUNCT`，CT-Transformer zh-en，281 MB，`engine.rs` 的 `PunctuationEngine`）独立放在 `models/punct/`，默认关闭；开启后 `StreamEmitter` 在每句定稿时调 `PunctuationEngine::apply`，实时中间结果不加标点。模型缺失/加载失败时静默降级，不阻断录音。
 
 ### 音频采集
@@ -297,5 +301,6 @@ VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test
 | 拖文件进窗口没反应 / 两个模型同时下载互相报 busy | [事件契约](#事件契约) |
 | 整段模式开头丢第一个字 | [整段模式](#整段模式) |
 | 结果缺句尾最后一个字 | [流式模式](#流式模式) |
+| 转写结果里出现「�」（乱码） | [流式模式](#流式模式) —— 词表外的字走字节 token，别用 sherpa 的 `text` |
 | 长录音后面少字 | [音频采集](#音频采集) |
 | 打开保存目录被拒 | [落盘与目录](#落盘与目录) |

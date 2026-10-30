@@ -115,6 +115,77 @@ fn flushes_trailing_words_on_finish() {
     }
 }
 
+/// 词表外的字（番、茄、腩、苹、莓、酪）不能变成「�」。
+///
+/// 这个流式模型的词表只有 1426 个汉字，表外的字只能拆成字节 token
+/// `<0xE7><0x95><0xAA>` 拼。sherpa 把这些 token 还原成裸字节放进 `text`，
+/// 切分点落在半个字上时就是非法 UTF-8，sherpa 自己会固化成 U+FFFD。
+/// 修法是从**无损的 token 列表**重建文本（asr::text_from_tokens）。
+///
+/// `tests/fixtures/zh-oov.wav` 是 macOS TTS 生成的「番茄牛腩。苹果派要苹果。草莓奶酪。」，
+/// 正好覆盖词表外的字。
+#[test]
+fn keeps_out_of_vocab_chars_intact() {
+    let Some(paths) = model_paths() else {
+        eprintln!("跳过：找不到流式模型（VOICE_NOTES_STREAMING_MODEL_DIR）");
+        return;
+    };
+
+    let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh-oov.wav").expect("读取测试音频");
+
+    let mut session = StreamingSession::new(engine, None);
+    let mut all = String::new();
+    for chunk in wave.samples().chunks(1_600) {
+        session.advance_samples(chunk.len());
+        for event in session.push(chunk) {
+            match event {
+                StreamEvent::Partial(text) => {
+                    assert!(
+                        !text.contains('\u{FFFD}'),
+                        "中间结果里出现了乱码：{text}"
+                    );
+                    all.push_str(&text);
+                }
+                StreamEvent::Segment(segment) => {
+                    assert!(
+                        !segment.text.contains('\u{FFFD}'),
+                        "定稿句里出现了乱码：{}",
+                        segment.text
+                    );
+                    all.push_str(&segment.text);
+                }
+            }
+        }
+    }
+    for event in session.finish() {
+        if let StreamEvent::Segment(segment) = event {
+            assert!(
+                !segment.text.contains('\u{FFFD}'),
+                "收尾句里出现了乱码：{}",
+                segment.text
+            );
+            all.push_str(&segment.text);
+        }
+    }
+
+    let transcript = session.transcript();
+    println!("结果：{}", transcript.text);
+    assert!(
+        !transcript.text.contains('\u{FFFD}'),
+        "转写结果里出现了乱码：{}",
+        transcript.text
+    );
+    // 词表外的字要真的在结果里 —— 不能为了不乱码而把字丢掉
+    for ch in ['番', '茄', '腩'] {
+        assert!(
+            transcript.text.contains(ch),
+            "结果里应该有“{ch}”：{}",
+            transcript.text
+        );
+    }
+}
+
 #[test]
 fn picks_requested_input_device() {
     use voice_notes_lib::audio::pick_device_name;

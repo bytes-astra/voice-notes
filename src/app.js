@@ -218,9 +218,13 @@ export function bindUI() {
     try {
       state.status = await invoke('set_hotwords', { hotwords })
       renderStatus()
+      // 模型不认识的字：这些术语流式用不了，得告诉用户。
+      const ignored = state.status?.hotwordsIgnored || 0
       toast(
         hotwords.length
-          ? t('settings.hotwordsSaved', { count: hotwords.length })
+          ? ignored
+            ? t('settings.hotwordsSavedSome', { count: hotwords.length, ignored })
+            : t('settings.hotwordsSaved', { count: hotwords.length })
           : t('settings.hotwordsCleared'),
       )
     } catch (error) {

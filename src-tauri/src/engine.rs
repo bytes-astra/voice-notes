@@ -3,6 +3,7 @@
 //!
 //! 「模型长什么样」在这里，「拿着模型怎么识别」在 asr.rs。
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -129,6 +130,8 @@ pub struct Status {
     pub punct: bool,
     pub punct_ready: bool,
     pub hotwords: Vec<String>,
+    /// 术语表里模型不认识的条目数（模型没下载时算不出来，按 0 记）
+    pub hotwords_ignored: usize,
     pub input_device: Option<String>,
     pub punct_bytes: u64,
     pub punct_total_bytes: u64,
@@ -168,6 +171,14 @@ pub fn status_of(app: &AppHandle, state: &AppState) -> Status {
                 .sum()
         })
         .unwrap_or(0);
+    // 模型词表外的字：这些术语流式用不了（sherpa 会整条跳过）。
+    let hotwords_ignored = streaming
+        .as_ref()
+        .map(|paths| {
+            let vocab = streaming_vocab_chars(&paths.tokens);
+            split_hotwords_by_vocab(&settings.hotwords, &vocab).1.len()
+        })
+        .unwrap_or(0);
     Status {
         model_ready: paths.is_some(),
         vad_ready: paths.as_ref().map(|p| p.vad.is_some()).unwrap_or(false),
@@ -191,6 +202,7 @@ pub fn status_of(app: &AppHandle, state: &AppState) -> Status {
         punct: settings.punct,
         punct_ready: models::resolve_punctuation(app).is_some(),
         hotwords: settings.hotwords.clone(),
+        hotwords_ignored,
         input_device: settings.input_device.clone(),
         punct_bytes: models::punctuation_install_dir(app)
             .ok()
@@ -532,13 +544,71 @@ use sherpa_onnx::{
 
 use crate::models::StreamingPaths;
 
+/// 流式模型词表里有的字。
+///
+/// 流式模型是 cjkchar **单字**词表（1426 个汉字）：热词按字编码 ——
+/// sherpa 的 `EncodeHotwords` 逐字查符号表，任何一个字不在表里，**整条热词**
+/// 就被跳过（sherpa 只会往 stderr 打一句 `Cannot find ID for token`，
+/// 界面上看不出为什么没生效）。
+pub fn streaming_vocab_chars(tokens_path: &str) -> HashSet<char> {
+    let mut chars = HashSet::new();
+    let Ok(text) = fs::read_to_string(tokens_path) else {
+        return chars;
+    };
+    for line in text.lines() {
+        let symbol = line.split_whitespace().next().unwrap_or("");
+        let mut it = symbol.chars();
+        // 单字符号才 usable —— `<blk>` / `<0xE7>` 这类多字符的跳过。
+        if let (Some(ch), None) = (it.next(), it.next()) {
+            if ch != '<' {
+                chars.insert(ch);
+            }
+        }
+    }
+    chars
+}
+
+/// 把热词分成「模型能用」和「模型不认识」两拨。
+///
+/// 词表读不出来（文件缺失/损坏）时**全部当作能用** —— 宁可放行，
+/// 也别因为读不到词表就把用户的术语表清空。
+pub fn split_hotwords_by_vocab(
+    hotwords: &[String],
+    vocab: &HashSet<char>,
+) -> (Vec<String>, Vec<String>) {
+    if vocab.is_empty() {
+        return (hotwords.to_vec(), Vec::new());
+    }
+    let mut usable = Vec::new();
+    let mut ignored = Vec::new();
+    for word in hotwords {
+        if word.chars().all(|ch| vocab.contains(&ch)) {
+            usable.push(word.clone());
+        } else {
+            ignored.push(word.clone());
+        }
+    }
+    (usable, ignored)
+}
+
 impl StreamingEngine {
     /// 加载流式 Zipformer（中英双语，+ 可选的术语表热词）。
     ///
     /// 热词要求 `modified_beam_search`（greedy 不支持 context graph），没配词表时
     /// 保持 greedy，避免给不用热词的人平白加解码延迟。
     pub fn new(paths: &StreamingPaths, hotwords: &[String]) -> Result<Self, String> {
-        let words = hotwords.join("\n");
+        // 模型不认识的字先剔掉：留着只会让 sherpa 跳过整条热词，
+        // 还刷一屏 `Cannot find ID for token` 到 stderr。
+        let vocab = streaming_vocab_chars(&paths.tokens);
+        let (usable, ignored) = split_hotwords_by_vocab(hotwords, &vocab);
+        if !ignored.is_empty() {
+            log::warn(format!(
+                "术语表里有 {} 条含模型不认识的字，不会生效：{}",
+                ignored.len(),
+                ignored.join("、")
+            ));
+        }
+        let words = usable.join("\n");
         let use_hotwords = !words.trim().is_empty();
         let mut config = OnlineRecognizerConfig::default();
         config.model_config.transducer = OnlineTransducerModelConfig {

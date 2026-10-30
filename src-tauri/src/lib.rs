@@ -788,6 +788,8 @@ async fn transcribe_file(
         let mut session = asr::OfflineSession::new(engine.clone(), vad);
 
         let emit_segment = |segment: &asr::Segment| {
+            // 逐句记日志：出问题时能看出句子覆盖了哪段时间（录音路径同款）。
+            record::log_segment("文件识别出一句", segment);
             let _ = thread_app.emit(
                 "stream:segment",
                 SegmentPayload {

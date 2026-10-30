@@ -109,13 +109,26 @@ pub fn log_transcript(kind: &str, transcript: &Transcript) {
 
 /// 记一句识别结果：只记边界和字数，不记内容 —— 怀疑「录音丢了」时能看出句子在不在、
 /// 覆盖了哪段时间（配合总时长就能算出哪一段没被覆盖）。
-fn log_segment(tag: &str, segment: &asr::Segment) {
+pub fn log_segment(tag: &str, segment: &asr::Segment) {
     log::info(format!(
         "{tag}：{:.1}s → {:.1}s，{} 字",
         segment.start,
         segment.end,
         segment.text.chars().count()
     ));
+}
+
+/// 记流式识别出的句子（整段模式同款日志）。
+///
+/// 缺口占位符不算句子 —— 它是「这里丢了音频」的标记，不是识别结果。
+fn log_stream_events(tag: &str, events: &[StreamEvent]) {
+    for event in events {
+        if let StreamEvent::Segment(segment) = event {
+            if !audio::is_gap_marker(&segment.text) {
+                log_segment(tag, segment);
+            }
+        }
+    }
 }
 
 /// 整段模式：边录音边按句识别。
@@ -337,7 +350,9 @@ where
 
         let Some(detector) = vad.as_ref() else {
             if !discard.load(Ordering::Relaxed) {
-                emit(session.push(&samples));
+                let events = session.push(&samples);
+                log_stream_events("流式识别出一句", &events);
+                emit(events);
             }
             continue;
         };
@@ -352,18 +367,24 @@ where
             if !active {
                 active = true;
                 if !preroll.is_empty() && !discard.load(Ordering::Relaxed) {
-                    emit(session.push(&std::mem::take(&mut preroll)));
+                    let events = session.push(&std::mem::take(&mut preroll));
+                    log_stream_events("流式识别出一句", &events);
+                    emit(events);
                 }
             }
             if !discard.load(Ordering::Relaxed) {
-                emit(session.push(&samples));
+                let events = session.push(&samples);
+                log_stream_events("流式识别出一句", &events);
+                emit(events);
             }
         } else {
             if active {
                 active = false;
                 // 静音开始：立刻收尾当前句子，避免模型在噪声上继续编。
                 if !discard.load(Ordering::Relaxed) {
-                    emit(session.force_end());
+                    let events = session.force_end();
+                    log_stream_events("流式识别出一句", &events);
+                    emit(events);
                 }
             }
             preroll.extend_from_slice(&samples);
@@ -414,9 +435,13 @@ where
         // 循环退出后才采到的尾包也占真实录音时长。
         session.advance_samples(tail.len());
         // 尾部即使仍被门控判为语音，也保持原有识别行为。
-        emit(session.push(&tail));
+        let events = session.push(&tail);
+        log_stream_events("流式收尾识别出一句", &events);
+        emit(events);
     }
-    emit(session.finish());
+    let events = session.finish();
+    log_stream_events("流式收尾识别出一句", &events);
+    emit(events);
     let mut transcript = session.transcript();
     asr::insert_gaps(&mut transcript, gaps);
     transcript
