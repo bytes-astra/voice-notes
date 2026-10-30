@@ -1,6 +1,6 @@
 [package]
 name = "voice-notes"
-version = "1.2.0"
+version = "1.2.1"
 description = "Local speech-to-text desktop app (SenseVoiceSmall offline + Zipformer streaming)"
 edition = "2021"
 rust-version = "1.78"

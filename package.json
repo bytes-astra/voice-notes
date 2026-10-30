@@ -1,7 +1,7 @@
 {
   "name": "voice-notes",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "本地语音转文字桌面应用（整段 SenseVoice + 流式 Zipformer）",
   "scripts": {
     "dev": "tauri dev",
