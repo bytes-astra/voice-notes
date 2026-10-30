@@ -2,6 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **复选框已回填（2026-10-30）**：三个 Task 都已实现，之前的复选框只是没回填。
+> 实现形态是下面「后续调整」那一版（`clearIcon()` 橡皮擦 + 复制/保存描边），
+> 计划正文里「三段 SVG」「无描边」的描述是执行前的原样。
+
 **Goal:** 转写结果卡片右上角的「复制 / 保存 / 清空」三个按钮从文字按钮改成纯图标按钮，视觉与历史记录的行内按钮、侧栏主题按钮一致。
 
 **Architecture:** 新增零依赖的叶子模块 `src/icons.js`，持有三段内联 SVG 字符串，作为图标唯一来源；`src/history.js` 改为 import 它，转写结果卡片右上角的三个按钮由 `src/result.js` 的 `renderResultActions()` 注入同一份 SVG。按钮文字改用 `data-i18n-title` + `data-i18n-aria`（复用现有 key），不新增字典条目。
@@ -49,7 +53,7 @@
 - Consumes: 无（`src/icons.js` 零依赖）
 - Produces: `src/icons.js` 导出 `copyIcon(): string` / `saveIcon(): string` / `trashIcon(): string`，每个返回一段完整的 `<svg …>…</svg>` 字符串（`viewBox="0 0 24 24"`、`width="16" height="16"`、`aria-hidden="true"`、`stroke="currentColor"`、`stroke-width="1.7"`）。
 
-- [ ] **Step 1: 加一条特征测试（重构保护 —— 这一步就该通过）**
+- [x] **Step 1: 加一条特征测试（重构保护 —— 这一步就该通过）**
 
 在 `scripts/ui/check.mjs` 里 `check('历史写了一条', ...)` 那行之后、`await page.screenshot({ path: `${SHOTS}/02-zh-result.png` })` 之前插入：
 
@@ -66,12 +70,12 @@ check(
 )
 ```
 
-- [ ] **Step 2: 跑测试确认基线是绿的**
+- [x] **Step 2: 跑测试确认基线是绿的**
 
 Run: `npm run check:ui`
 Expected: `历史行内三个图标按钮都在` PASS，整体 `79/79 通过`（当前 78 条 + 新增 1 条）。
 
-- [ ] **Step 3: 新建 `src/icons.js`**
+- [x] **Step 3: 新建 `src/icons.js`**
 
 内容（三个函数原样搬 `src/history.js` 里的版本，只把 `width`/`height` 从 15 改成 16，并加 `aria-hidden="true"`）：
 
@@ -102,7 +106,7 @@ export function trashIcon() {
 }
 ```
 
-- [ ] **Step 4: `src/history.js` 改为 import**
+- [x] **Step 4: `src/history.js` 改为 import**
 
 在 `import { copyText, saveText } from './export.js'` 之后加一行：
 
@@ -112,19 +116,19 @@ import { copyIcon, saveIcon, trashIcon } from './icons.js'
 
 然后删掉 `src/history.js` 末尾的 `copyIcon()` / `saveIcon()` / `trashIcon()` 三个函数定义（第 94-104 行）。文件里其它东西一行不动。
 
-- [ ] **Step 5: 跑测试确认重构没破坏历史记录**
+- [x] **Step 5: 跑测试确认重构没破坏历史记录**
 
 Run: `npm run check:i18n && npm run check:ui`
 Expected: i18n 检查通过；`79/79 通过`，`历史行内三个图标按钮都在` 仍 PASS。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add src/icons.js src/history.js scripts/ui/check.mjs
 git commit -m "refactor(icons): 抽出共享图标模块"
 ```
 
-- [ ] **Step 7: `AGENTS.md` 登记新模块**
+- [x] **Step 7: `AGENTS.md` 登记新模块**
 
 把「核心架构与原则」里「单向依赖」那一行改成（`icons.js` 补在链首）：
 
@@ -151,7 +155,7 @@ git commit -m "docs(agents): 依赖链补上 icons.js"
 - Consumes: `copyIcon(): string` / `saveIcon(): string` / `trashIcon(): string`（Task 1 的 `src/icons.js`）
 - Produces: `src/result.js` 导出 `renderResultActions(): void` —— 把三个图标写进 `els.copyBtn` / `els.saveBtn` / `els.clearBtn` 的 `innerHTML`。
 
-- [ ] **Step 1: 写失败测试（中文首屏）**
+- [x] **Step 1: 写失败测试（中文首屏）**
 
 在 `scripts/ui/check.mjs` 第 165 行 `check('无未翻译 key', ...)` 之后、`await page.screenshot({ path: `${SHOTS}/01-zh-light.png` })` 之前插入：
 
@@ -175,12 +179,12 @@ check(
 )
 ```
 
-- [ ] **Step 2: 跑测试确认它失败**
+- [x] **Step 2: 跑测试确认它失败**
 
 Run: `npm run check:ui`
 Expected: `结果区按钮是纯图标且有可访问名称` **FAIL**（现在的按钮是文字按钮，没有 `svg`、`aria-label` 也不是「复制」），其余 79 条仍 PASS。
 
-- [ ] **Step 3: 改 `src/index.html`**
+- [x] **Step 3: 改 `src/index.html`**
 
 把第 146-150 行的 `.card-actions` 整块替换成：
 
@@ -194,7 +198,7 @@ Expected: `结果区按钮是纯图标且有可访问名称` **FAIL**（现在�
 
 图标本体不写在这里 —— 由 `renderResultActions()` 注入（见 Review Focus 第 4 条）。
 
-- [ ] **Step 4: `src/result.js` 加 `renderResultActions()`**
+- [x] **Step 4: `src/result.js` 加 `renderResultActions()`**
 
 在 `import { addHistory } from './history.js'` 之后加：
 
@@ -214,7 +218,7 @@ export function renderResultActions() {
 }
 ```
 
-- [ ] **Step 5: `src/app.js` 调用它**
+- [x] **Step 5: `src/app.js` 调用它**
 
 第 9 行改成：
 
@@ -230,12 +234,12 @@ import { clearResult, renderResultActions, showTranscript } from './result.js'
 
 （`init()` 里 `applyLocale()` 排在更前面，所以 `title` / `aria-label` 会在按钮有图标之前就填好。）
 
-- [ ] **Step 6: 跑测试确认通过**
+- [x] **Step 6: 跑测试确认通过**
 
 Run: `npm run check:i18n && npm run check:ui`
 Expected: i18n 检查通过；`80/80 通过`，新断言 PASS，「清空后切中文不复原」仍 PASS。
 
-- [ ] **Step 7: 加英文界面的断言**
+- [x] **Step 7: 加英文界面的断言**
 
 切语言不能漏 —— 在 `scripts/ui/check.mjs` 第 230 行 `check('切英文 meta 跟随', ...)` 之后插入：
 
@@ -255,12 +259,12 @@ check(
 
 这一步跑的时候界面停在设置页，转写结果面板是 `display: none` —— 断言查的是 DOM 属性，不受可见性影响（Review Focus 第 3 条）。
 
-- [ ] **Step 8: 跑测试确认通过**
+- [x] **Step 8: 跑测试确认通过**
 
 Run: `npm run check:ui`
 Expected: `81/81 通过`，`切英文后结果区按钮跟随` PASS。
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
 ```bash
 git add src/index.html src/result.js src/app.js scripts/ui/check.mjs
@@ -278,21 +282,21 @@ git commit -m "feat(ui): 结果区动作按钮改成图标"
 - Consumes: Task 2 的界面改动
 - Produces: 更新后的 `docs/screenshots/` 九张 PNG
 
-- [ ] **Step 1: 跑截图脚本**
+- [x] **Step 1: 跑截图脚本**
 
 Run: `npm run shots`
 Expected: 输出九行「写出 …/docs/screenshots/<name>.png」，无报错。
 
-- [ ] **Step 2: 确认结果卡片变成了图标按钮**
+- [x] **Step 2: 确认结果卡片变成了图标按钮**
 
 Run: `git status --short docs/screenshots/`
 Expected: 至少 `docs/screenshots/ready.png` 等文件被修改（纯图标按钮出现在结果卡片右上角）。
 
-- [ ] **Step 3: 人工看一眼截图**
+- [x] **Step 3: 人工看一眼截图**
 
 打开 `docs/screenshots/ready.png`：转写结果卡片右上角应该是三个纯图标按钮（复制 / 保存 / 清空），不再有文字。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add docs/screenshots
