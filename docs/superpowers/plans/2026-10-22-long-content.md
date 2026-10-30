@@ -6,6 +6,8 @@
 
 **Architecture:** 采集缓冲改成消费式（ASR 线程取走即释放），两种模式共用一个 ASR 线程：流式喂 Zipformer 在线解码，整段喂 Silero VAD 切句后逐句送 SenseVoice。文件转写搬到后端用 symphonia 解码，走同一条管线。hybrid 的「复核」删掉，只留「结果异常」的检测提醒。
 
+> ⚠️ **hybrid 这一句已作废**：后续提交 `65876b5`（2026-10-22 13:15）把 hybrid 连同检测提醒**整个删掉** —— 不做复核，也不做异常提醒。理由：复核要保留全部音频，与「不限时长、内存恒定」直接冲突；实测流式准确率（99%）不低于整段（91%），流式结果本身就是最终结果。现行口径见 [AGENTS.md](../../../AGENTS.md)。
+
 **Tech Stack:** Tauri 2 / Rust 2021（MSRV 1.78）/ sherpa-onnx 1.13.8 / symphonia 0.5.5 / 原生 JS 前端（无构建步骤）
 
 **Spec:** `docs/superpowers/specs/2026-10-22-long-content-design.md`
@@ -408,6 +410,11 @@ git commit -m "feat(recording): 整段模式改走 ASR 线程，两种模式统�
 ---
 
 ### Task 5: 事件载荷改成增量 + hybrid 缩减为检测提醒
+
+> ❌ **Task 5 的 hybrid 部分已被后续提交 `65876b5`（2026-10-22 13:15）撤销**：复核和检测提醒**都不做**。
+> `src-tauri/src/hybrid.rs`（连 `is_degenerate` 一起）、`settings.warn_on_bad` / `set_warn_on_bad` / `Status.warn_on_bad`、`Transcript.quality_warning`、设置页「异常提醒」整块删除。
+> 理由：复核要保留全部音频，和「录音不限时长、内存恒定」直接冲突；实测流式准确率 99% vs 整段 91%，流式结果本身就是最终结果。
+> **本任务只保留「事件载荷改成增量」那一半**；下面凡是提 hybrid / `warn_on_bad` / `quality_warning` 的步骤都**不要执行**。
 
 **Files:**
 - Modify: `src-tauri/src/lib.rs`（`StreamEmitter`、事件载荷、`correct_streaming` 删除）

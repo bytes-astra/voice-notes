@@ -238,9 +238,9 @@ Phase A 是纯重构，测试策略是「**行为不变**」：
 | B2 `Engine::recognize()` | `asr.rs` | — |
 | B3 `OfflineSession` | `asr.rs` | — |
 | B4 录音命令改走 ASR 线程 | `lib.rs`：`run_offline` / `AppState.offline_session` / 引擎取走还回 | — |
-| B5 事件载荷改增量 + hybrid 缩减 | `lib.rs`：`SegmentPayload` / `PartialPayload`；删 `correct_streaming`；`settings.warn_on_bad` | `events.js`：`stream:segment` 改成追加；`result.js` 加 `appendSegment(text)` |
+| B5 事件载荷改增量 + hybrid 缩减 | `lib.rs`：`SegmentPayload` / `PartialPayload`；删 `correct_streaming`；`settings.warn_on_bad` ❌ 后被 `65876b5` 撤销 | `events.js`：`stream:segment` 改成追加；`result.js` 加 `appendSegment(text)` |
 | B6 symphonia 后端解码 | 新建 `decode.rs`；`transcribe_file` 命令 | — |
-| B7 前端改造 | — | `recorder.js`（去掉 10 分钟自动停、加「正在听」指示）、`files.js`（改调 `transcribe_file`、加进度、删 `encodeWave`/`audioBase64`）、`status.js`（hybrid 开关改成「异常时提醒」）、`events.js`（增量）、`index.html`（`#listening`）、`i18n.js` + `locales/en.js` |
+| B7 前端改造 | — | `recorder.js`（去掉 10 分钟自动停、加「正在听」指示）、`files.js`（改调 `transcribe_file`、加进度、删 `encodeWave`/`audioBase64`）、`status.js`（hybrid 开关改成「异常时提醒」❌ 已撤销）、`events.js`（增量）、`index.html`（`#listening`）、`i18n.js` + `locales/en.js` |
 | B8 文档 + 端到端 | — | README / AGENTS.md / 截图 |
 
 **Phase B 带来的新依赖图变化**（拆分后不会产生环）：
