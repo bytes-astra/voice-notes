@@ -3,6 +3,8 @@
 //   2. index.html 里引用的 data-i18n* key 必须存在于基础字典
 //   3. src/*.js 里 t('key') 引用的 key 也必须存在（漏 key 同样会显示 key 名）
 //   4. 后端用的错误码（code("…")）必须在字典里
+//   5. t('key', { x }) 传的参数必须真有 {x} 占位符（否则参数被静默丢弃）
+//   6. 同一个 key 在各语言里的占位符集合必须一致
 // 用法：node scripts/check-i18n.mjs
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -71,6 +73,68 @@ for (const file of readdirSync(rsDir).filter((name) => name.endsWith('.rs'))) {
   for (const match of code.matchAll(/(?<![\w:.])code(?:_detail)?\(\s*"([^"]+)"/g)) {
     if (!baseKeys.includes(match[1])) {
       problems.push(`src-tauri/src/${file} 用了不存在的错误码：${match[1]}`)
+    }
+  }
+}
+
+// 字典文本里的占位符：{name}。
+const placeholders = (text) =>
+  new Set([...String(text).matchAll(/\{(\w+)\}/g)].map((match) => match[1]))
+
+// t('key', { a, b }) 的顶层参数名。对象字面量里可能嵌套 {}，
+// 只有顶层逗号分出来的才是 t() 的参数，嵌套里的不算。
+const topLevelParams = (body) => {
+  const parts = []
+  let depth = 0
+  let buffer = ''
+  for (const ch of body) {
+    if (ch === '{') depth++
+    else if (ch === '}') depth--
+    else if (ch === ',' && depth === 0) {
+      parts.push(buffer)
+      buffer = ''
+      continue
+    }
+    buffer += ch
+  }
+  parts.push(buffer)
+  return parts
+    .map((part) => part.match(/^\s*([A-Za-z_$][\w$]*)\s*:/))
+    .filter(Boolean)
+    .map((match) => match[1])
+}
+
+// 5. 传给 t() 的参数必须在字典里有对应占位符。
+// 传了字典里没有的占位符不会报错，只是参数被静默丢掉 —— 界面上就少了一句话。
+const callWithParamsRe = /(?<![\w$.])t\(\s*'([^'\\]+)'\s*,\s*\{([^}]*)\}/g
+for (const file of jsFiles) {
+  const code = readFileSync(join(root, 'src', file), 'utf8')
+  for (const match of code.matchAll(callWithParamsRe)) {
+    const [, key, body] = match
+    const text = locales[base]?.[key]
+    if (text == null) continue // key 不存在的情况上面已经报过了
+    for (const param of topLevelParams(body)) {
+      if (!text.includes(`{${param}}`)) {
+        problems.push(
+          `src/${file} 传给 t('${key}') 的参数 ${param} 在字典里没有 {${param}} 占位符（会被静默丢弃）：「${text}」`
+        )
+      }
+    }
+  }
+}
+
+// 6. 同一个 key 在各语言里的占位符必须一致：少一个占位符 → 那一语言少一段内容。
+for (const [name, dict] of Object.entries(locales)) {
+  if (name === base) continue
+  for (const [key, text] of Object.entries(locales[base] || {})) {
+    const other = dict[key]
+    if (other == null) continue // 缺 key 已经报过了
+    const mine = [...placeholders(text)].sort().join()
+    const theirs = [...placeholders(other)].sort().join()
+    if (mine !== theirs) {
+      problems.push(
+        `${name} 的 ${key} 占位符和 ${base} 不一致：${base}=「${text}」 ${name}=「${other}」`
+      )
     }
   }
 }
