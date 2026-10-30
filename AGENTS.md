@@ -192,7 +192,7 @@
 
 ## 🚀 版本发布流程与权限声明
 
-- 版本号写在两处：`package.json` 的 `version` 与 `src-tauri/tauri.conf.json` 的 `version`，发布前两处都要改。
+- 版本号写在**三处**，发布前**三处都要改**：`package.json` 的 `version`（npm 包）、`src-tauri/tauri.conf.json` 的 `version`（打包产物的版本）、`src-tauri/Cargo.toml` 的 `version`（crate 版本 —— 应用启动日志里 `app.package_info().version` 打的就是它，漏改的话日志里的版本和安装包对不上）。
 - 推 tag（`v*`）触发 CI，同时产出 macOS（dmg）和 Windows（msi/exe），在 Artifacts 下载。
 - **重发同版本 tag 会把 Release 打成 Draft**：删远端 tag（`git push origin :refs/tags/v1.0.0`）之后，GitHub 会把该 Release 退回 draft，重推 tag 也**不会**自动发布 —— 仓库侧栏只剩「Create a new release」，产物其实都在。构建跑完要 `gh release edit v1.0.0 --draft=false` 才真正公开；想连正文一起刷新，就先 `gh release delete v1.0.0 --yes` 再重推 tag，让 workflow 走 `gh release create --generate-notes`。
 - 发布前先用本地 `npm run build` 出的 `.app` 验一遍麦克风权限。
