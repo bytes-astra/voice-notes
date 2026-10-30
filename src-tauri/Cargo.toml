@@ -16,7 +16,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
-tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sherpa-onnx = "1.13.8"
@@ -27,9 +26,7 @@ cpal = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 futures-util = "0.3"
 sha2 = "0.10"
-base64 = "0.22"
 hex = "0.4"
-dirs = "6"
 # 日志时间戳用本地时间（chrono 已经在 tauri 的依赖树里，不增加编译成本）
 chrono = "0.4"
 tokio = { version = "1", features = ["sync", "time", "rt"] }

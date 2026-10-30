@@ -984,7 +984,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // 日志一直开着，不需要用户配置：写到系统标准日志目录 + stderr。
             log::init(app.handle());

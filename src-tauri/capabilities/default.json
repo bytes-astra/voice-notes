@@ -11,8 +11,6 @@
     "core:window:allow-set-theme",
     "dialog:default",
     "clipboard-manager:default",
-    "clipboard-manager:allow-write-text",
-    "opener:default",
-    "opener:allow-open-url"
+    "clipboard-manager:allow-write-text"
   ]
 }
