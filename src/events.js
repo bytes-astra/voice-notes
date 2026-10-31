@@ -2,7 +2,7 @@
 
 import { els, fmtBytes, fmtClock, fmtError, state, t, toast } from './core.js'
 import { listen } from './tauri.js'
-import { modelBadgeText, renderStatus, setProgress, setStreamProgress } from './status.js'
+import { applyEngineState, modelBadgeText, renderStatus, setProgress, setStreamProgress } from './status.js'
 import { cancelRecording, pushLevel, stopRecording } from './recorder.js'
 import { appendSegment, showPartial } from './result.js'
 
@@ -110,19 +110,11 @@ export async function listenEvents() {
   await listen('engine:state', (event) => {
     const phase = event.payload?.phase
     state.engine = phase
+    // 徽标三态只有一处决定（status.js 的 applyEngineState）——
+    // 这里再写一套，迟早跟 renderStatus() 漂移。
+    if (['error', 'loading', 'ready'].includes(phase)) applyEngineState(phase)
     if (phase === 'error') {
-      els.dot.dataset.state = 'error'
-      els.badge.className = 'badge danger'
-      els.badge.textContent = modelBadgeText('error')
       toast(errorMessage(event.payload?.message), 'error')
-    } else if (phase === 'loading') {
-      els.dot.dataset.state = 'loading'
-      els.badge.className = 'badge'
-      els.badge.textContent = modelBadgeText('loading')
-    } else if (phase === 'ready') {
-      els.dot.dataset.state = 'ready'
-      els.badge.className = 'badge'
-      els.badge.textContent = modelBadgeText('ready')
     }
   })
 }

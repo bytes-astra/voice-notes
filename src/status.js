@@ -20,6 +20,18 @@ export function modelBadgeText(phase) {
   return t('model.badge.ready', { name })
 }
 
+/// 引擎三态的唯一出处：状态点 + 徽标底色 + 徽标文案。
+///
+/// 徽标以前有两套写法且已经漂移（events.js 的 engine:state 一套、
+/// renderStatus() 一套），流式引擎报错时一个红底一个灰底。
+/// 两种模式必须一致 —— 所以状态怎么显示只看这里。
+export function applyEngineState(phase) {
+  const shown = phase === 'error' || phase === 'loading' ? phase : 'ready'
+  els.dot.dataset.state = shown
+  els.badge.className = shown === 'error' ? 'badge danger' : 'badge'
+  els.badge.textContent = modelBadgeText(shown)
+}
+
 export async function refreshStatus() {
   try {
     state.status = await invoke('status')
@@ -37,11 +49,14 @@ export function renderStatus() {
   els.setup.classList.toggle('hidden', streamingMode || status.modelReady)
 
   if (streamingMode) {
-    els.badge.className = ready ? 'badge' : 'badge warn'
-    els.badge.textContent = ready
-      ? modelBadgeText(state.engine)
-      : t('model.badge.streamingMissing')
-    els.dot.dataset.state = state.engine === 'error' ? 'error' : state.engine === 'loading' ? 'loading' : ready ? 'ready' : 'idle'
+    if (!ready) {
+      // 模型没装好：不是引擎三态，徽标用黄色（跟整段一致）。
+      els.badge.className = 'badge warn'
+      els.badge.textContent = t('model.badge.streamingMissing')
+      els.dot.dataset.state = state.engine === 'error' ? 'error' : state.engine === 'loading' ? 'loading' : 'idle'
+    } else {
+      applyEngineState(state.engine)
+    }
   } else if (!ready) {
     els.badge.textContent = t('model.badge.offlineMissing')
     els.badge.className = 'badge warn'
@@ -53,9 +68,7 @@ export function renderStatus() {
       els.setupText.textContent = t('setup.cached', { done: fmtBytes(partial), total: fmtBytes(status.totalBytes) })
     }
   } else {
-    els.badge.className = 'badge'
-    els.badge.textContent = modelBadgeText(state.engine)
-    els.dot.dataset.state = state.engine === 'error' ? 'error' : state.engine === 'loading' ? 'loading' : 'ready'
+    applyEngineState(state.engine)
   }
 
   els.mic.classList.toggle('disabled', !ready)

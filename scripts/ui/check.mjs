@@ -713,6 +713,29 @@ check(
   engineErrorToast,
 )
 
+// 流式引擎报错：徽标底色必须跟整段一致（红底），不能一个红一个灰
+//
+// 必须点模式芯片切到流式：前端只在 setMode / refreshStatus 时读 status，
+// 直接改 window.__mockStatus 不会让前端状态跟着变。
+await page.locator('.mode-chip[data-mode="streaming"]').click()
+await page.waitForTimeout(200)
+await page.evaluate(() =>
+  window.__emit('streaming:state', {
+    phase: 'error',
+    message: 'model.streamLoadFailed:/Users/someone/Library/Application Support/models/streaming/model.int8.onnx',
+  }),
+)
+await page.waitForTimeout(200)
+const streamingBadge = await page.locator('#model-badge').getAttribute('class')
+check('流式引擎报错时徽标是红底', streamingBadge.includes('danger'), streamingBadge)
+check(
+  '流式引擎报错时状态点标红',
+  (await page.locator('#engine-dot').getAttribute('data-state')) === 'error',
+)
+// 切回整段，后面的用例还按整段模式走
+await page.locator('.mode-chip[data-mode="offline"]').click()
+await page.waitForTimeout(200)
+
 // ── 下载失败：不能把镜像地址 / HTTP 状态原样弹给用户 ──
 // 下载按钮在「模型已就绪」时是隐藏的，直接在页面里点它的 click 事件。
 await page.evaluate(() => document.getElementById('download-btn').click())
