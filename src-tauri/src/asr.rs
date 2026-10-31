@@ -194,6 +194,19 @@ pub fn insert_gaps(transcript: &mut Transcript, gaps: Vec<Segment>) {
         a.start
             .partial_cmp(&b.start)
             .unwrap_or(std::cmp::Ordering::Equal)
+            // 同一时刻：缺口标记排在句子**前面**。
+            //
+            // 缺口标记落在缺口终点（丢掉的音频之后才开始识别），而它后面
+            // 第一句的起点正好就是这个时刻 —— 两者 `start` 相等。
+            // `sort_by` 是稳定排序，原顺序会被保留：gaps 是后 extend 进来的，
+            // 不加这条的话缺口会排到句子**后面**（文本变成「句子[[gap:3]]」，
+            // 读起来像是句子之后才丢的音频）。
+            .then_with(|| {
+                let a_gap = is_gap_marker(&a.text);
+                let b_gap = is_gap_marker(&b.text);
+                // 缺口在前（true 排前面）。
+                b_gap.cmp(&a_gap)
+            })
     });
     transcript.text = join_segments(transcript.segments.iter().map(|s| s.text.as_str()));
 }

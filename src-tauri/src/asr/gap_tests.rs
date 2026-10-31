@@ -28,6 +28,27 @@ fn inserts_gap_in_time_order() {
     assert_eq!(transcript.text, "第一句。[[gap:3]]第二句。");
 }
 
+/// 缺口标记与它后面第一句**同一时刻**时，缺口要排在句子前面。
+///
+/// 缺口标记落在缺口终点 —— 它后面第一句的起点正好是这个时刻。
+/// `sort_by` 是稳定排序，gaps 是后 extend 进来的：不显式让缺口优先，
+/// 缺口会排到句子后面，文本变成「句子[[gap:3]]」，读起来像句子之后才丢的音频。
+#[test]
+fn gap_precedes_a_segment_at_the_same_moment() {
+    let mut transcript = Transcript {
+        text: "第一句。第二句。".into(),
+        segments: vec![seg("第一句。", 0.0), seg("第二句。", 2.0)],
+        duration_seconds: 3.0,
+        elapsed_ms: 100,
+        language: "zh".into(),
+        warning: None,
+    };
+    insert_gaps(&mut transcript, vec![seg("[[gap:3]]", 2.0)]);
+    assert_eq!(transcript.segments[1].text, "[[gap:3]]");
+    assert_eq!(transcript.segments[2].text, "第二句。");
+    assert_eq!(transcript.text, "第一句。[[gap:3]]第二句。");
+}
+
 /// 缺口占位符前后都不加空格（前端 `core.js` 的 `joinText()` 同一套规则）。
 #[test]
 fn gap_placeholder_joins_without_spaces() {
