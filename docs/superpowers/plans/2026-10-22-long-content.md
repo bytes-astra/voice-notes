@@ -6,6 +6,8 @@
 > 两处与计划正文有出入，别照着计划写：
 > - **Task 5 的 hybrid 部分从未执行** —— 后续提交 `65876b5` 把 hybrid 连同检测提醒整个删了（计划正文里已作废标注）。落地的是「事件载荷改成增量」那一半。
 > - **Task 5 顺带修的 `Transcript` camelCase 序列化**已落地（`asr.rs` 的 `Transcript` / `Segment` 都带 `#[serde(rename_all = "camelCase")]`）。
+> 标 `[ ]` 的是**当时手工做、仓里没留痕**的步骤（Task 5 的 hybrid 测试、Task 8 的打包实机验证）——
+> 这些无法核实当时是否真的跑过，别当已验证。
 > 现行口径见 [AGENTS.md](../../../AGENTS.md)。
 
 **Goal:** 让录音和文件转写都不限时长（内存恒定），两种模式都边录边出字。
@@ -421,6 +423,10 @@ git commit -m "feat(recording): 整段模式改走 ASR 线程，两种模式统�
 > `src-tauri/src/hybrid.rs`（连 `is_degenerate` 一起）、`settings.warn_on_bad` / `set_warn_on_bad` / `Status.warn_on_bad`、`Transcript.quality_warning`、设置页「异常提醒」整块删除。
 > 理由：复核要保留全部音频，和「录音不限时长、内存恒定」直接冲突；实测流式准确率 99% vs 整段 91%，流式结果本身就是最终结果。
 > **本任务只保留「事件载荷改成增量」那一半**；下面凡是提 hybrid / `warn_on_bad` / `quality_warning` 的步骤都**不要执行**。
+> 复选框的实际情况：Step 1 / Step 2 只涉及 hybrid 测试，**从未执行**（`src-tauri/src/hybrid.rs` 不存在）；
+> Step 3 / Step 4 / Step 5 标 `[x]` 指的是「事件载荷改成增量」那一半已落地 —— `lib.rs` 的 `SegmentPayload` /
+> `PartialPayload` 是增量载荷、`Transcript` / `Segment` 带 `#[serde(rename_all = "camelCase")]`，
+> hybrid / `warn_on_bad` / `quality_warning` 三样都不存在。
 
 **Files:**
 - Modify: `src-tauri/src/lib.rs`（`StreamEmitter`、事件载荷、`correct_streaming` 删除）
@@ -443,7 +449,7 @@ git commit -m "feat(recording): 整段模式改走 ASR 线程，两种模式统�
   - `settings::Settings.warn_on_bad: bool`（默认 true）；`Status.warn_on_bad: bool`
   - 命令 `set_warn_on_bad(enabled: bool) -> Status`（替换 `set_hybrid`）
 
-- [x] **Step 1: 写失败测试**
+- [ ] **Step 1: 写失败测试**（**未执行** —— hybrid 已整个删掉，见上方说明）
 
 在 `src-tauri/src/hybrid.rs` 的测试模块里保留/新增：
 
@@ -456,7 +462,7 @@ fn detects_empty_and_repeated() {
 }
 ```
 
-- [x] **Step 2: 跑测试确认失败**
+- [ ] **Step 2: 跑测试确认失败**（**未执行** —— hybrid 已整个删掉，见上方说明）
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib hybrid::`
 Expected: FAIL —— 旧 `hybrid.rs` 里 `is_degenerate` 的判定口径与新测试不一致（旧的 `punctuate`/`finalize` 测试仍在），或者因为文件已被删而找不到模块
@@ -708,7 +714,7 @@ cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib && \
 ```
 Expected: 全部 PASS（`tests/hybrid.rs` 在 Task 5 已删除，命令里不要再有它）
 
-- [x] **Step 4: 打包并手动验证**
+- [ ] **Step 4: 打包并手动验证**（**未留痕** —— 当时是手工实机验证，仓里没有记录）
 
 ```bash
 cd /Users/hugh/Agents/DeepSeek/voice-notes && SHERPA_ONNX_ARCHIVE_DIR=... CARGO_HOME=... CARGO_TARGET_DIR=... npm_config_cache=/tmp/npmcache npx tauri build --bundles app
