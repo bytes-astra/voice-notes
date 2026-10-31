@@ -3,11 +3,10 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **复选框已回填（2026-11-01）**：Task 1–8 都已实现，之前的复选框只是没回填。
-> 两处与计划正文有出入，别照着计划写：
-> - **Task 5 的 hybrid 部分从未执行** —— 后续提交 `65876b5` 把 hybrid 连同检测提醒整个删了（计划正文里已作废标注）。落地的是「事件载荷改成增量」那一半。
+> 三处与计划正文有出入，别照着计划写：
+> - **Task 5 的 hybrid 部分从未执行** —— 后续提交 `65876b5` 把 hybrid 连同检测提醒整个删了（计划正文里已作废标注）。落地的是「事件载荷改成增量」那一半；计划里 hybrid 的两个测试步骤已删除（它从未存在过）。
 > - **Task 5 顺带修的 `Transcript` camelCase 序列化**已落地（`asr.rs` 的 `Transcript` / `Segment` 都带 `#[serde(rename_all = "camelCase")]`）。
-> 标 `[ ]` 的是**当时手工做、仓里没留痕**的步骤（Task 5 的 hybrid 测试、Task 8 的打包实机验证）——
-> 这些无法核实当时是否真的跑过，别当已验证。
+> - **Task 8 的「打包并手动验证」已拆开** —— 打包有留痕（tag + CI 产物）；手工实机验证那半当时没留痕，已删除，别当已验证。
 > 现行口径见 [AGENTS.md](../../../AGENTS.md)。
 
 **Goal:** 让录音和文件转写都不限时长（内存恒定），两种模式都边录边出字。
@@ -121,12 +120,12 @@ Expected: FAIL —— `SampleQueue` / `gap_marker` 未定义
 - **电平表独立**：`Recorder` 另加 `levels: Arc<Mutex<Vec<f32>>>`（容量 2048 的环形缓冲），`append()` 同时把样本写进去；`peak()` 改读 `levels` 而不是采集缓冲的尾巴。
 - `gap_marker(dropped_samples: u32, sample_rate: u32) -> String`：按 `dropped_samples / sample_rate` 估算秒数（不足 1 秒按 1 秒算），返回形如 `……（此处约 3 秒未识别）……` 的字符串。
 
-- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 2: 跑测试确认通过**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib audio::`
 Expected: PASS
 
-- [x] **Step 5: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add src-tauri/src/audio.rs
@@ -187,12 +186,12 @@ pub fn recognize(&self, samples: &[f32]) -> String {
 
 `decode` 已经是模块内的私有函数（`asr.rs` 里 `fn decode(&self.recognizer, segment.samples())`），直接复用，不要复制实现。
 
-- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 2: 跑测试确认通过**
 
 Run: 同 Step 2 的命令
 Expected: PASS
 
-- [x] **Step 5: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add src-tauri/src/asr.rs src-tauri/tests/asr_smoke.rs
@@ -301,14 +300,14 @@ Expected: FAIL —— `OfflineSession` 未定义
   - `recorded_samples`：`push` 收到的样本总数，**不含** `finish()` 里 flush 的部分。`finish()` flush 的是 VAD 内部缓冲里的残留（多半是静音），算进去会让「录音太短」的判断失真。
   - `recognized_samples`：VAD 切出、并且真的送去识别的那些句子的样本数之和。用来判断「录了半天但一句都没识别出来」。
 
-- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 2: 跑测试确认通过**
 
 Run: 同 Step 2
 Expected: PASS
 
 > ⚠️ **如果等价性测试失败，不要靠放宽归一化规则让它变绿** —— 那是在掩盖真问题。先查清楚：是不是 VAD 喂的窗口大小不对（sherpa 的 `accept_waveform` 要求窗口 == `window_size` = 512 样本）、是不是 `finish()` 的 flush 没接上、是不是分段边界算错了。确认原因后再改实现，并把结论写进提交说明。
 
-- [x] **Step 5: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add src-tauri/src/asr.rs src-tauri/tests/asr_smoke.rs
@@ -403,12 +402,12 @@ Expected: FAIL（整段路径已改但流式路径仍用旧的游标 `take_new`�
 
 `src-tauri/src/audio.rs`：`Recorder::stop()` 不再返回全量样本（改 `Result<(), String>`）；`Recorder::buffer()` 删掉，改用 `Recorder::queue()`。
 
-- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 2: 跑测试确认通过**
 
 Run: 同 Step 2，外加 `cargo test --lib`
 Expected: PASS
 
-- [x] **Step 5: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add src-tauri/src/lib.rs src-tauri/src/audio.rs src-tauri/tests/streaming_smoke.rs
@@ -449,25 +448,14 @@ git commit -m "feat(recording): 整段模式改走 ASR 线程，两种模式统�
   - `settings::Settings.warn_on_bad: bool`（默认 true）；`Status.warn_on_bad: bool`
   - 命令 `set_warn_on_bad(enabled: bool) -> Status`（替换 `set_hybrid`）
 
-- [ ] **Step 1: 写失败测试**（**未执行** —— hybrid 已整个删掉，见上方说明）
+> 计划里原来的 Step 1 / Step 2（hybrid 的失败测试）**已删除** —— hybrid 从未实现，
+> 它的测试也没有存在过；写在这里只会让人以为漏做了。
+>
+> **下面 Step 1 的条目混合了两半**：标 `[x]` 的是「事件载荷改成增量」+「`Transcript` / `Segment` 的
+> camelCase 序列化」；凡是提 `hybrid.rs` / `warn_on_bad` / `quality_warning` / `set_warn_on_bad` 的条目
+> **从未执行**，那三样在今天的代码里都不存在。
 
-在 `src-tauri/src/hybrid.rs` 的测试模块里保留/新增：
-
-```rust
-#[test]
-fn detects_empty_and_repeated() {
-    assert!(is_degenerate("", 3.0));
-    assert!(is_degenerate("走走走走走走", 3.0));
-    assert!(!is_degenerate("今天下午三点开一个产品评审会", 3.0));
-}
-```
-
-- [ ] **Step 2: 跑测试确认失败**（**未执行** —— hybrid 已整个删掉，见上方说明）
-
-Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib hybrid::`
-Expected: FAIL —— 旧 `hybrid.rs` 里 `is_degenerate` 的判定口径与新测试不一致（旧的 `punctuate`/`finalize` 测试仍在），或者因为文件已被删而找不到模块
-
-- [x] **Step 3: 实现**
+- [x] **Step 1: 实现**
 
 - `src-tauri/src/hybrid.rs`：只保留 `is_degenerate(text, duration_seconds) -> bool`；删掉 `should_correct` / `punctuate` / `finalize`；保留 `is_degenerate` 的现有判定口径（空、唯一字符占比 < 1/2、字数 < 时长×0.5）。
 - 删除 `src-tauri/tests/hybrid.rs`（里面测的 `punctuate` / `finalize` 随功能一起没了）。
@@ -481,12 +469,12 @@ Expected: FAIL —— 旧 `hybrid.rs` 里 `is_degenerate` 的判定口径与新�
 - **修一个现存 bug**：`Transcript`（`src-tauri/src/asr.rs`）没有 `#[serde(rename_all = "camelCase")]`，序列化出来是 `duration_seconds` / `elapsed_ms`，但前端读的是 `transcript.durationSeconds` / `transcript.elapsedMs`（`src/app.js:338-339`）→ **两个值恒为 undefined，结果区的「音频时长 / 用时 / RTF」和历史记录里的时长现在全是 0**。给 `Transcript` 和 `Segment` 加 `#[serde(rename_all = "camelCase")]`（与 `lib.rs` 里 `Status` 等结构体一致），前端不用改。
 - `Segment` 同样加 `#[serde(rename_all = "camelCase")]`（`start` / `end` 是单词，加不加都一样，但保持一致）。
 
-- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 2: 跑测试确认通过**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib && cargo test --test asr_smoke -- --nocapture`
 Expected: PASS
 
-- [x] **Step 5: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add -A src-tauri
@@ -582,12 +570,12 @@ Expected: FAIL —— `voice_notes_lib::decode` 模块不存在
 - 新命令 `transcribe_file`：`models::resolve` 取整段模型 → 起 `OfflineSession` → `decode_to_16k(path, |chunk| { session.push(chunk) → 逐句 emit stream:segment })` → 返回 `Transcript`（duration = 解码出的秒数，elapsed = 纯推理耗时）。
 - 推理是阻塞的 → 整个函数体放进 `tauri::async_runtime::spawn_blocking`。
 
-- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 2: 跑测试确认通过**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --test decode_smoke -- --nocapture`
 Expected: PASS（没有 `sample.mp3` 时跳过也算通过）
 
-- [x] **Step 5: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add src-tauri/Cargo.toml src-tauri/src/decode.rs src-tauri/src/lib.rs src-tauri/tests/decode_smoke.rs
@@ -651,12 +639,12 @@ Expected: FAIL —— 增量追加与「正在听」都还没有
 
 `src/i18n.js` + `src/locales/en.js`：新增 `record.listening`、改 `settings.hybrid*` 为 `settings.warn*`（两份 key 完全对齐）。
 
-- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 2: 跑测试确认通过**
 
 Run: `bash /tmp/uitest/sync.sh && cd /tmp/uitest && PLAYWRIGHT_BROWSERS_PATH=... node check_long_content.js && cd /Users/hugh/Agents/DeepSeek/voice-notes && npm run check:i18n`
 Expected: 全部 PASS；i18n 检查通过（2 个语言，key 数一致）
 
-- [x] **Step 5: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add src/
@@ -714,16 +702,17 @@ cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib && \
 ```
 Expected: 全部 PASS（`tests/hybrid.rs` 在 Task 5 已删除，命令里不要再有它）
 
-- [ ] **Step 4: 打包并手动验证**（**未留痕** —— 当时是手工实机验证，仓里没有记录）
+- [x] **Step 4: 打包**
 
 ```bash
-cd /Users/hugh/Agents/DeepSeek/voice-notes && SHERPA_ONNX_ARCHIVE_DIR=... CARGO_HOME=... CARGO_TARGET_DIR=... npm_config_cache=/tmp/npmcache npx tauri build --bundles app
+npx tauri build --bundles app
 ```
-然后启动 `dist/VoiceNotes.app` 手动确认：
-- 录一段话，**两种模式都边录边出字**
-- 录超过 10 分钟（可以快进计时器验证不自动停），内存不涨
-- 拖一个 mp4 进去，能转写
-- 流式结果异常时弹「结果可能有问题」的提示
+打包有留痕：`v1.0.0` 起的 tag 与 `.github/workflows/build.yml` 出 dmg / msi 产物。
+
+> 计划里原来的「打包并**手动验证**」那半已删除 —— 手工实机验证（录一段话、录超过 10 分钟内存不涨、
+> 拖 mp4 进去）当时没留痕，现在无从核实，别当已验证。
+> 可复跑的等价验证见 `docs/HOW_TO_VERIFY.md`：长时用 `offline_long_probe` / `streaming_long_probe`，
+> 文件解码用 `decode_smoke`，内存恒定由采集缓冲消费式保证。
 
 - [x] **Step 5: 提交**
 

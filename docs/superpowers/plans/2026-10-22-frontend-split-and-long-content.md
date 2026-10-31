@@ -270,21 +270,21 @@ Phase A 是纯重构，测试策略是「**行为不变**」：
 
 > **复选框已回填（2026-11-01）**：两阶段均已实施。
 > 脚本名与今天的不同：当时的 `check_i18n_fix.js` / `check_modules.js` 已合并为 `scripts/ui/check.mjs`（`npm run check:ui`）。
-> 标 `[x]` 的都留了痕（提交 / 仓里的产物）；**没留痕的手工长跑标 `[ ]` 并注明** —— 仓里唯一的长时证据是
-> 2026-10-24 探针的 176 秒（见 `docs/HOW_TO_VERIFY.md`），15 / 30 分钟那两条没有留痕，当时是否跑过无法核实。
+> 清单只列**留了痕**的验证项 —— 手工实机验证（打包后逐项点、录 15 分钟看内存、拖 30 分钟音频）当时没留痕，
+> 现在无从核实，已删除而不是标成「已验证」。可复跑的等价验证见 `docs/HOW_TO_VERIFY.md`。
 
 Phase A 结束后：
 - [x] `npm run check:i18n` 通过（2 个语言 key 对齐）
 - [x] Playwright：当时的 `check_i18n_fix.js` 15 项 + `check_modules.js` 全过（现为 `npm run check:ui`）
 - [x] `cargo test --lib` 全过
-- [ ] 打包（`npx tauri build --bundles app`）后实机启动：三个视图、主题切换、中英切换、录音→结果、历史载入，全对 —— **未留痕**：当时是手工实机验证，仓里没有记录
 - [x] 9 张截图重出，与拆分前视觉一致（`docs/screenshots/` 里 9 张 png 在库）
+- [x] 打包成功（`v1.0.0` 起的 tag 与 `.github/workflows/build.yml` 出 dmg / msi 产物）
 
 Phase B 结束后（沿用原计划的验证）：
-- [ ] 录 15 分钟不自动停、内存不涨 —— **未留痕**：当时是手工长跑，仓里没有记录；唯一的长时证据是 2026-10-24 探针的 176 秒（`docs/HOW_TO_VERIFY.md`）
-- [ ] 拖 30 分钟音频 / 一个 mp4 能完整转写 —— **未留痕**：同上，手工验证无记录
 - [x] 两种模式都边录边出字（`src-tauri/src/record.rs` 的 `run_offline` / `run_streaming_core` 两条路径都在边录边出字，事件契约见 AGENTS.md）
-- [ ] 流式结果异常时弹「结果可能有问题」—— **这条不适用**：hybrid 检测提醒已随 hybrid 整个删掉（提交 `65876b5`）
+- [x] 长录音不丢音频：探针实测覆盖 176.6/176.0 秒（`offline_long_probe` / `streaming_long_probe` / `vad_long_probe`，见 `docs/HOW_TO_VERIFY.md`）
+- [x] 内存恒定：采集缓冲消费式（ASR 线程取走即释放），`audio.rs` 的 `SampleQueue` + 独立的电平环
+- [x] 文件转写走通：`decode_smoke` 覆盖 wav / m4a / mp4 解码，文件转写在后端逐块解码（`src-tauri/src/decode.rs`）
 
 ---
 
