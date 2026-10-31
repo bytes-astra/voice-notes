@@ -13,6 +13,17 @@ fn too_short_transcript_reports_seconds() {
     assert_eq!(err, "record.tooShort:0.2");
 }
 
+/// 停止失败要按**错误码**判定：带细节的 `record.stopFailed:细节` 也算。
+///
+/// 整串比较会失配 → 超时文案换不上，界面直接显示未知错误。
+#[test]
+fn stop_failed_is_recognised_with_and_without_detail() {
+    assert!(is_stop_failed(STOP_FAILED));
+    assert!(is_stop_failed("record.stopFailed:通道关闭"));
+    assert!(!is_stop_failed("record.empty"));
+    assert!(!is_stop_failed("record.stopFailedOther"));
+}
+
 /// 文本为空（只有空白）也算没有内容。
 #[test]
 fn empty_transcript_is_rejected() {

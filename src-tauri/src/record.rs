@@ -36,6 +36,15 @@ pub struct FinishedRecording {
 /// 停止时等待识别线程收尾失败：调用方据此换成对应模式的超时文案。
 pub const STOP_FAILED: &str = "record.stopFailed";
 
+/// 这个错误是不是「停止录音时识别线程没交回结果」。
+///
+/// 比的是**错误码**部分（':' 之前），不是整个字符串 ——
+/// `code_detail(STOP_FAILED, …)` 出来的是 `record.stopFailed:细节`，
+/// 整串比较会失配，超时文案就换不上了。
+pub fn is_stop_failed(error: &str) -> bool {
+    error.split(':').next() == Some(STOP_FAILED)
+}
+
 /// 界面能接受的最低音频时长（秒）。
 pub const MIN_TRANSCRIPT_SECONDS: f32 = 0.2;
 

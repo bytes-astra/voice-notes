@@ -712,7 +712,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     if let Some(stream) = stream {
         let finished = tauri::async_runtime::spawn_blocking(move || {
             finish_recording(recorder, stream, 20).map_err(|error| {
-                if error == STOP_FAILED {
+                if record::is_stop_failed(&error) {
                     code("record.streamTimeout")
                 } else {
                     error
@@ -744,7 +744,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     };
     let finished = tauri::async_runtime::spawn_blocking(move || -> Result<FinishedRecording, String> {
         let finished = finish_recording(recorder, offline, 30).map_err(|error| {
-            if error == STOP_FAILED {
+            if record::is_stop_failed(&error) {
                 code("record.offlineTimeout")
             } else {
                 error
