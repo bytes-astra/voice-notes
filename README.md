@@ -108,8 +108,9 @@ CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2
 npm install          # 只装 devDependencies（@tauri-apps/cli + playwright）
 npm run dev          # 开发模式
 npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
-npm run check        # 门禁：i18n → clippy → 单元测试
+npm run check        # 门禁：i18n → 前端依赖图 → clippy → 单元测试
 npm run check:i18n   # 只改文案时跑这个就够
+npm run check:deps   # 只改前端 import 图时跑这个
 npm run check:ui     # 界面检查：真实 WebKit + 假 __TAURI__
 ```
 
