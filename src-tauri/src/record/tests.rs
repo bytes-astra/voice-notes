@@ -292,6 +292,64 @@ fn streaming_gap_marker_reaches_transcript() {
     );
 }
 
+/// 缺口标记段：格式对、落点就是给定的时刻。
+#[test]
+fn gap_segment_marks_the_given_moment() {
+    let segment = super::gap_segment(16_000, 16_000, 1.5, "离线识别跟不上，");
+    assert!(
+        segment.text.starts_with("[[gap:"),
+        "缺口标记格式不对: {}",
+        segment.text
+    );
+    assert_eq!(segment.start, 1.5);
+    assert_eq!(segment.end, 1.5);
+}
+
+/// 丢掉的音频占真实录音时间 —— 不算进去，识别跟不上时录音时长会短一截。
+#[test]
+fn dropped_audio_counts_towards_recorded_time() {
+    assert!((super::recorded_seconds(32_000, 16_000) - 3.0).abs() < 1e-6);
+    assert!((super::recorded_seconds(32_000, 0) - 2.0).abs() < 1e-6);
+}
+
+/// 整段模式的时间轴要把被丢掉的音频补上。
+///
+/// 丢掉的音频夹在「已喂入」和「接下来喂入」之间 —— 句子在它之后，
+/// 时间就得往后挪同样的量，否则缺口会排到它本该在的位置之后。
+#[test]
+fn offline_timeline_shifts_by_dropped_audio() {
+    // 在喂入位置 16000（1 秒）丢了 16000 个采样（1 秒）
+    let drops: Vec<(usize, usize)> = vec![(16_000, 16_000)];
+    let segment = super::to_real_time(
+        &asr::Segment {
+            text: "一句".into(),
+            start: 2.0,
+            end: 3.0,
+        },
+        &drops,
+    );
+    assert!((segment.start - 3.0).abs() < 1e-6, "起点应后移 1 秒: {}", segment.start);
+    assert!((segment.end - 4.0).abs() < 1e-6, "终点应后移 1 秒: {}", segment.end);
+    // 缺口落在缺口终点：1 秒喂入 + 1 秒被丢掉 = 2 秒
+    assert!((super::gap_at(16_000, &drops) - 2.0).abs() < 1e-6);
+}
+
+/// 没有缺口时，时间轴原样不动。
+#[test]
+fn offline_timeline_is_unchanged_without_drops() {
+    let drops: Vec<(usize, usize)> = Vec::new();
+    let segment = super::to_real_time(
+        &asr::Segment {
+            text: "一句".into(),
+            start: 2.0,
+            end: 3.0,
+        },
+        &drops,
+    );
+    assert_eq!(segment.start, 2.0);
+    assert_eq!(segment.end, 3.0);
+}
+
 /// 整段模式：丢掉音频后，缺口标记必须出现在最终文本里。
 ///
 /// 回归测试：之前标记只 push 进了本地 parts，最终文本却从 session.segments()
@@ -337,6 +395,14 @@ fn offline_gap_marker_reaches_transcript() {
             .iter()
             .any(|s| s.text.contains("[[gap:")),
         "segments 里也该有缺口标记（流式路径就是这样的）"
+    );
+    // 录音时长要把被丢掉的音频算进去 —— 不然识别跟不上时时长会短一截。
+    // 整段录音的真实时长 = 喂进识别器的 + 被丢掉的 = 整段音频的长度。
+    let total_seconds = wave.samples().len() as f32 / 16_000.0;
+    assert!(
+        (transcript.duration_seconds - total_seconds).abs() < 0.05,
+        "录音时长应包含被丢掉的音频：{} != {total_seconds}",
+        transcript.duration_seconds
     );
 }
 

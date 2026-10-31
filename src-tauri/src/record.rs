@@ -127,6 +127,78 @@ pub fn log_segment(tag: &str, segment: &asr::Segment) {
     ));
 }
 
+/// 识别跟不上、丢掉一段音频时：造一个缺口标记段。
+///
+/// 缺口标记落在**缺口终点**（`at` 由调用方给）—— 丢掉的音频在这之后
+/// 才开始被识别。流式与整段必须同一条规则，否则同一段录音在两个模式里
+/// 缺口的位置不一样。
+fn gap_segment(dropped: u32, rate: u32, at: f32, what: &str) -> asr::Segment {
+    let seconds = audio::gap_seconds(dropped, rate);
+    log::warn(format!("{what}丢掉 {seconds} 秒音频"));
+    let marker = audio::gap_marker(dropped, rate);
+    asr::Segment {
+        text: marker,
+        start: at,
+        end: at,
+    }
+}
+
+/// 真实录音时间（秒）：喂给识别器的采样 + 被丢掉的采样。
+///
+/// 丢掉的音频占真实录音时间（流式路径一直这么算）—— 不算进去，
+/// 识别跟不上时录音时长会短一截。
+fn recorded_seconds(fed_16k: usize, dropped_16k: usize) -> f32 {
+    (fed_16k + dropped_16k) as f32 / asr::SAMPLE_RATE as f32
+}
+
+/// 整段模式的时间轴换算：把「喂给识别器的采样位置」换成真实录音位置。
+///
+/// 整段模式的 VAD 只见过喂进去的音频 —— 它的句段时间是**喂进去的时间轴**。
+/// 被丢掉的音频同样占真实录音时间，所以句段时间要补上缺口。
+///
+/// `drops` 是 `(缺口发生的喂入位置, 累计被丢掉的 16 kHz 采样数)`，按发生顺序递增；
+/// 第二个字段是**含本次**的累计值。
+type Drops = Vec<(usize, usize)>;
+
+/// 累计被丢掉的采样数：缺口位置 `p` 落在喂入位置 `fed_idx` 之前（`p < fed_idx`）
+/// 还是正好在它上面（`p == fed_idx`）。
+fn cum_dropped(drops: &Drops, fed_idx: usize, inclusive: bool) -> usize {
+    let mut total = 0;
+    for (pos, cum) in drops {
+        let hit = if inclusive { *pos <= fed_idx } else { *pos < fed_idx };
+        if hit {
+            total = *cum;
+        } else {
+            break;
+        }
+    }
+    total
+}
+
+/// 整段模式的一句：换算到真实录音时间轴。
+///
+/// 两种模式的时间轴必须一致 —— 否则同一次录音在两个模式里，
+/// 缺口标记和句子的先后顺序会不一样。
+fn to_real_time(segment: &asr::Segment, drops: &Drops) -> asr::Segment {
+    let rate = asr::SAMPLE_RATE as f32;
+    let start_idx = (segment.start * rate).round() as usize;
+    let end_idx = (segment.end * rate).round() as usize;
+    asr::Segment {
+        text: segment.text.clone(),
+        // 起点：缺口正好压在这个位置上的，也已经过去了（缺口在喂入之前发生）。
+        start: (start_idx + cum_dropped(drops, start_idx, true)) as f32 / rate,
+        // 终点：位置正好等于缺口位置的缺口还没发生 —— 它在句子之后。
+        end: (end_idx + cum_dropped(drops, end_idx, false)) as f32 / rate,
+    }
+}
+
+/// 缺口标记的落点：缺口**终点**（丢掉的音频之后才开始识别）。
+///
+/// 流式路径本来就是这样，整段原来落在缺口起点 —— 统一到终点。
+fn gap_at(fed_idx: usize, drops: &Drops) -> f32 {
+    (fed_idx + cum_dropped(drops, fed_idx, true)) as f32 / asr::SAMPLE_RATE as f32
+}
+
 /// 记流式识别出的句子（整段模式同款日志）。
 ///
 /// 缺口占位符不算句子 —— 它是「这里丢了音频」的标记，不是识别结果。
@@ -167,8 +239,13 @@ where
     let mut agc = audio::Agc::new();
     // 识别跟不上时丢掉的音频：在结果里留个可见的缺口（按时间插进句子列表）。
     let mut gaps: Vec<asr::Segment> = Vec::new();
-    // 已经喂给识别器的 16 kHz 采样数（给缺口标记标时间；不能用设备采样率）
+    // 已经喂给识别器的 16 kHz 采样数（不能用设备采样率）
     let mut fed_16k = 0usize;
+    // 累计被丢掉的 16 kHz 采样数（丢掉的音频同样占真实录音时间）
+    let mut dropped_16k_total = 0usize;
+    // 缺口发生的位置：(喂进去的采样位置, 累计被丢掉的 16 kHz 采样数)。
+    // 用来把 VAD 的「喂进去的时间轴」换算成真实录音时间。
+    let mut drops: Vec<(usize, usize)> = Vec::new();
     let discarded = || discard.load(Ordering::Relaxed);
 
     loop {
@@ -176,21 +253,17 @@ where
         if new_audio.dropped > 0 {
             // 识别跟不上：丢掉了一段音频，要在结果里留下可见的缺口。
             // 标记既进最终文本，也作为一句实时发出去（前端追加后才看得到）。
-            let seconds = audio::gap_seconds(new_audio.dropped, rate);
-            log::warn(format!("离线识别跟不上，丢掉 {seconds} 秒音频"));
-            let marker = audio::gap_marker(new_audio.dropped, rate);
-            let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
-            gaps.push(asr::Segment {
-                text: marker.clone(),
-                start: at,
-                end: at,
-            });
+            dropped_16k_total += audio::resampled_len(new_audio.dropped, rate);
+            drops.push((fed_16k, dropped_16k_total));
+            let segment = gap_segment(
+                new_audio.dropped,
+                rate,
+                gap_at(fed_16k, &drops),
+                "离线识别跟不上，",
+            );
+            gaps.push(segment.clone());
             if !discarded() {
-                emit(OfflineEvent::Segment(asr::Segment {
-                    text: marker,
-                    start: at,
-                    end: at,
-                }));
+                emit(OfflineEvent::Segment(segment));
             }
         }
         if !new_audio.samples.is_empty() {
@@ -223,20 +296,11 @@ where
         let last = queue.take_new();
         if last.dropped > 0 {
             // 识别跟不上：丢掉了一段音频，要在结果里留下可见的缺口。
-            let seconds = audio::gap_seconds(last.dropped, rate);
-            log::warn(format!("离线收尾丢掉 {seconds} 秒音频"));
-            let marker = audio::gap_marker(last.dropped, rate);
-            let at = fed_16k as f32 / asr::SAMPLE_RATE as f32;
-            gaps.push(asr::Segment {
-                text: marker.clone(),
-                start: at,
-                end: at,
-            });
-            emit(OfflineEvent::Segment(asr::Segment {
-                text: marker,
-                start: at,
-                end: at,
-            }));
+            dropped_16k_total += audio::resampled_len(last.dropped, rate);
+            drops.push((fed_16k, dropped_16k_total));
+            let segment = gap_segment(last.dropped, rate, gap_at(fed_16k, &drops), "离线收尾丢掉 ");
+            gaps.push(segment.clone());
+            emit(OfflineEvent::Segment(segment));
         }
         let mut samples = match &resampler {
             Some(resampler) => resampler.resample(&last.samples, true),
@@ -259,10 +323,18 @@ where
 
     // 文本和 segments 都从同一份句子列表来（缺口标记按时间插进去）——
     // 和流式路径同一个做法，两种模式的 segments 语义才一致。
+    // 句子的时间换算到真实录音时间轴（缺口标记也在这个轴上）——
+    // 不换算的话缺口会排到它本该在的位置之后。
+    let segments: Vec<asr::Segment> = session
+        .segments()
+        .iter()
+        .map(|s| to_real_time(s, &drops))
+        .collect();
     let mut transcript = Transcript {
-        text: asr::join_segments(session.segments().iter().map(|s| s.text.as_str())),
-        segments: session.segments().to_vec(),
-        duration_seconds: session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
+        text: asr::join_segments(segments.iter().map(|s| s.text.as_str())),
+        segments,
+        // 丢掉的音频同样占真实录音时间 —— 不算进去，识别跟不上时时长会短一截。
+        duration_seconds: recorded_seconds(session.recorded_samples(), dropped_16k_total),
         elapsed_ms: session.elapsed_ms(),
         language: engine.language.clone(),
         warning: None,
@@ -325,20 +397,10 @@ where
         let at = session.elapsed_seconds();
         if new_audio.dropped > 0 {
             // 识别跟不上：丢掉了一段音频，标记出来，不能静默丢
-            let seconds = audio::gap_seconds(new_audio.dropped, rate);
-            log::warn(format!("流式识别跟不上，丢掉 {seconds} 秒音频"));
-            let marker = audio::gap_marker(new_audio.dropped, rate);
-            gaps.push(asr::Segment {
-                text: marker.clone(),
-                start: at,
-                end: at,
-            });
+            let segment = gap_segment(new_audio.dropped, rate, at, "流式识别跟不上，");
+            gaps.push(segment.clone());
             if !discard.load(Ordering::Relaxed) {
-                emit(vec![StreamEvent::Segment(asr::Segment {
-                    text: marker,
-                    start: at,
-                    end: at,
-                })]);
+                emit(vec![StreamEvent::Segment(segment)]);
             }
         }
         let chunk = new_audio.samples;
@@ -420,20 +482,10 @@ where
     let last = queue.take_new();
     session.advance_samples(audio::resampled_len(last.dropped, rate));
     if last.dropped > 0 {
-        let seconds = audio::gap_seconds(last.dropped, rate);
-        log::warn(format!("流式收尾丢掉 {seconds} 秒音频"));
-        let marker = audio::gap_marker(last.dropped, rate);
         let at = session.elapsed_seconds();
-        gaps.push(asr::Segment {
-            text: marker.clone(),
-            start: at,
-            end: at,
-        });
-        emit(vec![StreamEvent::Segment(asr::Segment {
-            text: marker,
-            start: at,
-            end: at,
-        })]);
+        let segment = gap_segment(last.dropped, rate, at, "流式收尾丢掉 ");
+        gaps.push(segment.clone());
+        emit(vec![StreamEvent::Segment(segment)]);
     }
     let chunk = last.samples;
     let tail = match &resampler {
