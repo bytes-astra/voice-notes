@@ -278,13 +278,9 @@ Phase A 结束后：
 - [x] Playwright：当时的 `check_i18n_fix.js` 15 项 + `check_modules.js` 全过（现为 `npm run check:ui`）
 - [x] `cargo test --lib` 全过
 - [x] 9 张截图重出，与拆分前视觉一致（`docs/screenshots/` 里 9 张 png 在库）
-- [x] 打包成功（`v1.0.0` 起的 tag 与 `.github/workflows/build.yml` 出 dmg / msi 产物）
 
 Phase B 结束后（沿用原计划的验证）：
 - [x] 两种模式都边录边出字（`src-tauri/src/record.rs` 的 `run_offline` / `run_streaming_core` 两条路径都在边录边出字，事件契约见 AGENTS.md）
-- [x] 长录音不丢音频：探针实测覆盖 176.6/176.0 秒（`offline_long_probe` / `streaming_long_probe` / `vad_long_probe`，见 `docs/HOW_TO_VERIFY.md`）
-- [x] 内存恒定：采集缓冲消费式（ASR 线程取走即释放），`audio.rs` 的 `SampleQueue` + 独立的电平环
-- [x] 文件转写走通：`decode_smoke` 覆盖 wav / m4a / mp4 解码，文件转写在后端逐块解码（`src-tauri/src/decode.rs`）
 
 ---
 
