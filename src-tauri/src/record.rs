@@ -156,16 +156,21 @@ fn recorded_seconds(fed_16k: usize, dropped_16k: usize) -> f32 {
 /// 整段模式的 VAD 只见过喂进去的音频 —— 它的句段时间是**喂进去的时间轴**。
 /// 被丢掉的音频同样占真实录音时间，所以句段时间要补上缺口。
 ///
-/// `drops` 是 `(缺口发生的喂入位置, 累计被丢掉的 16 kHz 采样数)`，按发生顺序递增；
+/// `drops` 是 `(缺口位置(秒), 累计被丢掉的 16 kHz 采样数)`，按发生顺序递增；
 /// 第二个字段是**含本次**的累计值。
-type Drops = Vec<(usize, usize)>;
+///
+/// 缺口位置存**秒**而不是采样下标：句子的 `start` 也是秒（`asr.rs` 里
+/// `from as f32 / SAMPLE_RATE as f32`），同一个整数换出的 f32 逐位相等 ——
+/// 直接比秒就精确了。绕道「秒 → 下标 → 比较」会在长录音上因 f32 往返
+/// 差 ±1 个采样，边界正好压在缺口上时整句错位。
+type Drops = Vec<(f32, usize)>;
 
-/// 累计被丢掉的采样数：缺口位置 `p` 落在喂入位置 `fed_idx` 之前（`p < fed_idx`）
-/// 还是正好在它上面（`p == fed_idx`）。
-fn cum_dropped(drops: &Drops, fed_idx: usize, inclusive: bool) -> usize {
+/// 累计被丢掉的采样数：缺口位置 `pos` 落在 `at` 之前（`pos < at`）
+/// 还是正好在它上面（`pos == at`）。
+fn cum_dropped(drops: &Drops, at: f32, inclusive: bool) -> usize {
     let mut total = 0;
     for (pos, cum) in drops {
-        let hit = if inclusive { *pos <= fed_idx } else { *pos < fed_idx };
+        let hit = if inclusive { *pos <= at } else { *pos < at };
         if hit {
             total = *cum;
         } else {
@@ -181,22 +186,22 @@ fn cum_dropped(drops: &Drops, fed_idx: usize, inclusive: bool) -> usize {
 /// 缺口标记和句子的先后顺序会不一样。
 fn to_real_time(segment: &asr::Segment, drops: &Drops) -> asr::Segment {
     let rate = asr::SAMPLE_RATE as f32;
-    let start_idx = (segment.start * rate).round() as usize;
-    let end_idx = (segment.end * rate).round() as usize;
     asr::Segment {
         text: segment.text.clone(),
         // 起点：缺口正好压在这个位置上的，也已经过去了（缺口在喂入之前发生）。
-        start: (start_idx + cum_dropped(drops, start_idx, true)) as f32 / rate,
+        start: segment.start + cum_dropped(drops, segment.start, true) as f32 / rate,
         // 终点：位置正好等于缺口位置的缺口还没发生 —— 它在句子之后。
-        end: (end_idx + cum_dropped(drops, end_idx, false)) as f32 / rate,
+        end: segment.end + cum_dropped(drops, segment.end, false) as f32 / rate,
     }
 }
 
 /// 缺口标记的落点：缺口**终点**（丢掉的音频之后才开始识别）。
 ///
 /// 流式路径本来就是这样，整段原来落在缺口起点 —— 统一到终点。
-fn gap_at(fed_idx: usize, drops: &Drops) -> f32 {
-    (fed_idx + cum_dropped(drops, fed_idx, true)) as f32 / asr::SAMPLE_RATE as f32
+fn gap_at(pos_16k: usize, drops: &Drops) -> f32 {
+    let rate = asr::SAMPLE_RATE as f32;
+    let pos = pos_16k as f32 / rate;
+    pos + cum_dropped(drops, pos, true) as f32 / rate
 }
 
 /// 记流式识别出的句子（整段模式同款日志）。
@@ -243,9 +248,9 @@ where
     let mut fed_16k = 0usize;
     // 累计被丢掉的 16 kHz 采样数（丢掉的音频同样占真实录音时间）
     let mut dropped_16k_total = 0usize;
-    // 缺口发生的位置：(喂进去的采样位置, 累计被丢掉的 16 kHz 采样数)。
+    // 缺口发生的位置：(缺口位置(秒), 累计被丢掉的 16 kHz 采样数)。
     // 用来把 VAD 的「喂进去的时间轴」换算成真实录音时间。
-    let mut drops: Vec<(usize, usize)> = Vec::new();
+    let mut drops: Drops = Vec::new();
     let discarded = || discard.load(Ordering::Relaxed);
 
     loop {
@@ -254,7 +259,7 @@ where
             // 识别跟不上：丢掉了一段音频，要在结果里留下可见的缺口。
             // 标记既进最终文本，也作为一句实时发出去（前端追加后才看得到）。
             dropped_16k_total += audio::resampled_len(new_audio.dropped, rate);
-            drops.push((fed_16k, dropped_16k_total));
+            drops.push((fed_16k as f32 / asr::SAMPLE_RATE as f32, dropped_16k_total));
             let segment = gap_segment(
                 new_audio.dropped,
                 rate,
@@ -276,6 +281,9 @@ where
             fed_16k += samples.len();
             for event in session.push(&samples) {
                 let OfflineEvent::Segment(segment) = event;
+                // 实时事件也用真实录音时间轴 —— 否则同一个事件流里
+                // 句子是「喂进去的时间轴」、缺口标记是真实时间轴，两套刻度混用。
+                let segment = to_real_time(&segment, &drops);
                 log_segment("识别出一句", &segment);
                 if !discarded() {
                     emit(OfflineEvent::Segment(segment));
@@ -297,7 +305,7 @@ where
         if last.dropped > 0 {
             // 识别跟不上：丢掉了一段音频，要在结果里留下可见的缺口。
             dropped_16k_total += audio::resampled_len(last.dropped, rate);
-            drops.push((fed_16k, dropped_16k_total));
+            drops.push((fed_16k as f32 / asr::SAMPLE_RATE as f32, dropped_16k_total));
             let segment = gap_segment(last.dropped, rate, gap_at(fed_16k, &drops), "离线收尾丢掉 ");
             gaps.push(segment.clone());
             emit(OfflineEvent::Segment(segment));
@@ -310,12 +318,14 @@ where
             agc.process(&mut samples);
             for event in session.push(&samples) {
                 let OfflineEvent::Segment(segment) = event;
+                let segment = to_real_time(&segment, &drops);
                 log_segment("收尾识别出一句", &segment);
                 emit(OfflineEvent::Segment(segment));
             }
         }
         for event in session.finish() {
             let OfflineEvent::Segment(segment) = event;
+            let segment = to_real_time(&segment, &drops);
             log_segment("收尾识别出一句", &segment);
             emit(OfflineEvent::Segment(segment));
         }

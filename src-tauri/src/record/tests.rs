@@ -319,7 +319,7 @@ fn dropped_audio_counts_towards_recorded_time() {
 #[test]
 fn offline_timeline_shifts_by_dropped_audio() {
     // 在喂入位置 16000（1 秒）丢了 16000 个采样（1 秒）
-    let drops: Vec<(usize, usize)> = vec![(16_000, 16_000)];
+    let drops: Vec<(f32, usize)> = vec![(1.0, 16_000)];
     let segment = super::to_real_time(
         &asr::Segment {
             text: "一句".into(),
@@ -334,10 +334,48 @@ fn offline_timeline_shifts_by_dropped_audio() {
     assert!((super::gap_at(16_000, &drops) - 2.0).abs() < 1e-6);
 }
 
+/// 缺口正好压在句子边界上时，起点要移、终点不移。
+///
+/// 这组不对称是 `to_real_time` 最微妙的不变量：区间是 `[start, end)` ——
+/// 起点上的缺口已经在句前过去（要移），终点上的缺口在句后（还没发生，不移）。
+/// 少了这两条断言，把 `inclusive` 参数「简化」掉也不会有任何测试报警。
+#[test]
+fn offline_timeline_boundary_is_half_open() {
+    let drops: Vec<(f32, usize)> = vec![(1.0, 16_000)];
+    // 起点正好压在缺口上 → 移
+    let starts_on_gap = super::to_real_time(
+        &asr::Segment {
+            text: "一句".into(),
+            start: 1.0,
+            end: 2.0,
+        },
+        &drops,
+    );
+    assert!(
+        (starts_on_gap.start - 2.0).abs() < 1e-6,
+        "起点压在缺口上应后移: {}",
+        starts_on_gap.start
+    );
+    // 终点正好压在缺口上 → 不移（缺口在这句之后）
+    let ends_on_gap = super::to_real_time(
+        &asr::Segment {
+            text: "一句".into(),
+            start: 0.5,
+            end: 1.0,
+        },
+        &drops,
+    );
+    assert!(
+        (ends_on_gap.end - 1.0).abs() < 1e-6,
+        "终点压在缺口上不应移动: {}",
+        ends_on_gap.end
+    );
+}
+
 /// 没有缺口时，时间轴原样不动。
 #[test]
 fn offline_timeline_is_unchanged_without_drops() {
-    let drops: Vec<(usize, usize)> = Vec::new();
+    let drops: Vec<(f32, usize)> = Vec::new();
     let segment = super::to_real_time(
         &asr::Segment {
             text: "一句".into(),

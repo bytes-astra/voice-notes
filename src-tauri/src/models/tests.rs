@@ -10,10 +10,36 @@ fn cancelled_sentinel_is_only_the_download_cancelled_marker() {
     assert!(!is_cancelled("error.downloadInterrupted"));
 }
 
-/// 哨兵是内部串，不能是字典 key —— 界面只该看到 setup.cancelled。
+/// 下载被取消时，返回给界面的必须是字典 key `setup.cancelled`，
+/// 不能是内部哨兵 `download.cancelled`。
+///
+/// 守的是 `download_asset` 里那行映射 —— 哨兵只活在内部，
+/// 界面（字典查不到就显示「未知错误」）永远不该看到它。
 #[test]
-fn cancelled_sentinel_never_reaches_the_ui() {
-    assert_ne!(DOWNLOAD_CANCELLED, "setup.cancelled");
+fn cancelled_download_returns_the_dictionary_key() {
+    struct Null;
+    impl ProgressSink for Null {
+        fn report(&self, _: Progress) {}
+    }
+    let dir = std::env::temp_dir().join(format!("vn-models-cancel-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    // 取消标志一开始就置上：下载不会发起，直接走取消分支。
+    let error = runtime
+        .block_on(download_asset(
+            &VAD,
+            &dir,
+            Arc::new(AtomicBool::new(true)),
+            &Null,
+        ))
+        .expect_err("已取消的下载应该失败");
+    assert_eq!(error, "setup.cancelled", "界面只该看到字典 key");
+    assert_ne!(error, DOWNLOAD_CANCELLED, "内部哨兵不能漏到界面");
+    let _ = fs::remove_dir_all(&dir);
 }
 
 /// 只有 model + tokens、没有 silero_vad.onnx 的目录不能报「可用」。
