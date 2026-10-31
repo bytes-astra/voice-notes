@@ -404,6 +404,20 @@ fn offline_gap_marker_reaches_transcript() {
         "录音时长应包含被丢掉的音频：{} != {total_seconds}",
         transcript.duration_seconds
     );
+    // 缺口标记落在**缺口终点**：丢掉的音频之后才开始识别。
+    // 队列上限 1000 个采样 → 丢掉 wave.len() - 1000 个，缺口在那一段之后。
+    let dropped = (wave.samples().len() as f32 - 1_000.0).max(0.0);
+    let expected_gap = dropped / 16_000.0;
+    let gap = transcript
+        .segments
+        .iter()
+        .find(|s| s.text.contains("[[gap:"))
+        .expect("结果里应该有缺口标记");
+    assert!(
+        (gap.start - expected_gap).abs() < 0.05,
+        "缺口标记应落在缺口终点附近：期望 {expected_gap}，实际 {}",
+        gap.start
+    );
 }
 
 #[test]
