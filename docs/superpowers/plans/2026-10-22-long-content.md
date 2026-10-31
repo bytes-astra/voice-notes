@@ -2,6 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **复选框已回填（2026-11-01）**：Task 1–8 都已实现，之前的复选框只是没回填。
+> 两处与计划正文有出入，别照着计划写：
+> - **Task 5 的 hybrid 部分从未执行** —— 后续提交 `65876b5` 把 hybrid 连同检测提醒整个删了（计划正文里已作废标注）。落地的是「事件载荷改成增量」那一半。
+> - **Task 5 顺带修的 `Transcript` camelCase 序列化**已落地（`asr.rs` 的 `Transcript` / `Segment` 都带 `#[serde(rename_all = "camelCase")]`）。
+> 现行口径见 [AGENTS.md](../../../AGENTS.md)。
+
 **Goal:** 让录音和文件转写都不限时长（内存恒定），两种模式都边录边出字。
 
 **Architecture:** 采集缓冲改成消费式（ASR 线程取走即释放），两种模式共用一个 ASR 线程：流式喂 Zipformer 在线解码，整段喂 Silero VAD 切句后逐句送 SenseVoice。文件转写搬到后端用 symphonia 解码，走同一条管线。hybrid 的「复核」删掉，只留「结果异常」的检测提醒。
@@ -60,7 +66,7 @@
   ```
   常量：`pub const MAX_PENDING_SECONDS: u32 = 60;` —— **按实际采样率算**（麦克风可能是 44.1k/16k，不能写死 48kHz 的样本数）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `src-tauri/src/audio.rs` 的测试模块里加：
 
@@ -100,12 +106,12 @@ fn gap_marker_mentions_seconds() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd src-tauri && CARGO_HOME=/Users/hugh/Agents/DeepSeek/.cargo-home CARGO_TARGET_DIR=/Users/hugh/Agents/DeepSeek/.cache/target cargo test --lib audio::`
 Expected: FAIL —— `SampleQueue` / `gap_marker` 未定义
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 - 新增 `SampleQueue`，内部 `Arc<Mutex<Vec<f32>>>` + 采样率；`push(&self, samples: &[f32])` 追加；`take_new(&self) -> NewAudio` 取走全部未消费样本（`std::mem::take`），若取之前长度超过 `MAX_PENDING_SECONDS * sample_rate` 则先丢最旧的并把丢弃数放进 `dropped`。
 - `Recorder` 里的 `samples: Arc<Mutex<Vec<f32>>>` 改成 `queue: SampleQueue`（构造时传入设备采样率）；`Recorder::queue()` 返回 clone。
@@ -113,12 +119,12 @@ Expected: FAIL —— `SampleQueue` / `gap_marker` 未定义
 - **电平表独立**：`Recorder` 另加 `levels: Arc<Mutex<Vec<f32>>>`（容量 2048 的环形缓冲），`append()` 同时把样本写进去；`peak()` 改读 `levels` 而不是采集缓冲的尾巴。
 - `gap_marker(dropped_samples: u32, sample_rate: u32) -> String`：按 `dropped_samples / sample_rate` 估算秒数（不足 1 秒按 1 秒算），返回形如 `……（此处约 3 秒未识别）……` 的字符串。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib audio::`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src-tauri/src/audio.rs
@@ -137,7 +143,7 @@ git commit -m "feat(audio): 采集缓冲改成消费式，电平表独立成环"
 - Consumes: `Engine`、`decode()`（模块私有）、`Engine::transcribe`
 - Produces: `pub fn recognize(&self, samples: &[f32]) -> String` —— 对一段已经是完整句子的音频直接解码，不做 VAD 切分
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `src-tauri/tests/asr_smoke.rs` 加（复用该文件里已有的 `model_paths()` helper 和 `sherpa_onnx::Wave::read`）：
 
@@ -161,12 +167,12 @@ fn recognize_matches_transcribe_on_one_sentence() {
 ```
 
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... VOICE_NOTES_MODEL_DIR=/Users/hugh/Library/Application\ Support/com.github.bytes-astra.voicenotes/models cargo test --test asr_smoke recognize_matches -- --nocapture`
 Expected: FAIL —— `recognize` 未定义
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `impl Engine` 里加：
 
@@ -179,12 +185,12 @@ pub fn recognize(&self, samples: &[f32]) -> String {
 
 `decode` 已经是模块内的私有函数（`asr.rs` 里 `fn decode(&self.recognizer, segment.samples())`），直接复用，不要复制实现。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: 同 Step 2 的命令
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src-tauri/src/asr.rs src-tauri/tests/asr_smoke.rs
@@ -216,7 +222,7 @@ git commit -m "feat(asr): 新增 recognize()，跳过内部 VAD 直接解码"
   }
   ```
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `src-tauri/tests/asr_smoke.rs` 加（测试文件里需要一个 `vad_config()` helper，参数照抄 `src-tauri/src/asr.rs:66-76` 的现有配置：`threshold 0.5` / `min_silence_duration 0.5` / `min_speech_duration 0.25` / `max_speech_duration 30.0` / `sample_rate 16000` / `window_size 512`；VAD 模型文件用 `model_paths()` 里找到的 `vad`，找不到就 `None`）：
 
@@ -275,12 +281,12 @@ fn offline_session_finishes_partial_sentence() {
 ```
 
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... VOICE_NOTES_MODEL_DIR=... cargo test --test asr_smoke offline_session_matches -- --nocapture`
 Expected: FAIL —— `OfflineSession` 未定义
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `src-tauri/src/asr.rs` 加 `OfflineSession`：
 
@@ -293,14 +299,14 @@ Expected: FAIL —— `OfflineSession` 未定义
   - `recorded_samples`：`push` 收到的样本总数，**不含** `finish()` 里 flush 的部分。`finish()` flush 的是 VAD 内部缓冲里的残留（多半是静音），算进去会让「录音太短」的判断失真。
   - `recognized_samples`：VAD 切出、并且真的送去识别的那些句子的样本数之和。用来判断「录了半天但一句都没识别出来」。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: 同 Step 2
 Expected: PASS
 
 > ⚠️ **如果等价性测试失败，不要靠放宽归一化规则让它变绿** —— 那是在掩盖真问题。先查清楚：是不是 VAD 喂的窗口大小不对（sherpa 的 `accept_waveform` 要求窗口 == `window_size` = 512 样本）、是不是 `finish()` 的 flush 没接上、是不是分段边界算错了。确认原因后再改实现，并把结论写进提交说明。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src-tauri/src/asr.rs src-tauri/tests/asr_smoke.rs
@@ -323,7 +329,7 @@ git commit -m "feat(asr): 整段模式支持边录边按句识别"
   - `stop_recording` 在整段模式下**不再**调用 `transcribe_samples`，而是等 ASR 线程收尾
   - `Recorder::stop()` 签名变为 `pub fn stop(self) -> Result<(), String>`（不再返回 `Vec<f32>`）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `src-tauri/tests/streaming_smoke.rs` 加：
 
@@ -377,12 +383,12 @@ fn streaming_via_queue_matches_direct() {
 ```
 
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=/Users/hugh/Library/Application\ Support/com.github.bytes-astra.voicenotes/models/streaming cargo test --test streaming_smoke -- --nocapture`
 Expected: FAIL（整段路径已改但流式路径仍用旧的游标 `take_new`，行为未对齐）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `src-tauri/src/lib.rs`：
 
@@ -395,12 +401,12 @@ Expected: FAIL（整段路径已改但流式路径仍用旧的游标 `take_new`�
 
 `src-tauri/src/audio.rs`：`Recorder::stop()` 不再返回全量样本（改 `Result<(), String>`）；`Recorder::buffer()` 删掉，改用 `Recorder::queue()`。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: 同 Step 2，外加 `cargo test --lib`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src-tauri/src/lib.rs src-tauri/src/audio.rs src-tauri/tests/streaming_smoke.rs
@@ -437,7 +443,7 @@ git commit -m "feat(recording): 整段模式改走 ASR 线程，两种模式统�
   - `settings::Settings.warn_on_bad: bool`（默认 true）；`Status.warn_on_bad: bool`
   - 命令 `set_warn_on_bad(enabled: bool) -> Status`（替换 `set_hybrid`）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `src-tauri/src/hybrid.rs` 的测试模块里保留/新增：
 
@@ -450,12 +456,12 @@ fn detects_empty_and_repeated() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib hybrid::`
 Expected: FAIL —— 旧 `hybrid.rs` 里 `is_degenerate` 的判定口径与新测试不一致（旧的 `punctuate`/`finalize` 测试仍在），或者因为文件已被删而找不到模块
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 - `src-tauri/src/hybrid.rs`：只保留 `is_degenerate(text, duration_seconds) -> bool`；删掉 `should_correct` / `punctuate` / `finalize`；保留 `is_degenerate` 的现有判定口径（空、唯一字符占比 < 1/2、字数 < 时长×0.5）。
 - 删除 `src-tauri/tests/hybrid.rs`（里面测的 `punctuate` / `finalize` 随功能一起没了）。
@@ -469,12 +475,12 @@ Expected: FAIL —— 旧 `hybrid.rs` 里 `is_degenerate` 的判定口径与新�
 - **修一个现存 bug**：`Transcript`（`src-tauri/src/asr.rs`）没有 `#[serde(rename_all = "camelCase")]`，序列化出来是 `duration_seconds` / `elapsed_ms`，但前端读的是 `transcript.durationSeconds` / `transcript.elapsedMs`（`src/app.js:338-339`）→ **两个值恒为 undefined，结果区的「音频时长 / 用时 / RTF」和历史记录里的时长现在全是 0**。给 `Transcript` 和 `Segment` 加 `#[serde(rename_all = "camelCase")]`（与 `lib.rs` 里 `Status` 等结构体一致），前端不用改。
 - `Segment` 同样加 `#[serde(rename_all = "camelCase")]`（`start` / `end` 是单词，加不加都一样，但保持一致）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib && cargo test --test asr_smoke -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add -A src-tauri
@@ -505,7 +511,7 @@ git commit -m "feat(stream): 事件载荷改增量，hybrid 只留异常检测�
   ```
   命令：`transcribe_file(path: String, language: Option<String>) -> Transcript`（camelCase 参数名）
 
-- [ ] **Step 1: 加依赖并写失败测试**
+- [x] **Step 1: 加依赖并写失败测试**
 
 `src-tauri/Cargo.toml` 加：
 
@@ -550,12 +556,12 @@ fn unsupported_format_returns_error() {
 - `broken.mp4`：拿 `sample.m4a` 的前 1KB 截断
 - `sample.mov`：macOS 不好造，**需要人工提供一个真 mov 样本**；没有就跳过，并在 README 里注明「mov 未验证」
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --test decode_smoke -- --nocapture`
 Expected: FAIL —— `voice_notes_lib::decode` 模块不存在
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `src-tauri/src/decode.rs`：
 
@@ -570,12 +576,12 @@ Expected: FAIL —— `voice_notes_lib::decode` 模块不存在
 - 新命令 `transcribe_file`：`models::resolve` 取整段模型 → 起 `OfflineSession` → `decode_to_16k(path, |chunk| { session.push(chunk) → 逐句 emit stream:segment })` → 返回 `Transcript`（duration = 解码出的秒数，elapsed = 纯推理耗时）。
 - 推理是阻塞的 → 整个函数体放进 `tauri::async_runtime::spawn_blocking`。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --test decode_smoke -- --nocapture`
 Expected: PASS（没有 `sample.mp3` 时跳过也算通过）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src-tauri/Cargo.toml src-tauri/src/decode.rs src-tauri/src/lib.rs src-tauri/tests/decode_smoke.rs
@@ -602,7 +608,7 @@ git commit -m "feat(decode): 用 symphonia 在后端解码音频文件"
     > 已核实：`audio:level` 事件在 `audio::start` 的采集循环里发出（`audio.rs:199`），**两种模式共用**，所以整段模式收得到音量数据，不需要额外改造。
   - `Transcript.quality_warning` 非空时弹提示
 
-- [ ] **Step 1: 写失败测试（Playwright）**
+- [x] **Step 1: 写失败测试（Playwright）**
 
 新建 `/tmp/uitest/check_long_content.js`（复制 `check_i18n_fix.js` 的骨架：mock `invoke` 已在 `/tmp/ui-harness/mock-tauri.js`）：
 
@@ -618,12 +624,12 @@ git commit -m "feat(decode): 用 symphonia 在后端解码音频文件"
 - 再派发 `{ payload: { segment: '第二句。', start: 1, end: 2 } }` 后，`#text` 的值为 `第一句。第二句。`（**追加**）
 - 切到整段模式并 `setPhase('recording')` 后，存在可见的「正在听」元素（`#live-line` 不为空 或 新增的 `#listening` 元素可见）
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `bash /tmp/uitest/sync.sh && cd /tmp/uitest && PLAYWRIGHT_BROWSERS_PATH=/Users/hugh/Agents/DeepSeek/.cache/ms-playwright node check_long_content.js`
 Expected: FAIL —— 增量追加与「正在听」都还没有
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `src/app.js`：
 
@@ -639,12 +645,12 @@ Expected: FAIL —— 增量追加与「正在听」都还没有
 
 `src/i18n.js` + `src/locales/en.js`：新增 `record.listening`、改 `settings.hybrid*` 为 `settings.warn*`（两份 key 完全对齐）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `bash /tmp/uitest/sync.sh && cd /tmp/uitest && PLAYWRIGHT_BROWSERS_PATH=... node check_long_content.js && cd /Users/hugh/Agents/DeepSeek/voice-notes && npm run check:i18n`
 Expected: 全部 PASS；i18n 检查通过（2 个语言，key 数一致）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/
@@ -664,7 +670,7 @@ git commit -m "feat(ui): 录音不限时长，增量出字，整段实时指示�
 - Consumes: 前面所有任务的最终行为
 - Produces: 与实现一致的文档
 
-- [ ] **Step 1: 改文档**
+- [x] **Step 1: 改文档**
 
 `README.md`：
 
@@ -686,12 +692,12 @@ git commit -m "feat(ui): 录音不限时长，增量出字，整段实时指示�
   - **「`VoiceActivityDetector::accept_waveform()` 的窗口必须等于 `window_size`（512 样本）」** —— 改成 3200（跟流式对齐）会直接崩
   - **「流式的 VAD `max_speech_duration` 是 20s，整段是 30s，这是刻意的」** —— 流式侧旁边还有 transducer 自己的 `rule3_min_utterance_length = 20.0`，两处都是短句优先；整段侧要 30s 是因为 SenseVoice 在 ≤30s 区间最准。别当 bug「修」成一致。
 
-- [ ] **Step 2: 出图**
+- [x] **Step 2: 出图**
 
 Run: `bash /tmp/uitest/sync.sh && cd /tmp/uitest && PLAYWRIGHT_BROWSERS_PATH=... node shoot_all.js`
 Expected: 9 张截图全部重新生成（`docs/screenshots/`）
 
-- [ ] **Step 3: 全量测试**
+- [x] **Step 3: 全量测试**
 
 Run:
 ```bash
@@ -702,7 +708,7 @@ cd src-tauri && CARGO_HOME=... CARGO_TARGET_DIR=... cargo test --lib && \
 ```
 Expected: 全部 PASS（`tests/hybrid.rs` 在 Task 5 已删除，命令里不要再有它）
 
-- [ ] **Step 4: 打包并手动验证**
+- [x] **Step 4: 打包并手动验证**
 
 ```bash
 cd /Users/hugh/Agents/DeepSeek/voice-notes && SHERPA_ONNX_ARCHIVE_DIR=... CARGO_HOME=... CARGO_TARGET_DIR=... npm_config_cache=/tmp/npmcache npx tauri build --bundles app
@@ -713,7 +719,7 @@ cd /Users/hugh/Agents/DeepSeek/voice-notes && SHERPA_ONNX_ARCHIVE_DIR=... CARGO_
 - 拖一个 mp4 进去，能转写
 - 流式结果异常时弹「结果可能有问题」的提示
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add -A

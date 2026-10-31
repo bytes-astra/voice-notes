@@ -1,14 +1,17 @@
 # 前端模块化拆分 + 长时间内容支持 —— 完整实施方案
 
 日期：2026-10-22
-状态：待批准
+状态：已实施
 
 > 这份方案把两件事整合成一条线：
 > **Phase A** 把 1275 行的 `src/app.js` 拆成 ES Modules（纯重构，行为不变）；
 > **Phase B** 在拆好的模块上实现「不限时长、内存恒定」的长内容支持。
 > 顺序不能反 —— 见文末「为什么先拆后做」。
 
-**状态**：Phase A 已完成（分支 `feature/frontend-modules`，9 个提交）；Phase B 待实施。
+**状态**：Phase A 与 Phase B 均已实施（Phase A 拆出 `core.js` / `tauri.js` / `history.js` / `events.js` 等模块；Phase B 落地采集缓冲消费化、后端 symphonia 解码、文件转写改走后端）。Phase B 的详细任务分解见 `docs/superpowers/plans/2026-10-22-long-content.md`。
+
+> 方案里「结果异常时用整段模型复核」的 hybrid 设想**从未实施**，并在同日被提交 `65876b5` 整个删掉 ——
+> 复核要保留全部音频，与「不限时长、内存恒定」直接冲突。现行口径见 [AGENTS.md](../../../AGENTS.md)。
 
 **关联文档**
 - 设计：`docs/superpowers/specs/2026-10-22-long-content-design.md`
@@ -265,18 +268,21 @@ Phase A 是纯重构，测试策略是「**行为不变**」：
 
 ## 五、总体验证清单
 
+> **复选框已回填（2026-11-01）**：两阶段均已实施并验证。
+> 脚本名与今天的不同：当时的 `check_i18n_fix.js` / `check_modules.js` 已合并为 `scripts/ui/check.mjs`（`npm run check:ui`）。
+
 Phase A 结束后：
-- [ ] `npm run check:i18n` 通过（2 个语言 key 对齐）
-- [ ] Playwright：`check_i18n_fix.js` 15 项 + `check_modules.js` 全过
-- [ ] `cargo test --lib` 全过
-- [ ] 打包（`npx tauri build --bundles app`）后实机启动：三个视图、主题切换、中英切换、录音→结果、历史载入，全对
-- [ ] 9 张截图重出，与拆分前视觉一致
+- [x] `npm run check:i18n` 通过（2 个语言 key 对齐）
+- [x] Playwright：当时的 `check_i18n_fix.js` 15 项 + `check_modules.js` 全过（现为 `npm run check:ui`）
+- [x] `cargo test --lib` 全过
+- [x] 打包（`npx tauri build --bundles app`）后实机启动：三个视图、主题切换、中英切换、录音→结果、历史载入，全对
+- [x] 9 张截图重出，与拆分前视觉一致
 
 Phase B 结束后（沿用原计划的验证）：
-- [ ] 录 15 分钟不自动停、内存不涨
-- [ ] 拖 30 分钟音频 / 一个 mp4 能完整转写
-- [ ] 两种模式都边录边出字
-- [ ] 流式结果异常时弹「结果可能有问题」
+- [x] 录 15 分钟不自动停、内存不涨
+- [x] 拖 30 分钟音频 / 一个 mp4 能完整转写
+- [x] 两种模式都边录边出字
+- [ ] 流式结果异常时弹「结果可能有问题」—— **这条不适用**：hybrid 检测提醒已随 hybrid 整个删掉（提交 `65876b5`）
 
 ---
 

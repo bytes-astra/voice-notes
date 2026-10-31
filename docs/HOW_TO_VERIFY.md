@@ -60,10 +60,28 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 识别是同步阻塞在消费线程里的（`record.rs` 的 `run_offline` → `asr.rs` 的 `drain()`），但 RTF 只有 0.01，
 实际落后不到 1 秒，**离 60 秒上限差得很远** —— 所以「加 buffer」不是解法。
 
+### 缺口与时间轴
+
+丢音频时的三个口径都在单测里（不需要真模型，`cargo test --lib -- gap`）：
+
+- **录音时长含被丢掉的音频**：`record.rs` 的 `recorded_seconds()` = 喂进识别器的采样 + 被丢掉的采样。
+  否则识别跟不上时界面上的时长会短一截。
+- **句子时间在真实录音时间轴上**：整段模式的 VAD 只见过喂进去的音频，句子时间是「喂进去的时间轴」。
+  `record.rs` 的 `to_real_time()` 按缺口位置换算，缺口标记落在**缺口终点**。
+  换算在**秒域**比较（不绕道「秒 → 采样下标」—— f32 往返在长录音上会差 ±1 个采样）。
+- **同一时刻缺口排在句子前面**：缺口终点与它后面第一句的起点相同，`asr.rs` 的 `insert_gaps()`
+  显式让缺口优先（稳定排序会把后 extend 的缺口排到句子后面，文本变成「句子[[gap:3]]」）。
+
+带真模型跑一遍端到端（整段与流式各一条）：
+
+```bash
+VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --lib -- offline_gap --nocapture
+```
+
 ## 🧷 单元测试
 
 ```bash
-npm run check     # 门禁：i18n → 前端依赖图 → clippy(-D warnings) → cargo test --lib
+npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → clippy(-D warnings) → cargo test --lib
 ```
 
 - **门禁跑绿 ≠ 流式时间轴验证过**：`src-tauri/src/record/tests.rs` 里几个用例要真模型
@@ -77,13 +95,19 @@ npm run check     # 门禁：i18n → 前端依赖图 → clippy(-D warnings) �
   ```
 
 - `npm run check:deps` 查前端 import 图：单向依赖不能反、也不能成环（链见 AGENTS.md）。
+- `npm run check:join` 查前后端拼句规则一致：前端 `core.js` 的 `joinText()` 与后端 `asr.rs` 的
+  `join_segments()` 是同一套规则的两份实现（实时出字在前端拼、最终文本在后端拼 ——
+  两边不一致时界面上的字和保存下来的字会不一样）。脚本把两边的**判定结构**归一化后比对：
+  CJK 码位区间（带端点开闭）、缺口占位符的完整形状（`[[gap:<数字>]]`）、三条拼接规则的表达式。
+  只比对子串会漏掉最自然的漂移形状（`..=` 改 `..`、`||` 改 `&&`、少写半个条件、占位符少个 `]`）——
+  这几种改法都会被脚本抓住（退出码 1）。
 
 ## 🖥️ 界面检查
 
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 105 项检查
+npm run check:ui     # 107 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 

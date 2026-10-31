@@ -31,7 +31,7 @@
    - `npm run check`：门禁 —— i18n → 前端依赖图 → 拼句规则 → clippy（`-D warnings`）→ `cargo test --lib`。
    - `npm run check:i18n`：各语言 key 对齐 + HTML/JS 引用的 key 存在（改文案后必跑）。
    - `npm run check:deps`：前端 import 图 —— 单向依赖不能反、也不能成环（改前端依赖后必跑）。
-   - `npm run check:join`：前后端拼句规则一致 —— CJK 码位区间、缺口占位符字面量、三条拼接规则（改了 `src/core.js` 的 `joinText()` 或 `src-tauri/src/asr.rs` 的 `join_segments()` 后必跑）。
+   - `npm run check:join`：前后端拼句规则一致 —— 把两边的判定结构归一化后比对（CJK 码位区间带端点开闭、缺口占位符的完整形状、三条拼接规则的表达式）。改了 `src/core.js` 的 `joinText()` 或 `src-tauri/src/asr.rs` 的 `join_segments()` 后必跑。
    - `npm run check:ui`：界面检查（真实 WebKit + 假 `__TAURI__`），前端改动后跑。
    - `npm run shots`：重出 README 截图，改了界面后跑。
 
@@ -91,6 +91,7 @@
 - **丢掉的音频占真实录音时间**：整段模式以前只算「喂进识别器的采样」，识别跟不上时录音时长会短一截。现在两种模式统一：`record.rs` 的 `recorded_seconds()` = 喂入 + 丢掉。
 - **时间轴统一到真实录音时间**：整段模式的 VAD 只见过喂进去的音频，句子时间是「喂进去的时间轴」。缺口夹在两句之间，`record.rs` 的 `to_real_time()` 按 `drops`（缺口位置 + 累计丢掉量）把句子时间换算到真实时间轴，缺口标记落在**缺口终点**（`gap_at()`）。不换算的话缺口会排到它本该在的位置之后 —— 与流式模式也不一致。**实时事件流也是真实时间轴**（发射前过 `to_real_time()`），别让同一事件流里混两套刻度。
 - **时间轴换算在秒域比较**：`drops` 存的是缺口位置（秒），不存采样下标 —— 句子的 `start`/`end` 也是秒，直接比秒是精确的；绕道「秒 → 下标」会在长录音上因 f32 往返差 ±1 个采样，边界压在缺口上时整句错位。区间语义是 `[start, end)`：起点上的缺口要移（已在句前过去），终点上的缺口不移（还在句后）—— 这组不对称有单测守着。
+- **同一时刻缺口排在句子前面**（`asr.rs` 的 `insert_gaps()`）：缺口终点与它后面第一句的起点相同，`sort_by` 是稳定排序、gaps 又是后 extend 的 —— 不显式让缺口优先，缺口会排到句子**后面**，文本变成「句子[[gap:3]]」，读起来像句子之后才丢的音频。
 
 ### 控件
 
@@ -136,7 +137,7 @@
 - **会话 ID**：录音/文件都先 `reserve_session`，启动/文件命令携带 `sessionId`，分段、partial、采集错误带同一个 ID；前端只接收当前会话，超时同时置 discard 阻止旧线程继续发射。
 - **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal, sessionId? }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续）。致命 `record.micError` 由前端停止录音并保存非空部分结果；用户主动 Esc 才走取消并清空，其他致命错误仍取消。
 - **停止时的采集故障走 `Transcript.warning`**：`finish_recording` 先让识别线程收尾、保住非空转写，再由 `stop_recording` 把 `record.micError` 写进 `Transcript.warning`；正常转写不带这个字段（`skip_serializing_if` 保证载荷不变）。前端据此提示「麦克风发生异常」而不是「完成」，也不丢结果。
-- **事件载荷是增量的**：`stream:segment` 只带新句子，`stream:partial` 只带中间结果。累计全文在长时间会话里是 O(n²) 的传输与重绘。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）—— `npm run check:join` 守着这条（比对 CJK 码位区间、缺口占位符字面量、三条拼接规则）。
+- **事件载荷是增量的**：`stream:segment` 只带新句子，`stream:partial` 只带中间结果。累计全文在长时间会话里是 O(n²) 的传输与重绘。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）—— `npm run check:join` 守着这条。
 - **拖拽用 Tauri 的 `onDragDropEvent`**：Tauri v2 默认拦截系统拖放，HTML5 `drop` 事件在真应用里不触发。`tauri.conf.json` 的 `dragDropEnabled` 必须保持 `true` —— 关掉它 wry 就不装拖放 handler，`onDragDropEvent` 永远不触发，拖拽转写直接变成死代码（而且没有 HTML5 兜底）。
 - **模型下载是两条独立的线**（可以同时下）：各自有 `downloading` / `cancel_download` 标志（`engine.rs` 的 `AppState` 里 `downloading_streaming` / `cancel_download_streaming`）。共用一个标志的话，整段在下载时点流式下载会直接报 busy 失败。
   - 进度事件是同一个名字（`model:progress`），载荷里带 `kind`（`"offline"` / `"streaming"`，由 `lib.rs` 的 `EventSink` 塞进去）—— **前端必须按 kind 分流**，别看「当前是不是在下载」那种状态，否则两个面板会互相显示对方的进度（看起来就像流式在重复下载整段模型）。
