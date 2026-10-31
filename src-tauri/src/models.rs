@@ -15,6 +15,16 @@ use tauri::{AppHandle, Manager};
 use crate::{code, code_detail};
 
 pub const MODEL_FILE: &str = "model.int8.onnx";
+
+/// 下载被取消的内部哨兵。**不是字典 key** —— 界面看到的永远是
+/// `setup.cancelled`（见 `download_asset` 的映射）。
+pub const DOWNLOAD_CANCELLED: &str = "download.cancelled";
+
+/// 这个错误是不是「下载被取消」。
+pub fn is_cancelled(error: &str) -> bool {
+    error == DOWNLOAD_CANCELLED
+}
+
 pub const TOKENS_FILE: &str = "tokens.txt";
 pub const VAD_FILE: &str = "silero_vad.onnx";
 
@@ -400,7 +410,7 @@ async fn fetch_one(
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 if cancel.load(Ordering::Relaxed) {
-                    return Err("cancelled".into());
+                    return Err(DOWNLOAD_CANCELLED.into());
                 }
                 let chunk = chunk.map_err(|e| code_detail("error.downloadInterrupted", e))?;
                 file.write_all(&chunk)
@@ -523,7 +533,7 @@ pub async fn download_asset(
                 return Ok(());
             }
             Err(err) => {
-                if err == "cancelled" {
+                if is_cancelled(&err) {
                     return Err(code("setup.cancelled"));
                 }
                 errors.push(format!("{base}: {err}"));

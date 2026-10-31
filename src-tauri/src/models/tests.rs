@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// 「下载被取消」只有一个哨兵串，不跟字典 key 混。
+#[test]
+fn cancelled_sentinel_is_only_the_download_cancelled_marker() {
+    assert!(is_cancelled(DOWNLOAD_CANCELLED));
+    assert!(!is_cancelled("setup.cancelled"));
+    assert!(!is_cancelled("error.downloadInterrupted"));
+}
+
+/// 哨兵是内部串，不能是字典 key —— 界面只该看到 setup.cancelled。
+#[test]
+fn cancelled_sentinel_never_reaches_the_ui() {
+    assert_ne!(DOWNLOAD_CANCELLED, "setup.cancelled");
+}
+
 /// 只有 model + tokens、没有 silero_vad.onnx 的目录不能报「可用」。
 ///
 /// 回归测试：之前这种目录会被当成已就绪，录完却一句话都识别不出来。
