@@ -62,7 +62,7 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 
 ### 缺口与时间轴
 
-丢音频时的三个口径都在单测里（不需要真模型，`cargo test --lib -- gap`）：
+丢音频时的三个口径都在单测里（不需要真模型，`cargo test --lib -- gap timeline dropped_audio`）：
 
 - **录音时长含被丢掉的音频**：`record.rs` 的 `recorded_seconds()` = 喂进识别器的采样 + 被丢掉的采样。
   否则识别跟不上时界面上的时长会短一截。
@@ -71,11 +71,13 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
   换算在**秒域**比较（不绕道「秒 → 采样下标」—— f32 往返在长录音上会差 ±1 个采样）。
 - **同一时刻缺口排在句子前面**：缺口终点与它后面第一句的起点相同，`asr.rs` 的 `insert_gaps()`
   显式让缺口优先（稳定排序会把后 extend 的缺口排到句子后面，文本变成「句子[[gap:3]]」）。
+- **两种模式同一条规则**：流式会话的句子起点也要按丢掉的时间后移（`asr.rs` 的 `Timeline`），
+  否则流式会排出「句子[[gap:4]]」而整段是「[[gap:4]]句子」。
 
 带真模型跑一遍端到端（整段与流式各一条）：
 
 ```bash
-VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --lib -- offline_gap --nocapture
+VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --lib -- gap_marker_reaches_transcript --nocapture
 ```
 
 ## 🧷 单元测试
