@@ -694,6 +694,62 @@ impl OfflineSession {
     }
 }
 
+/// 流式会话的时间轴：真实录音时钟 + 当前这句的起点。
+///
+/// 单独成结构是为了能**脱开模型**做单测 —— 真模型的用例会因为没设环境变量
+/// 而跳过（CI 上就是这样），这条规则不能只靠它们守。
+///
+/// 两种模式的时间轴必须一致 —— 整段模式见 `record.rs` 的 `to_real_time()`：
+/// 缺口夹在两句之间时，这句的起点要挪到缺口**之后**，否则缺口标记会排到
+/// 句子**后面**（读起来像句子之后才丢的音频）。
+#[derive(Debug, Default)]
+struct Timeline {
+    /// 真实录音时间（16 kHz 采样数）：喂进去的 + 被门控掉的 + 被丢掉的。
+    recorded: usize,
+    /// 当前这句的起点（真实录音时间轴，16 kHz 采样数）。
+    segment_start: usize,
+    /// 当前这句已经吃到音频了吗（吃到 = 这个洞在这句**里面**）。
+    ///
+    /// 判定口径与整段模式一致：洞的「喂入位置」落在这句的喂入起点**之前**
+    /// 还是**之后**。洞在之前 → 这句的起点要后移；洞在里面 → 起点不动。
+    segment_has_audio: bool,
+}
+
+impl Timeline {
+    /// 普通音频推进时钟。
+    fn advance(&mut self, samples: usize) {
+        self.recorded += samples;
+    }
+
+    /// 丢掉了一段音频（识别跟不上）：时钟前进，但这段时间**没有**喂给识别器。
+    ///
+    /// - 这句还没吃到音频 → 洞落在这句**之前**，起点挪到洞之后
+    ///   （= 洞的终点）。不挪的话缺口标记会排到句子**后面**，
+    ///   与整段模式不一致（整段模式由 `record.rs` 的 `to_real_time` 换算）。
+    /// - 这句已经吃到音频 → 洞落在这句**里面**，起点不动
+    ///   （句子的真实跨度自然把这段空档包住，终点由时钟自动带上）。
+    fn advance_dropped(&mut self, samples: usize) {
+        self.recorded += samples;
+        if !self.segment_has_audio {
+            self.segment_start = self.recorded;
+        }
+    }
+
+    /// 识别器吃到音频：当前这句从现在起有内容了。
+    fn note_audio(&mut self) {
+        self.segment_has_audio = true;
+    }
+
+    /// 一句定稿：返回它在真实录音时间轴上的 `[起点, 终点)`（采样数），
+    /// 并把下一句的起点挪到现在。
+    fn commit(&mut self) -> (usize, usize) {
+        let span = (self.segment_start, self.recorded);
+        self.segment_start = self.recorded;
+        self.segment_has_audio = false;
+        span
+    }
+}
+
 /// 一次流式识别会话：喂 PCM，收中间结果和断句。
 pub struct StreamingSession {
     recognizer: Arc<StreamingEngine>,
@@ -702,8 +758,7 @@ pub struct StreamingSession {
     partial: String,
     segments: Vec<Segment>,
     pending: Vec<f32>,
-    recorded_samples: usize,
-    segment_start: usize,
+    timeline: Timeline,
     started: Instant,
 }
 
@@ -724,8 +779,7 @@ impl StreamingSession {
             partial: String::new(),
             segments: Vec::new(),
             pending: Vec::new(),
-            recorded_samples: 0,
-            segment_start: 0,
+            timeline: Timeline::default(),
             started: Instant::now(),
         }
     }
@@ -738,16 +792,35 @@ impl StreamingSession {
     ///
     /// `samples` 是 16 kHz 采样数；调用方负责换算。
     pub fn advance_samples(&mut self, samples: usize) {
-        self.recorded_samples += samples;
+        self.timeline.advance(samples);
+    }
+
+    /// 丢掉了一段音频（识别跟不上）：时钟前进，但这段时间**没有**喂给识别器。
+    ///
+    /// 与 `advance_samples` 的区别在**当前这句的起点**：
+    ///
+    /// - 这句已经吃到音频了 → 洞落在这句**里面**，起点不动
+    ///   （句子的真实跨度自然把这段空档包住，终点由时钟自动带上）。
+    /// - 这句还没吃到音频 → 洞落在**这句之前**，起点挪到洞之后
+    ///   （= 洞的终点）。不挪的话缺口标记会排到句子**后面**，
+    ///   与整段模式不一致（整段模式由 `record.rs` 的 `to_real_time` 换算）。
+    ///
+    /// 两种模式必须同一条规则 —— 否则同一段录音在两个模式里，
+    /// 缺口标记和句子的先后顺序不一样。
+    pub fn advance_dropped(&mut self, samples: usize) {
+        self.timeline.advance_dropped(samples);
     }
 
     /// 当前真实录音时间，供缺口标记和句子使用同一时间轴。
     pub fn elapsed_seconds(&self) -> f32 {
-        self.recorded_samples as f32 / SAMPLE_RATE as f32
+        self.timeline.recorded as f32 / SAMPLE_RATE as f32
     }
 
     /// 按 200ms 一块送入（与官方示例的 chunk_size=3200 对齐），避免过小分片。
     fn accept(&mut self, chunk: &[f32], events: &mut Vec<StreamEvent>) {
+        // 识别器吃到音频了 —— 后面再掉音频的话，洞就在**这句里面**。
+        // 放在 pump 之前：pump 里可能定稿，定稿会把这个标记复位（下一句是新的）。
+        self.timeline.note_audio();
         self.stream.accept_waveform(SAMPLE_RATE, chunk);
         self.pump(events);
     }
@@ -774,8 +847,8 @@ impl StreamingSession {
     }
 
     fn commit(&mut self, events: &mut Vec<StreamEvent>) {
+        let (start, end) = self.timeline.commit();
         if self.partial.is_empty() {
-            self.segment_start = self.recorded_samples;
             return;
         }
         let text = match &self.punctuator {
@@ -784,18 +857,22 @@ impl StreamingSession {
         };
         let segment = Segment {
             text,
-            start: self.segment_start as f32 / SAMPLE_RATE as f32,
-            end: self.recorded_samples as f32 / SAMPLE_RATE as f32,
+            start: start as f32 / SAMPLE_RATE as f32,
+            end: end as f32 / SAMPLE_RATE as f32,
         };
         events.push(StreamEvent::Segment(segment.clone()));
         self.segments.push(segment);
-        self.segment_start = self.recorded_samples;
         self.partial.clear();
     }
 
     /// 喂入 16 kHz 单声道样本，返回需要推给 UI 的事件。
     pub fn push(&mut self, samples: &[f32]) -> Vec<StreamEvent> {
         let mut events = Vec::new();
+        if !samples.is_empty() {
+            // 音频已经交给会话了 —— 后面再掉音频的话，洞就在**这句里面**。
+            // （`accept` 里也标一次：一次 push 可能定稿，定稿会复位这个标记。）
+            self.timeline.note_audio();
+        }
         self.pending.extend_from_slice(samples);
         while self.pending.len() >= STREAM_CHUNK {
             let chunk: Vec<f32> = self.pending.drain(..STREAM_CHUNK).collect();
@@ -839,7 +916,7 @@ impl StreamingSession {
         Transcript {
             text,
             segments: self.segments,
-            duration_seconds: self.recorded_samples as f32 / SAMPLE_RATE as f32,
+            duration_seconds: self.timeline.recorded as f32 / SAMPLE_RATE as f32,
             elapsed_ms: self.started.elapsed().as_millis() as u64,
             language: "zh-en".into(),
             warning: None,
@@ -849,6 +926,9 @@ impl StreamingSession {
 
 #[cfg(test)]
 mod streaming_time_tests;
+
+#[cfg(test)]
+mod timeline_tests;
 
 #[cfg(test)]
 mod gap_tests;

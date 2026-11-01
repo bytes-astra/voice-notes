@@ -306,7 +306,7 @@ where
             // 识别跟不上：丢掉了一段音频，要在结果里留下可见的缺口。
             dropped_16k_total += audio::resampled_len(last.dropped, rate);
             drops.push((fed_16k as f32 / asr::SAMPLE_RATE as f32, dropped_16k_total));
-            let segment = gap_segment(last.dropped, rate, gap_at(fed_16k, &drops), "离线收尾丢掉 ");
+            let segment = gap_segment(last.dropped, rate, gap_at(fed_16k, &drops), "离线收尾");
             gaps.push(segment.clone());
             emit(OfflineEvent::Segment(segment));
         }
@@ -403,7 +403,9 @@ where
         std::thread::sleep(Duration::from_millis(60));
         let new_audio = queue.take_new();
         // 丢掉的输入同样占真实录音时间：缺口结束后才是后续音频的位置。
-        session.advance_samples(audio::resampled_len(new_audio.dropped, rate));
+        // 走 advance_dropped：洞若落在这句之前，这句的起点要跟着后移
+        // （否则缺口标记会排到句子**后面**，与整段模式不一致）。
+        session.advance_dropped(audio::resampled_len(new_audio.dropped, rate));
         let at = session.elapsed_seconds();
         if new_audio.dropped > 0 {
             // 识别跟不上：丢掉了一段音频，标记出来，不能静默丢
@@ -490,10 +492,10 @@ where
 
     // 收尾：把剩余采样和重采样器内部缓冲一起冲出去
     let last = queue.take_new();
-    session.advance_samples(audio::resampled_len(last.dropped, rate));
+    session.advance_dropped(audio::resampled_len(last.dropped, rate));
     if last.dropped > 0 {
         let at = session.elapsed_seconds();
-        let segment = gap_segment(last.dropped, rate, at, "流式收尾丢掉 ");
+        let segment = gap_segment(last.dropped, rate, at, "流式收尾");
         gaps.push(segment.clone());
         emit(vec![StreamEvent::Segment(segment)]);
     }

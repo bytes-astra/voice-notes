@@ -458,6 +458,52 @@ fn offline_gap_marker_reaches_transcript() {
     );
 }
 
+/// 流式：缺口标记必须排在它后面那句**前面**（与整段模式同一条规则）。
+///
+/// 回归测试：之前流式的句子起点没有按丢掉的时间后移，
+/// 缺口标记落到句子**后面** —— 文本变成「下午五点[[gap:4]]」，
+/// 读起来像句子之后才丢的音频（整段模式是「[[gap:4]]下午5点。」）。
+#[test]
+fn streaming_gap_marker_precedes_the_following_sentence() {
+    let Some(engine) = crate::engine::streaming_engine_for_test() else {
+        eprintln!("跳过：未设置 VOICE_NOTES_STREAMING_MODEL_DIR");
+        return;
+    };
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    // 队列上限 2 秒：音频远超上限 → 开头一段被丢掉，后面还有能识别出的句子
+    let queue = audio::SampleQueue::with_limit(Some(32_000));
+    queue.push(wave.samples());
+    let stop = Arc::new(AtomicBool::new(true));
+    let transcript = run_streaming_core(
+        engine,
+        None,
+        queue,
+        16_000,
+        stop,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    );
+    println!("流式结果：{}", transcript.text);
+    let gap_index = transcript
+        .segments
+        .iter()
+        .position(|s| s.text.contains("[[gap:"))
+        .expect("结果里应该有缺口标记");
+    assert!(
+        transcript
+            .segments
+            .iter()
+            .any(|s| !s.text.contains("[[gap:")),
+        "应该还有识别出来的句子：{:?}",
+        transcript.segments
+    );
+    assert_eq!(
+        gap_index, 0,
+        "缺口标记必须排在后面那句之前：{:?}",
+        transcript.segments
+    );
+}
+
 #[test]
 fn capture_failure_does_not_discard_finished_transcript() {
     let Ok(recorder) = audio::start_with(None, None, None) else {
