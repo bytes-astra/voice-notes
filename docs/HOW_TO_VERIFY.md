@@ -62,7 +62,7 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 
 ### 缺口与时间轴
 
-丢音频时的三个口径都在单测里（不需要真模型，`cargo test --lib -- gap timeline dropped_audio`）：
+丢音频时的三个口径都在单测里（不需要真模型；过滤器也会匹配到需要真模型的用例 —— 那几条没设环境变量时静默跳过，见下面「单元测试」一节的警告）：
 
 - **录音时长含被丢掉的音频**：`record.rs` 的 `recorded_seconds()` = 喂进识别器的采样 + 被丢掉的采样。
   否则识别跟不上时界面上的时长会短一截。
@@ -77,8 +77,11 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       
 带真模型跑一遍端到端（整段与流式各一条）：
 
 ```bash
-VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --lib -- gap_marker_reaches_transcript --nocapture
+VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
+  cargo test --manifest-path src-tauri/Cargo.toml --lib -- gap_marker_reaches_transcript streaming_gap_marker_precedes --nocapture
 ```
+
+缺 `VOICE_NOTES_STREAMING_MODEL_DIR` 时流式那半会静默跳过（见上面的警告）—— 那是「没验」，不是「过了」。
 
 ## 🧷 单元测试
 
