@@ -10,7 +10,6 @@
     "check:i18n": "node scripts/check-i18n.mjs",
     "check:deps": "node scripts/check-deps.mjs",
     "check:join": "node scripts/check-join.mjs && node --test scripts/check-join.test.mjs",
-    "check:join:test": "node --test scripts/check-join.test.mjs",
     "check:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --lib",
     "check:ui": "node scripts/ui/check.mjs",
     "shots": "node scripts/ui/shots.mjs",

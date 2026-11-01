@@ -235,7 +235,9 @@ function ruleThreeRust(text) {
  * @param {string} core 前端 `src/core.js` 源码
  * @param {string} asr 后端 `src-tauri/src/asr.rs` 源码
  * @param {string} audio 后端 `src-tauri/src/audio.rs` 源码
- * @returns {string[]} 问题列表（空数组 = 一致）
+ * @returns {object} `{ problems, summary }`：problems 为问题列表（空数组 = 一致）；
+ *   summary 为通过时要打印的摘要（区间数、占位符形状）—— 由这里一次算出，
+ *   main 不再重算（两边各解析一遍，规则改了容易只改一处）。
  */
 export function collectProblems(core, asr, audio) {
   const problems = []
@@ -282,7 +284,8 @@ export function collectProblems(core, asr, audio) {
 
   checkGapRule(jsJoin, rustJoin, problems)
 
-  return problems
+  const summary = { rangeCount: jsRanges.length, gapShape: jsGap }
+  return { problems, summary }
 }
 
 function main() {
@@ -290,17 +293,15 @@ function main() {
   const asr = readFileSync(join(process.cwd(), 'src-tauri/src/asr.rs'), 'utf8')
   const audio = readFileSync(join(process.cwd(), 'src-tauri/src/audio.rs'), 'utf8')
 
-  const problems = collectProblems(core, asr, audio)
+  const { problems, summary } = collectProblems(core, asr, audio)
   if (problems.length) {
     console.error('拼句规则检查失败：')
     for (const problem of problems) console.error(`  - ${problem}`)
     process.exit(1)
   }
 
-  const jsRanges = jsCjkRanges(body(core, 'export function isCjk'))
-  const jsGap = jsGapShape(core)
   console.log(
-    `拼句规则检查通过：${jsRanges.length} 个 CJK 区间，缺口占位符 ${jsGap}，3 条规则前后端一致`,
+    `拼句规则检查通过：${summary.rangeCount} 个 CJK 区间，缺口占位符 ${summary.gapShape}，3 条规则前后端一致`,
   )
 }
 
