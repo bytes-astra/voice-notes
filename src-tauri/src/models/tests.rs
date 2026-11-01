@@ -10,6 +10,15 @@ fn cancelled_sentinel_is_only_the_download_cancelled_marker() {
     assert!(!is_cancelled("error.downloadInterrupted"));
 }
 
+/// 哨兵带上细节（`code_detail` 的形状）也要认得出是「已取消」。
+///
+/// 整串比较会失配 → 内部哨兵以「未知错误」漏到界面上。
+#[test]
+fn cancelled_sentinel_with_detail_is_still_cancelled() {
+    assert!(is_cancelled("download.cancelled:细节"));
+    assert!(!is_cancelled("error.downloadInterrupted:细节"));
+}
+
 /// 下载被取消时，返回给界面的必须是字典 key `setup.cancelled`，
 /// 不能是内部哨兵 `download.cancelled`。
 ///
@@ -39,6 +48,86 @@ fn cancelled_download_returns_the_dictionary_key() {
         .expect_err("已取消的下载应该失败");
     assert_eq!(error, "setup.cancelled", "界面只该看到字典 key");
     assert_ne!(error, DOWNLOAD_CANCELLED, "内部哨兵不能漏到界面");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// 取消发生在**下载途中**时，也要翻译成字典 key。
+///
+/// 回归测试：之前只在「调用前就取消」时测过 —— 取消标志一开始就置上，
+/// `download_asset` 在发起下载前就返回了，那行「哨兵 → 字典 key」的映射
+/// 根本没被走到（把它换成 `if false`，测试照样全过）。
+///
+/// 这里让进度回调在收到第一个进度时置上取消标志：`fetch_one` 会在收 chunk 的
+/// 循环里返回内部哨兵，由 `download_from_base` 翻译成字典 key。
+#[test]
+fn cancelling_during_download_is_translated_to_the_dictionary_key() {
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
+
+    // 本地假服务器：回一个响应，让 fetch_one 真的进入收 chunk 的循环
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap() > 0 {
+            if line.trim().is_empty() {
+                break;
+            }
+            line.clear();
+        }
+        // 回一个 body，让客户端的 chunk 循环跑起来
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnew")
+            .unwrap();
+        stream.flush().unwrap();
+        // 等客户端读完再关
+        let mut sink = [0u8; 1];
+        let _ = stream.read(&mut sink);
+    });
+
+    static ASSET: Asset = Asset {
+        name: "tiny.onnx",
+        path: "/tiny.onnx",
+        bytes: 3,
+        sha256: "11507a0e2f5e69d5dfa40a62a1bd7b6ee57e6bcd85c67c9b8431b36fff21c437",
+    };
+
+    // 进度回调一有动静就置上取消标志 → fetch_one 在收 chunk 的循环里返回哨兵
+    struct CancelOnProgress {
+        cancel: Arc<AtomicBool>,
+    }
+    impl ProgressSink for CancelOnProgress {
+        fn report(&self, _: Progress) {
+            self.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!("vn-models-cancel-mid-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let sink = CancelOnProgress {
+        cancel: cancel.clone(),
+    };
+    let outcome = runtime.block_on(download_from_base(
+        &reqwest::Client::new(),
+        &base,
+        &ASSET,
+        &dir.join(ASSET.name),
+        &cancel,
+        &sink,
+    ));
+    server.join().unwrap();
+    assert!(
+        matches!(outcome, DownloadOutcome::Cancelled),
+        "下载途中取消应该被认出来: {outcome:?}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 

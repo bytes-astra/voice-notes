@@ -21,8 +21,13 @@ pub const MODEL_FILE: &str = "model.int8.onnx";
 pub const DOWNLOAD_CANCELLED: &str = "download.cancelled";
 
 /// 这个错误是不是「下载被取消」。
+///
+/// 比的是**错误码**部分（':' 之前），不是整个字符串 ——
+/// `code_detail(DOWNLOAD_CANCELLED, …)` 出来的是 `download.cancelled:细节`，
+/// 整串比较会失配，内部哨兵就会以「未知错误」漏到界面上。
+/// 与 `record.rs` 的 `is_stop_failed` 同一套写法。
 pub fn is_cancelled(error: &str) -> bool {
-    error == DOWNLOAD_CANCELLED
+    error.split(':').next() == Some(DOWNLOAD_CANCELLED)
 }
 
 pub const TOKENS_FILE: &str = "tokens.txt";
@@ -475,6 +480,46 @@ async fn fetch_one(
     Ok(())
 }
 
+/// 单个镜像的下载结果。
+///
+/// 取消要单独认出来：不能当成「这个镜像失败」再换下一个镜像接着下。
+#[derive(Debug)]
+enum DownloadOutcome {
+    /// 下好了。
+    Done,
+    /// 用户取消了。
+    Cancelled,
+    /// 这个镜像失败（换个镜像再试）。
+    Failed(String),
+}
+
+/// 从一个镜像下载单个资源。
+///
+/// 取消 → `Cancelled`：内部哨兵 `download.cancelled` 在这里翻译成字典 key
+/// `setup.cancelled`（哨兵不是字典 key，漏到界面上只会变成「未知错误」）。
+async fn download_from_base(
+    client: &reqwest::Client,
+    base: &str,
+    asset: &'static Asset,
+    dest: &Path,
+    cancel: &AtomicBool,
+    sink: &dyn ProgressSink,
+) -> DownloadOutcome {
+    sink.report(Progress {
+        resource: asset.name,
+        done: 0,
+        total: asset.bytes,
+        phase: "connecting",
+        source: base.to_string(),
+        message: None,
+    });
+    match fetch_one(client, base, asset, dest, sink, cancel).await {
+        Ok(()) => DownloadOutcome::Done,
+        Err(err) if is_cancelled(&err) => DownloadOutcome::Cancelled,
+        Err(err) => DownloadOutcome::Failed(err),
+    }
+}
+
 /// 下载单个资源到目录；已存在且大小正确则跳过。返回是否走了网络。
 pub async fn download_asset(
     asset: &'static Asset,
@@ -516,28 +561,16 @@ pub async fn download_asset(
         if cancel.load(Ordering::Relaxed) {
             return Err(code("setup.cancelled"));
         }
-        sink.report(Progress {
-            resource: asset.name,
-            done: 0,
-            total: asset.bytes,
-            phase: "connecting",
-            source: base.to_string(),
-            message: None,
-        });
-        match fetch_one(&client, base, asset, &dest, sink, &cancel).await {
-            Ok(()) => {
+        match download_from_base(&client, base, asset, &dest, &cancel, sink).await {
+            DownloadOutcome::Done => {
                 crate::log::info(format!(
                     "模型下载完成：{}（{} 字节）",
                     asset.name, asset.bytes
                 ));
                 return Ok(());
             }
-            Err(err) => {
-                if is_cancelled(&err) {
-                    return Err(code("setup.cancelled"));
-                }
-                errors.push(format!("{base}: {err}"));
-            }
+            DownloadOutcome::Cancelled => return Err(code("setup.cancelled")),
+            DownloadOutcome::Failed(err) => errors.push(format!("{base}: {err}")),
         }
     }
     let message = errors.join("; ");
