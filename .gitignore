@@ -6,3 +6,4 @@ src-tauri/gen/schemas/
 dist/
 src-tauri/tests/fixtures/quality/
 .vn-models/
+.idea/
