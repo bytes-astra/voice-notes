@@ -60,7 +60,7 @@ fn mix(signal: &[f32], noise: &[f32], snr_db: f32) -> Vec<f32> {
 
 /// 跑完整会话，返回（句数，最长句秒数，覆盖秒数，字数）。
 fn run(engine: &std::sync::Arc<Engine>, vad: &sherpa_onnx::VadModelConfig, audio: &[f32]) -> (usize, f32, f32, usize) {
-    let mut session = OfflineSession::new(engine.clone(), vad.clone());
+    let mut session = OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
     let mut segments: Vec<(f32, f32, String)> = Vec::new();
     for chunk in audio.chunks(512) {
         for event in session.push(chunk) {

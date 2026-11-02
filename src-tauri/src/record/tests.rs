@@ -1,6 +1,7 @@
 //! `record` 模块的单元测试（从 `record.rs` 拆出）。
 
 use super::*;
+use crate::engine::Engine;
 use crate::models;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -406,9 +407,9 @@ fn offline_gap_marker_reaches_transcript() {
     let stop = Arc::new(AtomicBool::new(true));
 
     let mut events = Vec::new();
+    let session = crate::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
     let transcript = run_offline(
-        engine,
-        vad,
+        session,
         queue,
         16_000,
         stop,
@@ -609,9 +610,9 @@ fn offline_stop_keeps_the_tail() {
         watchdog.store(true, Ordering::SeqCst);
     });
 
+    let session = crate::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
     let _transcript = run_offline(
-        engine,
-        vad,
+        session,
         queue.clone(),
         16_000,
         stop,

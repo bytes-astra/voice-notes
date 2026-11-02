@@ -102,7 +102,7 @@ fn transcribes_file_end_to_end() {
         voice_notes_lib::engine::Engine::new(&paths, "zh", true).expect("加载模型"),
     );
     let vad = engine.vad_config().expect("VAD 配置");
-    let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad);
+    let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
 
     let path = Path::new("tests/fixtures/sample.m4a");
     if !path.exists() {

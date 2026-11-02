@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::asr;
 use crate::asr::{OfflineEvent, StreamEvent, StreamingSession, Transcript};
-use crate::engine::{Engine, PunctuationEngine, StreamingEngine};
+use crate::engine::{PunctuationEngine, StreamingEngine};
 use sherpa_onnx::LinearResampler;
 
 use crate::audio;
@@ -222,9 +222,11 @@ fn log_stream_events(tag: &str, events: &[StreamEvent]) {
 /// 采集线程把新采样放进队列，这里取走、重采样到 16k、喂给 VAD 切句，
 /// 切出一句就立刻送 SenseVoice 识别并把结果推给界面。
 /// 识别完的音频立刻丢掉，只留文本 —— 内存不随录音时长增长。
+///
+/// 会话由调用方建好传进来：VAD 建不起来要在**开始录音时**就报错，
+/// 不能等到录完了才让用户撞上「停止超时」。
 pub fn run_offline<F>(
-    engine: Arc<Engine>,
-    vad: sherpa_onnx::VadModelConfig,
+    session: asr::OfflineSession,
     queue: audio::SampleQueue,
     rate: u32,
     stop: Arc<AtomicBool>,
@@ -239,7 +241,7 @@ where
     } else {
         sherpa_onnx::LinearResampler::create(rate as i32, asr::SAMPLE_RATE)
     };
-    let mut session = asr::OfflineSession::new(engine.clone(), vad);
+    let mut session = session;
     // 电平自动增益：偏小的录音会整段被 VAD 当成非语音丢掉（见 audio::Agc）。
     let mut agc = audio::Agc::new();
     // 识别跟不上时丢掉的音频：在结果里留个可见的缺口（按时间插进句子列表）。
@@ -346,7 +348,7 @@ where
         // 丢掉的音频同样占真实录音时间 —— 不算进去，识别跟不上时时长会短一截。
         duration_seconds: recorded_seconds(session.recorded_samples(), dropped_16k_total),
         elapsed_ms: session.elapsed_ms(),
-        language: engine.language.clone(),
+        language: session.language(),
         warning: None,
     };
     asr::insert_gaps(&mut transcript, gaps);

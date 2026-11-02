@@ -103,7 +103,7 @@ fn offline_session_matches_batch_transcribe() {
     let engine = std::sync::Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
 
     // 路径 A：边录边（按 3200 样本推进）
-    let mut session = OfflineSession::new(engine.clone(), vad_config(paths.vad.as_deref()));
+    let mut session = OfflineSession::new(engine.clone(), vad_config(paths.vad.as_deref())).expect("建整段会话");
     let mut events = Vec::new();
     for chunk in wave.samples().chunks(3200) {
         events.extend(session.push(chunk));
@@ -139,7 +139,7 @@ fn offline_session_finishes_partial_sentence() {
     };
     let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
     let engine = std::sync::Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
-    let mut session = OfflineSession::new(engine, vad_config(paths.vad.as_deref()));
+    let mut session = OfflineSession::new(engine, vad_config(paths.vad.as_deref())).expect("建整段会话");
     // 只喂前 1.2 秒（不够 VAD 判静音成句），然后 finish
     let head = &wave.samples()[..(16_000 * 12 / 10).min(wave.samples().len())];
     let _ = session.push(head);
@@ -223,7 +223,7 @@ fn handles_fifteen_minute_recording() {
     println!("模拟录音 {minutes:.1} 分钟（{total_samples} 个采样）");
 
     let queue = voice_notes_lib::audio::SampleQueue::new(16_000);
-    let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad);
+    let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
     let mut segments = 0usize;
     let mut max_pending = 0usize;
 

@@ -53,7 +53,7 @@ fn vad_speech_samples(
 
 /// 跑完整会话：句子数、覆盖的秒数、字数。
 fn offline_session(engine: &std::sync::Arc<Engine>, vad: &sherpa_onnx::VadModelConfig, speech: &[f32]) -> (usize, f32, usize) {
-    let mut session = OfflineSession::new(engine.clone(), vad.clone());
+    let mut session = OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
     let mut segments: Vec<(f32, f32, String)> = Vec::new();
     for chunk in speech.chunks(512) {
         for event in session.push(chunk) {

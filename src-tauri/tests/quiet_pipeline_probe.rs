@@ -25,7 +25,7 @@ use common::{model_paths, trim_silence};
 
 /// 直接喂会话（**不经过 AGC**）：返回字数。
 fn chars_without_agc(engine: &Arc<Engine>, vad: &sherpa_onnx::VadModelConfig, audio: &[f32]) -> usize {
-    let mut session = OfflineSession::new(engine.clone(), vad.clone());
+    let mut session = OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
     for chunk in audio.chunks(512) {
         session.push(chunk);
     }
@@ -43,9 +43,10 @@ fn chars_through_pipeline(
     queue.push(audio);
     let stop = Arc::new(AtomicBool::new(true));
     let discard = Arc::new(AtomicBool::new(false));
+    let session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone())
+        .expect("建整段会话");
     let transcript = voice_notes_lib::record::run_offline(
-        engine.clone(),
-        vad.clone(),
+        session,
         queue,
         16_000,
         stop,

@@ -241,7 +241,7 @@ fn run_session(
     vad: &sherpa_onnx::VadModelConfig,
     samples: &[f32],
 ) -> (Vec<(f32, f32, String)>, f32, usize) {
-    let mut session = OfflineSession::new(engine.clone(), vad.clone());
+    let mut session = OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
     let mut segments: Vec<(f32, f32, String)> = Vec::new();
     for chunk in samples.chunks(512) {
         for event in session.push(chunk) {

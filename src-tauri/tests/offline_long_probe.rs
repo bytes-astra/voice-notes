@@ -48,7 +48,7 @@ fn probe_long_recording_loss() {
         }
         let seconds = long.len() as f32 / 16000.0;
 
-        let mut session = OfflineSession::new(engine.clone(), vad.clone());
+        let mut session = OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
         let mut segments: Vec<(f32, f32, String)> = Vec::new();
         // 和应用一样按 512 一块喂
         for chunk in long.chunks(512) {

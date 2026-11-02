@@ -754,7 +754,7 @@ fn probe_offline_session_first_word() {
         let Ok(Some(wave)) = std::fs::metadata(&file).map(|_| sherpa_onnx::Wave::read(&file)) else {
             continue;
         };
-        let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone());
+        let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
         let mut events = Vec::new();
         for chunk in wave.samples().chunks(3_200) {
             events.extend(session.push(chunk));

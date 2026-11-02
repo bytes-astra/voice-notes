@@ -1,6 +1,27 @@
 //! `asr` 模块的单元测试（从 `asr.rs` 拆出）。
 
 use super::*;
+use sherpa_onnx::SileroVadModelConfig;
+
+/// VAD 建不起来要报错，不能 panic。
+///
+/// panic 会让识别线程直接死掉：用户录完停下来只看到「停止超时」，
+/// 真因（模型损坏、版本不匹配）被完全掩盖。
+#[test]
+fn vad_failure_is_reported_instead_of_panicking() {
+    let vad = VadModelConfig {
+        silero_vad: SileroVadModelConfig {
+            model: Some("/nonexistent/silero_vad.onnx".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = match create_vad_detector(&vad) {
+        Ok(_) => panic!("VAD 建不起来必须报错"),
+        Err(error) => error,
+    };
+    assert!(error.starts_with("model.loadFailed"), "错误码不对：{error}");
+}
 
 #[test]
 fn joins_cjk_without_spaces() {

@@ -487,6 +487,17 @@ pub struct OfflineSession {
     window_peak: f32,
 }
 
+/// 建 VAD 检测器。
+///
+/// 缓冲给 60 秒：sherpa 的 max_speech_duration 不是硬切，而是把 VAD 参数
+/// 调严（min_silence 0.5→0.1s、threshold 0.5→0.9）逼它找静音。真的连续
+/// 说话时它找不到，句子可以长到 1 分钟以上 —— 缓冲不够就会触发扩容
+/// （sherpa 会打印 Overflow 警告）。
+fn create_vad_detector(vad: &VadModelConfig) -> Result<VoiceActivityDetector, String> {
+    VoiceActivityDetector::create(vad, 60.0)
+        .ok_or_else(|| crate::code_detail("model.loadFailed", "silero_vad.onnx"))
+}
+
 /// 整段会话产出的事件。
 #[derive(Clone, Debug)]
 pub enum OfflineEvent {
@@ -495,13 +506,14 @@ pub enum OfflineEvent {
 }
 
 impl OfflineSession {
-    pub fn new(engine: Arc<Engine>, vad: VadModelConfig) -> Self {
-        // 缓冲给 60 秒：sherpa 的 max_speech_duration 不是硬切，而是把 VAD 参数
-        // 调严（min_silence 0.5→0.1s、threshold 0.5→0.9）逼它找静音。真的连续
-        // 说话时它找不到，句子可以长到 1 分钟以上 —— 缓冲不够就会触发扩容
-        // （sherpa 会打印 Overflow 警告）。
-        let detector = VoiceActivityDetector::create(&vad, 60.0).expect("创建 VAD 失败");
-        Self {
+    /// 建一个整段会话。
+    ///
+    /// VAD 建不起来（模型损坏、版本不匹配）要报错，不能 panic：
+    /// panic 会让识别线程直接死掉，用户录完停下来只看到「停止超时」，
+    /// 真因被完全掩盖。
+    pub fn new(engine: Arc<Engine>, vad: VadModelConfig) -> Result<Self, String> {
+        let detector = create_vad_detector(&vad)?;
+        Ok(Self {
             engine,
             detector,
             vad_pending: Vec::new(),
@@ -514,7 +526,12 @@ impl OfflineSession {
             last_segment_at: 0.0,
             last_check_at: 0.0,
             window_peak: 0.0,
-        }
+        })
+    }
+
+    /// 这次识别用的语言（结果里要带上）。
+    pub fn language(&self) -> String {
+        self.engine.language.clone()
     }
 
     /// 喂入 16 kHz 单声道采样，返回这一轮识别出来的句子。

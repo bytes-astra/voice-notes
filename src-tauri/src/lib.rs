@@ -620,6 +620,9 @@ async fn start_offline_recording(
     let vad = engine
         .vad_config()
         .ok_or_else(|| code("model.vadMissing"))?;
+    // 会话在这里建：VAD 建不起来（模型损坏）要在开始录音时就报错，
+    // 不能让识别线程 panic 掉、用户录完只看到「停止超时」。
+    let session = asr::OfflineSession::new(engine.clone(), vad)?;
     let recorder = {
         let audio_app = app.clone();
         let device = settings.input_device.clone();
@@ -644,8 +647,7 @@ async fn start_offline_recording(
         .name("offline-asr".into())
         .spawn(move || {
             let transcript = run_offline(
-                engine,
-                vad,
+                session,
                 queue,
                 rate,
                 thread_stop,
@@ -785,7 +787,7 @@ async fn transcribe_file(
         let vad = engine
             .vad_config()
             .ok_or_else(|| code("model.vadMissing"))?;
-        let mut session = asr::OfflineSession::new(engine.clone(), vad);
+        let mut session = asr::OfflineSession::new(engine.clone(), vad)?;
 
         let emit_segment = |segment: &asr::Segment| {
             // 逐句记日志：出问题时能看出句子覆盖了哪段时间（录音路径同款）。
