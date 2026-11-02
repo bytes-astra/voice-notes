@@ -186,7 +186,7 @@ export function bindUI() {
       renderStatus()
       if (state.status.modelReady) {
         toast(t('settings.switchedAppModel'))
-        void warmUp()
+        void warmUp().catch(() => {})
       } else {
         toast(t('settings.switchedAppModelNeedDownload'))
       }
@@ -377,7 +377,7 @@ async function init() {
   if (state.status?.mode === 'streaming') {
     if (state.status.streamingReady) void invoke('warm_up_streaming').catch(() => {})
   } else if (state.status?.modelReady) {
-    void warmUp()
+    void warmUp().catch(() => {})
   }
 }
 

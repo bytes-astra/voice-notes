@@ -132,3 +132,18 @@ fn 读不到词表时热词全部保留() {
     assert_eq!(usable, hotwords);
     assert!(ignored.is_empty());
 }
+
+/// 加载结果必须映射成 ready / error 两种状态事件。
+///
+/// 流式侧原来只发 loading + ready，失败时不发 error —— 前端 state.engine
+/// 会永远停在 loading，徽标卡在「加载中」。抽成纯函数才能脱开 AppHandle 守住。
+#[test]
+fn 加载结果映射成引擎状态() {
+    let ok = engine_state_for::<()>(&Ok(()));
+    assert_eq!(ok.phase, "ready");
+    assert!(ok.message.is_none());
+
+    let failed = engine_state_for::<()>(&Err("model.streamLoadFailed".into()));
+    assert_eq!(failed.phase, "error");
+    assert_eq!(failed.message.as_deref(), Some("model.streamLoadFailed"));
+}

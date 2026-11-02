@@ -1,6 +1,6 @@
 /* 结果区：转写结果 + 实时中间结果 */
 
-import { els, gapMarkerTexts, joinText, localizeText, renderResultMeta, state } from './core.js'
+import { els, gapMarkerTexts, isGapMarker, joinText, localizeText, renderResultMeta, state } from './core.js'
 import { addHistory } from './history.js'
 import { clearIcon, copyIcon, saveIcon } from './icons.js'
 
@@ -98,7 +98,10 @@ export function appendSegment(text) {
   // `rendered` 仍保持「原文的本地化结果」—— relocalizeResult 靠它判断
   // 文本有没有被编辑过，写成用户文本会让切语言时再次覆盖。
   if (view && els.text.value !== view.rendered) {
-    els.text.value = joinText(els.text.value, piece)
+    // 缺口段要先本地化再上屏，否则用户看到的是内部标记 [[gap:N]]。
+    // 缺口文案自带空格规则（gapText），别再让 joinText 补一个。
+    const shown = localizeText(piece)
+    els.text.value = isGapMarker(piece) ? `${els.text.value}${shown}` : joinText(els.text.value, shown)
     state.resultView = { ...view, rawText, markers: gapMarkerTexts(rawText) }
     renderResultMeta()
     return

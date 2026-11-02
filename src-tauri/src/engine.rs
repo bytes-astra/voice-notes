@@ -219,6 +219,23 @@ pub fn persist(app: &AppHandle, state: &AppState) -> Result<(), String> {
     settings::save(app, &settings)
 }
 
+/// 把加载结果映射成引擎状态事件：成功 ready，失败 error。
+///
+/// 抽成纯函数是为了能脱开 `AppHandle` 单测 —— 少了 error 事件，
+/// 前端徽标会永远停在「加载中」。
+fn engine_state_for<T>(outcome: &Result<T, String>) -> EngineState {
+    match outcome {
+        Ok(_) => EngineState {
+            phase: "ready",
+            message: None,
+        },
+        Err(err) => EngineState {
+            phase: "error",
+            message: Some(err.clone()),
+        },
+    }
+}
+
 pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let settings = state.settings();
     let paths = models::resolve(app, settings.model_dir.as_deref())
@@ -254,17 +271,7 @@ pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<(), String
     .await
     .map_err(|e| code_detail("model.loadFailed", e))?;
 
-    let payload = match &outcome {
-        Ok(()) => EngineState {
-            phase: "ready",
-            message: None,
-        },
-        Err(err) => EngineState {
-            phase: "error",
-            message: Some(err.clone()),
-        },
-    };
-    let _ = handle.emit("engine:state", payload);
+    let _ = handle.emit("engine:state", engine_state_for(&outcome));
     outcome
 }
 
@@ -320,17 +327,7 @@ pub async fn ensure_streaming_engine(
 
     // 成功发 ready，失败发 error —— 和整段侧 load_engine 一个范式。
     // 少了 error 事件，前端 state.engine 会永远停在 loading（徽标卡「加载中」）。
-    let payload = match &outcome {
-        Ok(_) => EngineState {
-            phase: "ready",
-            message: None,
-        },
-        Err(err) => EngineState {
-            phase: "error",
-            message: Some(err.clone()),
-        },
-    };
-    let _ = app.emit("streaming:state", payload);
+    let _ = app.emit("streaming:state", engine_state_for(&outcome));
     outcome
 }
 

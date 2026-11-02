@@ -145,7 +145,7 @@ export async function setMode(mode) {
       }
     } else if (state.status.modelReady) {
       // 切回整段前先把 239 MB 引擎加载好（后端切模式时已经释放了另一份）。
-      void warmUp()
+      void warmUp().catch(() => {})
     }
   } catch (error) {
     toast(fmtError(error), 'error')
@@ -340,9 +340,8 @@ export async function downloadModel() {
     afterDownload: null,
     readyToast: 'model.readyToast',
     label: '整段模型',
-    warm: () => {
-      warmUp()
-    },
+    // 返回 Promise：加载失败要让 runDownload 知道，不能还弹「已就绪」。
+    warm: () => warmUp(),
   })
 }
 
@@ -354,7 +353,7 @@ export async function pickModelDir() {
     renderStatus()
     if (state.status.modelReady) {
       toast(t('model.ready'))
-      warmUp()
+      void warmUp().catch(() => {})
     } else {
       toast(t('setup.noModel'), 'error')
     }
@@ -363,13 +362,11 @@ export async function pickModelDir() {
   }
 }
 
+/// 预热整段引擎。失败时**抛出**，由调用方决定是否提示 ——
+/// 静默吞掉会让「下载完成」之后的「已就绪」变成假成功。
 export async function warmUp() {
   if (!state.status?.modelReady) return
   // 流式模式用不到整段引擎：下载 / 选目录后不要把它常驻在内存里。
   if (state.status?.mode === 'streaming') return
-  try {
-    await invoke('warm_up')
-  } catch (error) {
-    console.warn('模型预热失败', error)
-  }
+  await invoke('warm_up')
 }

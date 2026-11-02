@@ -127,6 +127,9 @@ await context.addInitScript(() => {
           case 'warm_up_streaming':
             if (window.__mockWarmError) throw window.__mockWarmError
             return null
+          case 'warm_up':
+            if (window.__mockWarmUpError) throw window.__mockWarmUpError
+            return null
           case 'list_input_devices':
             return [{ name: 'Mock Mic', isDefault: true }]
           case 'stop_recording':
@@ -465,6 +468,14 @@ await page.waitForTimeout(120)
 check('实时追加不覆盖用户编辑', (await page.locator('#text').inputValue()).startsWith('我手改的一行'))
 check('实时追加接在用户编辑之后', (await page.locator('#text').inputValue()).includes('下一句'))
 
+// 编辑状态下收到缺口段：显示的必须是本地化文案，不能露出 [[gap:N]]。
+await page.evaluate(() => {
+  window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: '[[gap:4]]', start: 0, end: 1 })
+})
+await page.waitForTimeout(120)
+const liveGap = await page.locator('#text').inputValue()
+check('编辑状态下缺口段显示本地化文案', !liveGap.includes('[[gap:') && liveGap.includes('秒未识别'), liveGap)
+
 // 停止录音：后端返回全文，前端要用它替换结果框
 await page.locator('#mic-btn').click()
 await page.waitForTimeout(400)
@@ -750,6 +761,29 @@ check('文件预留失败后可录音', (await phase()) === 'recording')
 await page.keyboard.press('Escape')
 await page.waitForTimeout(300)
 
+// 转写进行中载入历史：会覆盖正在写的结果，必须拒绝。
+await page.evaluate(async () => {
+  const { transcribeFilePath } = await import('./files.js')
+  window.__mockFileGate = new Promise((resolve) => { window.__releaseHistLoad = resolve })
+  window.__histTask = transcribeFilePath('/tmp/busy.mp3')
+})
+await page.waitForTimeout(100)
+await page.locator('.nav-item[data-view="history"]').click()
+await page.waitForTimeout(100)
+await page.locator('.history-item .history-main').first().click()
+await page.waitForTimeout(150)
+check('转写中载入历史被拒绝', (await page.locator('.app').getAttribute('data-view')) === 'history')
+await page.evaluate(async () => {
+  window.__releaseHistLoad()
+  await window.__histTask
+  window.__mockFileGate = null
+  window.__histTask = null
+})
+await page.waitForTimeout(150)
+// 后续用例都在转写页：把视图还原。
+await page.locator('.nav-item[data-view="transcribe"]').click()
+await page.waitForTimeout(150)
+
 // ── 错误提示：只能显示字典文案，不能把错误码 / 本地路径原样弹给用户 ──
 await page.evaluate(() =>
   window.__emit('engine:state', {
@@ -927,9 +961,26 @@ await page.waitForTimeout(200)
 const warmToast = await page.locator('#toast').innerText()
 check('预热失败不弹「已就绪」', !warmToast.includes('已就绪'), warmToast)
 check('预热失败给出错误提示', warmToast.length > 0, warmToast)
+
+// 整段模型同样：下载完预热失败，不能说「已就绪」。
+await page.evaluate(() => {
+  window.__mockDownloadOk = true
+  window.__mockWarmUpError = 'model.loadFailed'
+})
+await page.evaluate(async () => {
+  // 前面的「下载挂起」用例把 busy 标志留在 true，不复位会直接 return（空过）。
+  const { state } = await import('./core.js')
+  state.downloading = false
+  const { downloadModel } = await import('./status.js')
+  await downloadModel()
+})
+await page.waitForTimeout(200)
+const offlineWarmToast = await page.locator('#toast').innerText()
+check('整段预热失败不弹「已就绪」', !offlineWarmToast.includes('已就绪'), offlineWarmToast)
 await page.evaluate(() => {
   window.__mockDownloadOk = false
   window.__mockWarmError = null
+  window.__mockWarmUpError = null
 })
 
 // ── 结果 ────────────────────────────────────────────────────

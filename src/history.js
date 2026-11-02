@@ -1,6 +1,6 @@
 /* 历史记录：本地存储 + 列表渲染 */
 
-import { I18N, els, fmtDuration, gapMarkerTexts, historyStorageSet, localizeText, renderResultMeta, state, t } from './core.js'
+import { I18N, els, fmtDuration, gapMarkerTexts, historyStorageSet, localizeText, renderResultMeta, state, t, toast } from './core.js'
 import { copyText, saveText } from './export.js'
 import { copyIcon, saveIcon, trashIcon } from './icons.js'
 
@@ -64,6 +64,11 @@ export function renderHistory() {
     }
     main.append(text, sub)
     main.addEventListener('click', () => {
+      // 录音/转写进行中载入历史会覆盖正在写的结果 —— 和切视图一样拒绝。
+      if (state.phase !== 'idle') {
+        toast(t('toast.recordingBusy'))
+        return
+      }
       // 载入的是一条历史，不是「上次转写」：切语言时不能再把它重绘回去。
       const rendered = localizeText(item.text)
       // 先切视图再写文本：结果框在别的面板里，隐藏元素上的 focus() 不生效。
