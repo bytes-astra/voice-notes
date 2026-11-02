@@ -117,10 +117,16 @@ await context.addInitScript(() => {
             return clone(window.__mockStatus)
           case 'set_model_dir':
           case 'set_output_dir':
+            return clone(window.__mockStatus)
           case 'download_model':
           case 'download_streaming_model':
-            // 挂起：模拟「正在下载」，这样界面上的 busy 状态能保持住
-            return new Promise(() => {})
+            // 默认挂起：模拟「正在下载」，busy 状态能保持住。
+            // __mockDownloadOk 打开时正常返回，用来测「下载完成后预热失败」。
+            if (!window.__mockDownloadOk) return new Promise(() => {})
+            return clone(window.__mockStatus)
+          case 'warm_up_streaming':
+            if (window.__mockWarmError) throw window.__mockWarmError
+            return null
           case 'list_input_devices':
             return [{ name: 'Mock Mic', isDefault: true }]
           case 'stop_recording':
@@ -907,6 +913,24 @@ check(
   (await page.locator('#text').inputValue()).includes('（约 4 秒未识别）'),
 )
 check('历史载入后切语言保留用户编辑', (await page.locator('#text').inputValue()).includes('（手改）'))
+
+// 流式模型下载完、预热失败：不能弹「已就绪」。
+await page.evaluate(() => {
+  window.__mockDownloadOk = true
+  window.__mockWarmError = 'model.streamLoadFailed'
+})
+await page.evaluate(async () => {
+  const { downloadStreamingModel } = await import('./status.js')
+  await downloadStreamingModel()
+})
+await page.waitForTimeout(200)
+const warmToast = await page.locator('#toast').innerText()
+check('预热失败不弹「已就绪」', !warmToast.includes('已就绪'), warmToast)
+check('预热失败给出错误提示', warmToast.length > 0, warmToast)
+await page.evaluate(() => {
+  window.__mockDownloadOk = false
+  window.__mockWarmError = null
+})
 
 // ── 结果 ────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)

@@ -273,10 +273,17 @@ async function runDownload({
     state.status = await invoke(command)
     if (afterDownload) await afterDownload()
     progressText.textContent = t('setup.done')
-    toast(t(readyToast))
     renderStatus()
-    // 和整段模型一样：下载完先把引擎加载起来，第一次录音不用等
-    warm()
+    // 和整段模型一样：下载完先把引擎加载起来，第一次录音不用等。
+    // 预热失败就别说「已就绪」—— 那会让用户以为可以直接录音。
+    // 单独一层 try：加载失败不是「下载失败」，文案不能混。
+    try {
+      await warm()
+      toast(t(readyToast))
+    } catch (error) {
+      logEvent('ERROR', `模型预热失败: ${errorText(error)}`)
+      toast(fmtError(error), 'error')
+    }
   } catch (error) {
     logEvent('ERROR', `模型下载失败: ${errorText(error)}`)
     toast(fmtError(error), 'error')
@@ -310,8 +317,9 @@ export async function downloadStreamingModel() {
     },
     readyToast: 'model.badge.streamingReady',
     label: '流式模型',
-    warm: () => {
-      void invoke('warm_up_streaming').catch(() => {})
+    // 返回 Promise：加载失败要让 runDownload 知道，不能还弹「已就绪」。
+    warm: async () => {
+      await invoke('warm_up_streaming')
     },
   })
 }

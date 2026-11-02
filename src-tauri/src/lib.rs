@@ -489,7 +489,10 @@ async fn download_streaming_model(
     .await;
     result?;
     log::info("流式模型下载完成");
-    let _ = ensure_streaming_engine(&app, &state).await;
+    // 加载失败不能静默：模型已经下好了，用户需要知道「下载成功但加载失败」。
+    if let Err(err) = ensure_streaming_engine(&app, &state).await {
+        log::error(format!("流式模型下载完成，但引擎加载失败：{err}"));
+    }
     Ok(status_of(&app, &state))
 }
 

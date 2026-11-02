@@ -297,8 +297,8 @@ pub async fn ensure_streaming_engine(
     );
     // 检查和加载放在同一把锁里：预热和点录音并发时只会加载一份 161 MB 模型。
     let slot = state.streaming_engine.clone();
-    let engine =
-        tauri::async_runtime::spawn_blocking(move || -> Result<Arc<StreamingEngine>, String> {
+    let outcome =
+        match tauri::async_runtime::spawn_blocking(move || -> Result<Arc<StreamingEngine>, String> {
             let mut guard = slot.lock().map_err(|_| code("error.streamEngineState"))?;
             if let Some(engine) = guard.as_ref() {
                 return Ok(engine.clone());
@@ -313,15 +313,25 @@ pub async fn ensure_streaming_engine(
             Ok(engine)
         })
         .await
-        .map_err(|e| code_detail("model.streamLoadFailed", e))??;
-    let _ = app.emit(
-        "streaming:state",
-        EngineState {
+        {
+            Ok(inner) => inner,
+            Err(e) => Err(code_detail("model.streamLoadFailed", e)),
+        };
+
+    // 成功发 ready，失败发 error —— 和整段侧 load_engine 一个范式。
+    // 少了 error 事件，前端 state.engine 会永远停在 loading（徽标卡「加载中」）。
+    let payload = match &outcome {
+        Ok(_) => EngineState {
             phase: "ready",
             message: None,
         },
-    );
-    Ok(engine)
+        Err(err) => EngineState {
+            phase: "error",
+            message: Some(err.clone()),
+        },
+    };
+    let _ = app.emit("streaming:state", payload);
+    outcome
 }
 
 pub async fn ensure_punctuation(
