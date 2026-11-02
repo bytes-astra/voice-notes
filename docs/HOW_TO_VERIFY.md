@@ -100,6 +100,10 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → clipp
   ```
 
 - `npm run check:deps` 查前端 import 图：单向依赖不能反、也不能成环（链见 AGENTS.md）。
+- `npm run check:i18n` 查字典对齐 + 引用完整性 + **后端错误码**。后端错误码的扫描是**文本级正则**：
+  `code("…")` / `code_detail("…")` 都要认，`crate::` 前缀也算（`crate::code_detail("record.tooShort", …)`
+  这种写法很常见，排掉冒号就会静默漏网）。门禁自己有测试（`scripts/check-i18n.test.mjs`），
+  改扫描规则要连它一起改 —— 正则是文本级的，漏一个写法就漏一个错误码。
 - `npm run check:join` 查前后端拼句规则一致：前端 `core.js` 的 `joinText()` 与后端 `asr.rs` 的
   `join_segments()` 是同一套规则的两份实现（实时出字在前端拼、最终文本在后端拼 ——
   两边不一致时界面上的字和保存下来的字会不一样）。脚本把两边的**判定结构**归一化后比对：
@@ -112,7 +116,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → clipp
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 107 项检查
+npm run check:ui     # 111 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 
