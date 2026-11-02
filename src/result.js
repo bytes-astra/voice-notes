@@ -63,10 +63,14 @@ export function clearResult(label = 'result.waiting') {
 }
 
 /// 渲染一次转写结果。`record: false` 只重绘、不写历史。
-export function showTranscript(transcript, { record = true } = {}) {
+///
+/// `emptyKey` 是「什么都没识别出来」时结果区显示的那句话：
+/// 录音说「换个安静点的环境」（麦克风的锅），文件说「没有识别到内容」
+/// （文件的内容已经定下来了，别给建议）。
+export function showTranscript(transcript, { record = true, emptyKey = 'record.empty' } = {}) {
   const raw = (transcript.text || '').trim()
   if (!raw) {
-    setResultView('', { kind: 'label', key: 'record.empty' })
+    setResultView('', { kind: 'label', key: emptyKey })
     return
   }
   const audio = transcript.durationSeconds || 0

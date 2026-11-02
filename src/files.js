@@ -49,7 +49,7 @@ export async function transcribeFilePath(path) {
     if (state.fileSessionId !== reserved) return
     // 文件转写完成：时长 + 句数（和录音的最终结果同一套口径）。
     logEvent('INFO', `文件转写完成 文件=${name} 时长=${(transcript.durationSeconds || 0).toFixed(1)}s 句数=${transcript.segments?.length || 0}`)
-    showTranscript(transcript)
+    showTranscript(transcript, { emptyKey: 'result.none' })
     toast(transcript.text ? t('result.fileDone', { name }) : t('result.none'))
   } catch (error) {
     if (attemptId !== state.fileAttemptId) return

@@ -100,7 +100,7 @@ await context.addInitScript(() => {
             // 挂起 / 失败：用来测「转写进行中」和「过期任务退出」这两条路径
             if (window.__mockFileGate) await window.__mockFileGate
             if (window.__mockFileError) throw window.__mockFileError
-            return { ...clone(result), text: '文件结果' }
+            return { ...clone(result), text: window.__mockFileText ?? '文件结果' }
           case 'cancel_recording':
             if (window.__mockCancelGate) await window.__mockCancelGate
             return undefined
@@ -648,6 +648,24 @@ check('renderHint 也按当前数据重绘进度', (await page.evaluate(() => wi
 check('文件转写成功恢复空闲', (await phase()) === 'idle')
 check('文件转写保存结果', (await page.locator('#text').inputValue()) === '文件结果')
 
+// 文件没识别出东西时，结果区不能说「换个安静点的环境再试试」——
+// 那是麦克风的建议；文件的内容已经定下来了。两条路径的文案要各归各。
+await page.evaluate(async () => {
+  window.__mockFileText = ''
+  const { transcribeFilePath } = await import('./files.js')
+  await transcribeFilePath('/tmp/empty.mp3')
+})
+await page.waitForTimeout(200)
+check(
+  '空文件结果不用麦克风的建议文案',
+  await page.evaluate(() => {
+    const meta = document.getElementById('meta')?.textContent || ''
+    return meta.includes('没有识别到内容') && !meta.includes('换个安静点')
+  }),
+  await page.evaluate(() => document.getElementById('meta')?.textContent || '(没有 meta)'),
+)
+await page.evaluate(() => { window.__mockFileText = null })
+
 // 过期任务退出时也要复位：不能把界面卡在「转写中」。
 await page.evaluate(async () => {
   const { transcribeFilePath } = await import('./files.js')
@@ -662,6 +680,7 @@ await page.evaluate(async () => {
   await task
   window.__mockFileGate = null
   window.__mockFileError = null
+  window.__mockFileText = null
   window.__staleState = {
     transcribingFile: state.transcribingFile,
     fileSessionId: state.fileSessionId,
