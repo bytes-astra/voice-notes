@@ -45,7 +45,7 @@
 
 ### CI 在哪跑
 
-`.github/workflows/check.yml`（推 main / 提 PR 都跑）：Rust job 用 macOS —— 这个项目的 Rust 端在 Linux 上没验证过（cpal 要 ALSA 头文件），别把没支持的平台塞进 CI。前端检查（i18n + 界面检查）只在本地跑，不进 CI。
+`.github/workflows/check.yml`（推 main / 提 PR 都跑）：Rust job 用 macOS —— 这个项目的 Rust 端在 Linux 上没验证过（cpal 要 ALSA 头文件），别把没支持的平台塞进 CI。前端门禁（i18n + 依赖图 + 拼句规则）是纯 Node 脚本，走独立的 frontend job（ubuntu）。**界面检查（`check:ui`）要装 Playwright WebKit，只在本地跑，不进 CI。**
 
 ## 🧹 代码规范
 

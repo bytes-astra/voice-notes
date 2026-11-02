@@ -10,6 +10,30 @@ on:
     branches: [main]
 
 jobs:
+  # 前端门禁：i18n 体检 + 依赖图 + 前后端拼句规则。
+  # 这三个是纯 Node 脚本，跟平台无关，用 ubuntu 跑最省时间。
+  # 少了它们，打破拼句规则的 PR 能同时通过两个 workflow —— 规则漂了没人拦。
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: i18n 体检
+        run: npm run check:i18n
+
+      - name: 前端依赖图（单向依赖不能反、不能成环）
+        run: npm run check:deps
+
+      - name: 前后端拼句规则一致
+        run: npm run check:join
+
   rust:
     runs-on: macos-latest
     steps:
