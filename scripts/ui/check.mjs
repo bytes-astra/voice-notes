@@ -249,6 +249,16 @@ await page.keyboard.press('Escape')
 await page.waitForTimeout(150)
 check('下拉 Esc 关闭弹层', (await page.locator('.select-popup').count()) === 0)
 check('下拉 Esc 不取消录音', (await phase()) === 'recording')
+
+// 选中后焦点必须回到按钮：掉到 body 的话，紧接着按空格会触发全局的「开始录音」。
+await page.locator('#device-select .select-button').click()
+await page.waitForTimeout(150)
+await page.locator('.select-popup .select-item').first().click()
+await page.waitForTimeout(120)
+check(
+  '选中后焦点回到下拉按钮',
+  await page.evaluate(() => document.activeElement?.closest('#device-select') != null),
+)
 await page.locator('body').click({ position: { x: 940, y: 740 } })
 await page.keyboard.press('Escape')
 await page.waitForTimeout(400)

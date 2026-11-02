@@ -105,6 +105,9 @@
             value = item.value
             render()
             close()
+            // 焦点还给按钮：条目随弹层一起被移除，不还焦就会掉到 body，
+            // 全局 keydown 把下一次空格当成「开始录音」。
+            button.focus()
             if (opts.onChange) opts.onChange(value)
           })
           popup.appendChild(row)
