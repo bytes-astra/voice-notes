@@ -845,7 +845,16 @@ async fn transcribe_file(
 
 #[tauri::command]
 fn cancel_recording(state: State<AppState>) -> Result<(), String> {
-    state.recording_starting.store(false, Ordering::SeqCst);
+    cancel_recording_impl(&state)
+}
+
+/// 取消录音：停采集、停识别线程、清掉会话。
+///
+/// **不碰「正在启动」标志**：那个标志是 start 命令的 guard 独占的，
+/// start 还在跑的时候清掉它，第二个 start 就能通过检查 ——
+/// 两个命令各开一次麦克风、各起一个识别线程。
+/// 要中止一次正在启动的录音，让前端在 start 落定后再调一次取消。
+fn cancel_recording_impl(state: &AppState) -> Result<(), String> {
     let recorder = {
         let mut slot = state
             .recorder
