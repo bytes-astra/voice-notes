@@ -824,14 +824,9 @@ async fn transcribe_file(
             emit_segment(&segment);
         }
 
-        let transcript = Transcript {
-            text: asr::join_segments(session.segments().iter().map(|s| s.text.as_str())),
-            segments: session.segments().to_vec(),
-            duration_seconds: session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
-            elapsed_ms: session.elapsed_ms(),
-            language: engine.language.clone(),
-            warning: None,
-        };
+        let transcript = session.transcript(
+            session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
+        );
         log::info(format!(
             "文件转写完成：时长 {:.1}s，句子 {} 段",
             transcript.duration_seconds,

@@ -32,6 +32,27 @@ pub struct Transcript {
     pub warning: Option<String>,
 }
 
+/// 由句子列表拼出转写结果。
+///
+/// 文本按拼句规则拼（中日韩之间直连，其余加空格），句子原样带上。
+/// 录音、文件、整条一次三条路径都从这里出结果 —— 各拼各的话，
+/// 加字段的时候就会漏掉一条。
+pub fn transcript_from(
+    segments: &[Segment],
+    duration_seconds: f32,
+    elapsed_ms: u64,
+    language: &str,
+) -> Transcript {
+    Transcript {
+        text: join_segments(segments.iter().map(|segment| segment.text.as_str())),
+        segments: segments.to_vec(),
+        duration_seconds,
+        elapsed_ms,
+        language: language.to_string(),
+        warning: None,
+    }
+}
+
 /// VAD 的窗口大小（512 样本 = 32 ms @16k）：引擎配 VAD 和会话切句都要用。
 /// 段起点落在音频开头附近时，段前往回扩的最大距离（0.4s）。
 ///
@@ -532,6 +553,19 @@ impl OfflineSession {
     /// 这次识别用的语言（结果里要带上）。
     pub fn language(&self) -> String {
         self.engine.language.clone()
+    }
+
+    /// 这一段的转写结果。
+    ///
+    /// `duration_seconds` 由调用方给：录音路径要把**被丢掉的音频**也算进去
+    /// （那是真实录音时间的一部分），文件路径不用（解码流式喂入，不丢东西）。
+    pub fn transcript(&self, duration_seconds: f32) -> Transcript {
+        transcript_from(
+            &self.segments,
+            duration_seconds,
+            self.elapsed_ms,
+            &self.language(),
+        )
     }
 
     /// 喂入 16 kHz 单声道采样，返回这一轮识别出来的句子。

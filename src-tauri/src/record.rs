@@ -342,15 +342,13 @@ where
         .iter()
         .map(|s| to_real_time(s, &drops))
         .collect();
-    let mut transcript = Transcript {
-        text: asr::join_segments(segments.iter().map(|s| s.text.as_str())),
-        segments,
+    let mut transcript = asr::transcript_from(
+        &segments,
         // 丢掉的音频同样占真实录音时间 —— 不算进去，识别跟不上时时长会短一截。
-        duration_seconds: recorded_seconds(session.recorded_samples(), dropped_16k_total),
-        elapsed_ms: session.elapsed_ms(),
-        language: session.language(),
-        warning: None,
-    };
+        recorded_seconds(session.recorded_samples(), dropped_16k_total),
+        session.elapsed_ms(),
+        &session.language(),
+    );
     asr::insert_gaps(&mut transcript, gaps);
     transcript
 }

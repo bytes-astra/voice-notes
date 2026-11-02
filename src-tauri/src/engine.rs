@@ -19,7 +19,7 @@ use sherpa_onnx::{
 use tauri::{AppHandle, Emitter};
 
 use crate::asr::{
-    clean, join_segments, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript,
+    clean, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript,
     PRE_ROLL_SAMPLES, SAMPLE_RATE, VAD_WINDOW,
 };
 use crate::audio::Recorder;
@@ -475,6 +475,17 @@ impl Engine {
     }
 
     /// 转写 16 kHz 单声道样本；VAD 可用时按语音段切分，否则按 30s 窗口兜底。
+    ///
+    /// **这是「整条一次」的批处理路径**（探针、对比测试用），
+    /// 跟生产管线的 `asr::OfflineSession` 是两套实现。差在两处，都是有意的：
+    ///
+    /// * 这里**没有 AGC**：生产路径的电平自动增益在 `record.rs` 里做，
+    ///   这一层是纯逻辑，不碰音量。
+    /// * 这里**有 30s 窗口兜底**，会话路径没有。会话路径靠 AGC 把偏小的
+    ///   录音救回来（`audio::Agc`），一旦再给它加个兜底，
+    ///   `quiet_pipeline_probe` 就分不出「AGC 还接着」和「AGC 被摘了」。
+    ///
+    /// 别把一边的东西顺手搬到另一边：改一边的时候想想另一边为什么没有。
     pub fn transcribe(&self, samples: &[f32]) -> Transcript {
         let started = Instant::now();
         let duration = samples.len() as f32 / SAMPLE_RATE as f32;
@@ -526,15 +537,12 @@ impl Engine {
             }
         }
 
-        let text = join_segments(segments.iter().map(|s| s.text.as_str()));
-        Transcript {
-            text,
-            segments,
-            duration_seconds: duration,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-            language: self.language.clone(),
-            warning: None,
-        }
+        crate::asr::transcript_from(
+            &segments,
+            duration,
+            started.elapsed().as_millis() as u64,
+            &self.language,
+        )
     }
 }
 

@@ -23,6 +23,32 @@ fn vad_failure_is_reported_instead_of_panicking() {
     assert!(error.starts_with("model.loadFailed"), "错误码不对：{error}");
 }
 
+/// 转写结果由句子拼出来：文本按拼句规则拼，句子原样带上。
+///
+/// 这段拼装有三条路径（录音、文件、整条一次），放一处才不会各拼各的。
+#[test]
+fn transcript_assembly_joins_the_segments() {
+    let segments = vec![
+        Segment {
+            text: "你好".into(),
+            start: 0.0,
+            end: 1.0,
+        },
+        Segment {
+            text: "世界".into(),
+            start: 1.0,
+            end: 2.0,
+        },
+    ];
+    let transcript = transcript_from(&segments, 2.0, 100, "zh");
+    assert_eq!(transcript.text, "你好世界");
+    assert_eq!(transcript.segments.len(), 2);
+    assert_eq!(transcript.duration_seconds, 2.0);
+    assert_eq!(transcript.elapsed_ms, 100);
+    assert_eq!(transcript.language, "zh");
+    assert!(transcript.warning.is_none());
+}
+
 #[test]
 fn joins_cjk_without_spaces() {
     assert_eq!(join_segments(["你好", "世界"].into_iter()), "你好世界");
