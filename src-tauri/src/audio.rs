@@ -26,6 +26,13 @@ enum Cmd {
     Cancel,
 }
 
+/// 单测注入点：让采集流「打不开」。
+///
+/// 真机上没法稳定制造 cpal 的 play 失败（设备被占用、驱动报错都得撞上），
+/// 但这条路径必须有人守 —— 静默的话排查方向会被带偏。
+#[cfg(test)]
+pub static FAIL_PLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// 采集缓冲：生产者（cpal 回调）写入，消费者（ASR 线程）取走即释放。
 ///
 /// 内存不随录音时长增长 —— ASR 线程每轮 `take_new()` 取走新到的采样，
@@ -477,23 +484,20 @@ pub fn start_with(
     let join = thread::Builder::new()
         .name("microphone".into())
         .spawn(move || {
-            let stream = match build_stream(
+            let (stream, rate, queue) = match open_capture(
                 app.as_ref(),
                 session_id,
                 thread_levels.clone(),
                 thread_error.clone(),
                 device.as_deref(),
             ) {
-                Ok((stream, rate, queue)) => {
-                    let _ = ready_tx.send(Ok((rate, queue)));
-                    stream
-                }
+                Ok(parts) => parts,
                 Err(err) => {
                     let _ = ready_tx.send(Err(err));
                     return;
                 }
             };
-            let _ = stream.play();
+            let _ = ready_tx.send(Ok((rate, queue)));
             let started = Instant::now();
             let mut last_tick = Instant::now();
             loop {
@@ -549,6 +553,38 @@ pub fn start_with(
             Err(code("record.micTimeout"))
         }
     }
+}
+
+/// 打开采集流并开始播放。
+///
+/// 打不开必须报错：静默往下走的话，采集线程会「跑着但没有音频流入」，
+/// 用户看到的是「有时长统计、电平恒 0、识别不出东西」——
+/// 跟「电平太低」的现象一模一样，排查方向会被带偏。
+fn open_capture(
+    app: Option<&AppHandle>,
+    session_id: Option<u64>,
+    levels: LevelRing,
+    error: Arc<Mutex<Option<String>>>,
+    wanted: Option<&str>,
+) -> Result<(cpal::Stream, u32, SampleQueue), String> {
+    // 单测注入：真机上没法稳定制造 play 失败（设备被占用、驱动报错都得撞上），
+    // 这里替掉整个「建流 + 播放」，走的错误路径跟真失败完全一样。
+    #[cfg(test)]
+    if FAIL_PLAY.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(map_play_result(Err(cpal::PlayStreamError::DeviceNotAvailable)).unwrap_err());
+    }
+    let (stream, rate, queue) = build_stream(app, session_id, levels, error, wanted)?;
+    // 播放失败要报出来，不能当作「已经在采了」。
+    map_play_result(stream.play())?;
+    Ok((stream, rate, queue))
+}
+
+/// 播放采集流的结果 → 错误码。
+///
+/// 单独抽出来是为了能测「打不开」的映射：真机上没法稳定制造 play 失败，
+/// 但这条路径必须有人守（打不开还当成功，界面就变成「有录音、没内容」）。
+fn map_play_result(result: Result<(), cpal::PlayStreamError>) -> Result<(), String> {
+    result.map_err(|e| code_detail("record.micOpenFailed", &e))
 }
 
 fn build_stream(

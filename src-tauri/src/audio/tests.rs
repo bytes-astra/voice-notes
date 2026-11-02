@@ -100,6 +100,37 @@ fn default_input_is_usable() {
     );
 }
 
+/// 采集流打不开必须报错，不能静默继续。
+///
+/// 静默的话采集线程会「跑着但没有音频流入」，用户看到的是
+/// 「有时长统计、电平恒 0、识别不出东西」—— 跟「电平太低」的现象一模一样，
+/// 排查方向会被带偏。
+#[test]
+fn capture_start_reports_play_failure() {
+    super::FAIL_PLAY.store(true, std::sync::atomic::Ordering::SeqCst);
+    let result = start_with(None, None, None);
+    super::FAIL_PLAY.store(false, std::sync::atomic::Ordering::SeqCst);
+    let error = match result {
+        Ok(_) => panic!("采集流打不开必须报错，不能静默"),
+        Err(error) => error,
+    };
+    assert!(
+        error.starts_with("record.micOpenFailed"),
+        "错误码不对：{error}"
+    );
+}
+
+/// play 失败要映射成「无法打开麦克风」这个字典码。
+#[test]
+fn play_failure_maps_to_the_mic_open_code() {
+    let error = map_play_result(Err(cpal::PlayStreamError::DeviceNotAvailable))
+        .expect_err("play 失败必须报错");
+    assert!(
+        error.starts_with("record.micOpenFailed"),
+        "错误码不对：{error}"
+    );
+}
+
 /// 真录音测试（会触发系统麦克风授权），默认跳过：
 ///   VOICE_NOTES_RECORD_TEST=1 cargo test --lib records_microphone -- --nocapture
 #[test]
