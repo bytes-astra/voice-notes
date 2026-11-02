@@ -53,3 +53,8 @@ jobs:
 
       - name: 单元测试
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      # 不需要模型的集成回归：decode_smoke 的解码用例 + 拼句纯逻辑用例。
+      # 需要模型的用例在没设 *_MODEL_DIR 时会自己跳过（打印「跳过：…」后 return）。
+      - name: 集成回归（不需要模型）
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test decode_smoke --test asr_smoke
