@@ -268,16 +268,22 @@ pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<(), String
     outcome
 }
 
+/// 快路径：缓存里已经有引擎就直接拿。
+///
+/// 用 `try_lock` 而不是 `lock`：锁被占着说明**别的线程正在加载模型**
+/// （239 MB / 161 MB / 294 MB，要好几秒）。在 async 执行器线程上死等
+/// 会把整个执行器卡住 —— 命令的响应被拖到模型加载完，用户看着像界面冻住。
+/// 拿不到就往下走加载路径：它在阻塞线程上等，而且拿到锁后会重新检查
+/// 一遍，不会重复加载同一份模型。
+pub fn cached_engine<T>(slot: &Mutex<Option<Arc<T>>>) -> Option<Arc<T>> {
+    slot.try_lock().ok().and_then(|guard| guard.clone())
+}
+
 pub async fn ensure_streaming_engine(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<Arc<StreamingEngine>, String> {
-    if let Some(engine) = state
-        .streaming_engine
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
-    {
+    if let Some(engine) = cached_engine(&state.streaming_engine) {
         return Ok(engine);
     }
     let paths = models::resolve_streaming(app).ok_or_else(|| code("model.needStreaming"))?;
@@ -322,7 +328,7 @@ pub async fn ensure_punctuation(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<Arc<PunctuationEngine>, String> {
-    if let Some(engine) = state.punct_engine.lock().ok().and_then(|slot| slot.clone()) {
+    if let Some(engine) = cached_engine(&state.punct_engine) {
         return Ok(engine);
     }
     let model = models::resolve_punctuation(app).ok_or_else(|| code("model.punctNotReady"))?;

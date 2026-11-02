@@ -2,6 +2,46 @@
 
 use super::*;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// 快路径在锁被占着时不能干等。
+///
+/// 锁被占着 = 别的线程正在加载模型（239 MB / 161 MB / 294 MB，要好几秒）。
+/// 在 async 执行器线程上死等，整个执行器就卡住了 —— 命令的响应会被
+/// 拖到模型加载完，用户看着像界面冻住了。
+#[test]
+fn 快路径在锁被占着时不干等() {
+    let slot = Arc::new(Mutex::new(Some(Arc::new(7u8))));
+    let (tx, rx) = mpsc::channel();
+    let worker = slot.clone();
+    std::thread::spawn(move || {
+        let _held = worker.lock().unwrap(); // 持锁不放
+        let _ = tx.send(cached_engine(&worker));
+        // 持锁睡一会儿：干等的实现会卡在这里面
+        std::thread::sleep(Duration::from_secs(2));
+    });
+
+    let started = Instant::now();
+    let cached = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("快路径应该立刻返回，不该等锁");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "快路径在锁被占着时干等了 {:?}",
+        started.elapsed()
+    );
+    assert!(cached.is_none(), "锁被占着时快路径应该拿不到引擎");
+}
+
+/// 锁空着的时候快路径照常拿到引擎。
+#[test]
+fn 快路径在锁空时拿到引擎() {
+    let slot: Mutex<Option<Arc<u8>>> = Mutex::new(Some(Arc::new(3)));
+    assert_eq!(cached_engine(&slot).map(|engine| *engine), Some(3));
+    let empty: Mutex<Option<Arc<u8>>> = Mutex::new(None);
+    assert!(cached_engine(&empty).is_none());
+}
 
 #[test]
 fn 录音启动预留锁配置且退出复位() {
