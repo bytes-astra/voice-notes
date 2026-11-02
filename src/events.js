@@ -30,10 +30,11 @@ export async function listenEvents() {
     if (payload?.sessionId != null && payload.sessionId !== state.recordingSessionId) return
     // 取消已经完成状态切换，迟到的采集错误不再打断新会话或弹过期提示。
     if (state.phase === 'cancelling') return
-    toast(fmtError(payload), 'error')
     // 载荷是对象 { code, detail?, seconds?, fatal }：只有致命错误才中断录音。
     // 缺口提示（fatal:false）只提示、录音继续；没有 fatal 字段时按致命处理。
     const fatal = payload && typeof payload === 'object' ? payload.fatal !== false : true
+    // 非致命的缺口提示是「提示」不是「失败」：别拿红色错误样式吓用户。
+    toast(fmtError(payload), fatal ? 'error' : 'info')
     if (fatal && payload?.code === 'record.micError' && ['requesting', 'recording'].includes(state.phase)) {
       // 启动期间发生采集错误时取消；已录音则收尾保住已有文字。
       if (state.phase === 'recording') void stopRecording()

@@ -487,6 +487,15 @@ check('麦克风异常写入历史', (await historyCount()) === historyBeforeMic
 await page.locator('#mic-btn').click()
 await page.waitForTimeout(200)
 await say('带警告的部分结果')
+// 非致命的缺口提示是「提示」不是「失败」：不该用红色错误样式。
+await page.evaluate(() => window.__emit('audio:error', { code: 'record.gapWarning', seconds: 3, fatal: false }))
+await page.waitForTimeout(200)
+check(
+  '缺口提示不是错误样式',
+  await page.evaluate(() => !document.getElementById('toast')?.classList.contains('error')),
+  await page.evaluate(() => document.getElementById('toast')?.className || '(没有 toast)'),
+)
+check('缺口提示照常显示', (await text('#toast')).includes('3'))
 await page.evaluate(() => {
   window.__mockStopWarning = 'record.micError'
   window.__emit('audio:error', { code: 'record.micError', fatal: false })
