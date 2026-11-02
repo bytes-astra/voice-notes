@@ -229,6 +229,19 @@ function ruleThreeRust(text) {
   return m ? m[0] : null
 }
 
+// 规则 3 的**用法**：判定式算出来之后，到底哪一支加空格。
+// 只比判定式的话，把三元两个分支对调照样通过 —— 而那正好决定用户看到的文本。
+function ruleThreeUsageJs(text) {
+  const m = text.match(/return\s+needSpace\s*\?\s*`([^`]*)`\s*:\s*`([^`]*)`/)
+  return m ? { spaced: m[1], direct: m[2] } : null
+}
+
+function ruleThreeUsageRust(text) {
+  if (/if\s+need_space\s*\{\s*out\.push\('\s+'\);/.test(text)) return 'spaced-on-true'
+  if (/if\s*!\s*need_space\s*\{\s*out\.push\('\s+'\);/.test(text)) return 'spaced-on-false'
+  return null
+}
+
 /**
  * 检查前后端拼句规则是否一致。
  *
@@ -283,6 +296,19 @@ export function collectProblems(core, asr, audio) {
   }
 
   checkGapRule(jsJoin, rustJoin, problems)
+
+  // 判定式一致还不够：返回语句/空间分支决定了最终文本，必须一起守。
+  const jsUsage = ruleThreeUsageJs(jsJoin)
+  if (!jsUsage) {
+    problems.push('前端 joinText 的返回语句解析不出来 —— 写法变了？')
+  } else if (jsUsage.spaced !== '${left} ${right}' || jsUsage.direct !== '${left}${right}') {
+    problems.push(`前端 joinText 的返回分支反了：needSpace 为真时拼成「${jsUsage.spaced}」`)
+  }
+
+  const rustUsage = ruleThreeUsageRust(rustJoin)
+  if (rustUsage !== 'spaced-on-true') {
+    problems.push(`后端 join_segments 的空间分支不对：${rustUsage || '解析不出来'}`)
+  }
 
   const summary = { rangeCount: jsRanges.length, gapShape: jsGap }
   return { problems, summary }

@@ -79,3 +79,21 @@ test('缺口占位符形状漂移会被抓住', () => {
   const problems = collectProblems(core, asr, brokenAudio).problems
   assert.ok(problems.length > 0, '占位符少个 `:` 仍然通过 —— 门禁漏检')
 })
+
+// 判定式对了不代表用法对：把三元两个分支对调，用户看到的文本就反了。
+test('前端返回语句的分支对调会被抓住', () => {
+  const broken = core.replace(
+    'return needSpace ? `${left} ${right}` : `${left}${right}`',
+    'return needSpace ? `${left}${right}` : `${left} ${right}`',
+  )
+  assert.notEqual(broken, core, '替换没生效 —— core.js 的返回语句写法变了？')
+  const problems = collectProblems(broken, asr, audio).problems
+  assert.ok(problems.length > 0, '三元分支对调仍然通过 —— 门禁没抓住')
+})
+
+test('后端空间分支对调会被抓住', () => {
+  const broken = asr.replace('if need_space {', 'if !need_space {')
+  assert.notEqual(broken, asr, '替换没生效 —— asr.rs 的写法变了？')
+  const problems = collectProblems(core, broken, audio).problems
+  assert.ok(problems.length > 0, '`if need_space` 改成 `if !need_space` 仍然通过 —— 门禁没抓住')
+})
