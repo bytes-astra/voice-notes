@@ -440,6 +440,15 @@ check(
   live.slice(0, 60)
 )
 
+// 录音中手改的内容，不能被下一句识别结果覆盖。
+await page.locator('#text').fill('我手改的一行')
+await page.evaluate(() => {
+  window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: '下一句', start: 0, end: 1 })
+})
+await page.waitForTimeout(120)
+check('实时追加不覆盖用户编辑', (await page.locator('#text').inputValue()).startsWith('我手改的一行'))
+check('实时追加接在用户编辑之后', (await page.locator('#text').inputValue()).includes('下一句'))
+
 // 停止录音：后端返回全文，前端要用它替换结果框
 await page.locator('#mic-btn').click()
 await page.waitForTimeout(400)

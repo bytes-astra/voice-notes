@@ -92,7 +92,17 @@ export function appendSegment(text) {
   if (state.phase !== 'recording' && state.phase !== 'transcribing') return
   const piece = (text || '').trim()
   if (!piece) return
-  const rawText = joinText(state.resultView?.rawText || els.text.value, piece)
+  const view = state.resultView
+  const rawText = joinText(view?.rawText || els.text.value, piece)
+  // 用户动过结果框：把新句接到他们改过的文本后面，别整段重画覆盖掉。
+  // `rendered` 仍保持「原文的本地化结果」—— relocalizeResult 靠它判断
+  // 文本有没有被编辑过，写成用户文本会让切语言时再次覆盖。
+  if (view && els.text.value !== view.rendered) {
+    els.text.value = joinText(els.text.value, piece)
+    state.resultView = { ...view, rawText, markers: gapMarkerTexts(rawText) }
+    renderResultMeta()
+    return
+  }
   setResultView(rawText, { kind: 'label', key: 'record.live' })
 }
 
