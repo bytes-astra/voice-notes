@@ -484,6 +484,12 @@ mod tests;
 ///
 /// 代价：SenseVoice 是无状态的，每句独立识别，跨句上下文丢失 ——
 /// 这和整段模式「整条一次识别」时的分段行为其实是一样的。
+/// 整段会话：边喂音频边按句识别。
+///
+/// 这是**生产路径**（录音、文件转写都走它）。跟 `engine.rs` 的批处理路径
+/// （`Engine::transcribe`）是两套实现，差在两处，都是有意的：
+/// 会话路径没有 30s 窗口兜底 —— 偏小的录音靠 `audio::Agc` 救回来，
+/// 再加兜底就分不出「AGC 还接着」和「AGC 被摘了」。
 pub struct OfflineSession {
     engine: Arc<Engine>,
     detector: VoiceActivityDetector,
