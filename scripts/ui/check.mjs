@@ -866,6 +866,29 @@ await page.locator('.nav-item[data-view="history"]').click()
 await page.waitForTimeout(150)
 check('历史里的缺口占位符跟着语言变', (await historyText()).includes('(4s not recognised)'), await historyText())
 
+// 历史页点条目：必须切回转写页，否则文字写进 display:none 的面板里，用户看不到。
+await page.locator('.history-item .history-main').first().click()
+await page.waitForTimeout(200)
+check('历史载入切回转写页', (await page.locator('.app').getAttribute('data-view')) === 'transcribe')
+check('历史载入内容可见', (await page.locator('#text').inputValue()).length > 0)
+
+// 载入的历史要带上 markers：用户改过之后切语言，缺口占位符仍要换。
+// 用 evaluate 改值：面板此时可能还是隐藏的，fill() 会等可见性超时。
+await page.evaluate(() => {
+  const box = document.getElementById('text')
+  box.value = box.value + '（手改）'
+})
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.waitForTimeout(150)
+await page.locator('#locale-select .select-button').click()
+await page.locator('.select-popup .select-item', { hasText: '简体中文' }).first().click()
+await page.waitForTimeout(250)
+check(
+  '历史载入后切语言换掉缺口占位符',
+  (await page.locator('#text').inputValue()).includes('（约 4 秒未识别）'),
+)
+check('历史载入后切语言保留用户编辑', (await page.locator('#text').inputValue()).includes('（手改）'))
+
 // ── 结果 ────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.extra ? ' — ' + r.extra : ''}`)

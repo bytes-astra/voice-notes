@@ -1,8 +1,15 @@
 /* 历史记录：本地存储 + 列表渲染 */
 
-import { I18N, els, fmtDuration, historyStorageSet, localizeText, renderResultMeta, state, t } from './core.js'
+import { I18N, els, fmtDuration, gapMarkerTexts, historyStorageSet, localizeText, renderResultMeta, state, t } from './core.js'
 import { copyText, saveText } from './export.js'
 import { copyIcon, saveIcon, trashIcon } from './icons.js'
+
+/// 载入历史后要切回结果页 —— 但 history.js 不能 import app.js（依赖方向）。
+/// 由 app.js 在绑定界面时注入。
+let loadHandler = null
+export function setHistoryLoadHandler(fn) {
+  loadHandler = fn
+}
 
 export function saveHistory() {
   historyStorageSet(state.history)
@@ -59,8 +66,17 @@ export function renderHistory() {
     main.addEventListener('click', () => {
       // 载入的是一条历史，不是「上次转写」：切语言时不能再把它重绘回去。
       const rendered = localizeText(item.text)
+      // 先切视图再写文本：结果框在别的面板里，隐藏元素上的 focus() 不生效。
+      loadHandler?.()
       els.text.value = rendered
-      state.resultView = { rawText: item.text, rendered, meta: { kind: 'label', key: 'history.from', at: item.at } }
+      // markers 交给 relocalizeResult 用：用户改过之后切语言，
+      // 靠它把旧语言的缺口占位符换成新语言的。
+      state.resultView = {
+        rawText: item.text,
+        rendered,
+        markers: gapMarkerTexts(item.text),
+        meta: { kind: 'label', key: 'history.from', at: item.at },
+      }
       renderResultMeta()
       els.text.focus()
     })

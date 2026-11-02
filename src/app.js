@@ -5,7 +5,7 @@ import {
   els, errorText, fmtError, state, t, toast,
 } from './core.js'
 import { getCurrentWindow, getCurrentWebview, invoke, logEvent } from './tauri.js'
-import { renderHistory, saveHistory } from './history.js'
+import { renderHistory, saveHistory, setHistoryLoadHandler } from './history.js'
 import { clearResult, relocalizeResult, renderResultActions, showTranscript } from './result.js'
 import {
   downloadModel, downloadStreamingModel, loadDevices,
@@ -146,6 +146,9 @@ export function bindUI() {
       /* 忽略 */
     }
   })
+
+  // 历史页点「载入」要切回结果页：history.js 不能 import app.js，回调由这里注入。
+  setHistoryLoadHandler(() => switchView('transcribe'))
 
   for (const item of els.navItems) {
     item.addEventListener('click', () => switchView(item.dataset.view))
