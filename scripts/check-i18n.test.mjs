@@ -49,6 +49,38 @@ test('字典里有的错误码不该报出来', () => {
   assert.deepEqual(problems, [])
 })
 
+test('字典文件没在 index.html 注册要报出来', () => {
+  const dir = makeFixture({
+    'src/locales/fr.js':
+      "window.I18N_LOCALES = window.I18N_LOCALES || {}\n" +
+      "window.I18N_LOCALES['fr'] = { 'app.title': 'V', 'record.empty': 'X' }\n",
+  })
+  const { problems } = collectProblems(dir)
+  assert.ok(
+    problems.some((problem) => problem.includes('fr')),
+    `没注册的 fr.js 被放过了：${JSON.stringify(problems)}`,
+  )
+})
+
+test('双引号写的 t() 也要检查', () => {
+  const dir = makeFixture({ 'src/app.js': 'const x = t("record.notInDict")' })
+  const { problems } = collectProblems(dir)
+  assert.ok(problems.some((problem) => problem.includes('record.notInDict')))
+})
+
+test('data-i18n 属性名拼错要报出来', () => {
+  const dir = makeFixture({
+    'src/index.html':
+      '<script src="locales/zh-CN.js"></script><script src="i18n.js"></script>' +
+      '<i data-i18n-titel="record.empty"></i>',
+  })
+  const { problems } = collectProblems(dir)
+  assert.ok(
+    problems.some((problem) => problem.includes('data-i18n-titel')),
+    `拼错的属性名被放过了：${JSON.stringify(problems)}`,
+  )
+})
+
 /// 造一个最小的仓库骨架，让 collectProblems 能跑起来。
 function makeFixture(files) {
   const dir = mkdtempSync(join(tmpdir(), 'check-i18n-'))
@@ -58,7 +90,7 @@ function makeFixture(files) {
       "window.I18N_LOCALES['zh-CN'] = { 'app.title': '语音转文字', 'record.empty': '没有识别到内容' }\n",
     'src/i18n.js':
       "window.I18N = { t: (key) => key, apply() {}, setLocale() {}, resolveLocale: () => 'zh-CN' }\n",
-    'src/index.html': '<html></html>',
+    'src/index.html': '<script src="locales/zh-CN.js"></script><script src="i18n.js"></script>',
     'src-tauri/src/lib.rs': '',
   }
   for (const [file, content] of Object.entries({ ...defaults, ...files })) {

@@ -69,23 +69,56 @@ export function collectProblems(root) {
     }
   }
 
-  // HTML 里用到的 key 必须在字典里
+  // 字典文件必须在 index.html 里注册，且排在 i18n.js 之前 ——
+  // 漏了这行，语言文件永远加载不到，切语言时部分文案不跟着变。
   const html = readFileSync(join(root, 'src/index.html'), 'utf8')
-  for (const match of html.matchAll(/data-i18n(?:-title|-placeholder|-aria)?="([^"]+)"/g)) {
-    if (!baseKeys.includes(match[1])) problems.push(`index.html 引用了不存在的 key：${match[1]}`)
+  const scriptTags = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((match) => ({
+    src: match[1],
+    at: match.index,
+  }))
+  const registered = scriptTags
+    .filter((tag) => tag.src.startsWith('locales/') && tag.src.endsWith('.js'))
+    .map((tag) => tag.src.slice('locales/'.length, -'.js'.length))
+  for (const name of Object.keys(locales)) {
+    if (!registered.includes(name)) {
+      problems.push(`src/locales/${name}.js 没有在 index.html 注册（切语言会加载不到）`)
+    }
+  }
+  const i18nTag = scriptTags.find((tag) => tag.src === 'i18n.js')
+  if (i18nTag) {
+    for (const tag of scriptTags) {
+      if (tag.src.startsWith('locales/') && tag.at > i18nTag.at) {
+        problems.push(`${tag.src} 必须排在 i18n.js 之前，否则 window.I18N_LOCALES 还读不到`)
+      }
+    }
+  }
+
+  // HTML 里用到的 key 必须在字典里。
+  // 属性名必须落在已知后缀里：拼错（data-i18n-titel）不会被 I18N.apply() 认，
+  // 界面会永远停在原文 —— 不能静默跳过。
+  const ATTR_SUFFIXES = new Set(['', '-title', '-placeholder', '-aria'])
+  for (const match of html.matchAll(/\bdata-i18n(-[a-z-]+)?="([^"]*)"/g)) {
+    const suffix = match[1] || ''
+    if (!ATTR_SUFFIXES.has(suffix)) {
+      problems.push(`index.html 里的 data-i18n${suffix} 不是合法属性名（界面不会翻译它）`)
+      continue
+    }
+    if (!baseKeys.includes(match[2])) {
+      problems.push(`index.html 引用了不存在的 key：${match[2]}`)
+    }
   }
 
   // JS 里 t('...') 用到的 key 也必须在字典里。
   // 前置的 (?<![\w$.]) 是为了跳过 createElement('li') 这类以 t( 结尾的调用；
   // 带 ${} 的动态模板（t(`lang.${code}`)）无法静态展开，跳过。
   const jsFiles = readdirSync(join(root, 'src')).filter((file) => file.endsWith('.js'))
-  const callRe = /(?<![\w$.])t\(\s*'([^'\\]+)'/g
+  const callRe = /(?<![\w$.])t\(\s*(['"])((?:\\.|[^'"\\])*)\1/g
   const staticTemplateRe = /(?<![\w$.])t\(\s*`([^`$]*)`/g
   for (const file of jsFiles) {
     if (file === 'i18n.js') continue
     const code = readFileSync(join(root, 'src', file), 'utf8')
     for (const match of code.matchAll(callRe)) {
-      if (!baseKeys.includes(match[1])) problems.push(`src/${file} 引用了不存在的 key：${match[1]}`)
+      if (!baseKeys.includes(match[2])) problems.push(`src/${file} 引用了不存在的 key：${match[2]}`)
     }
     for (const match of code.matchAll(staticTemplateRe)) {
       if (!baseKeys.includes(match[1])) problems.push(`src/${file} 引用了不存在的 key：${match[1]}`)
@@ -133,11 +166,11 @@ export function collectProblems(root) {
 
   // 5. 传给 t() 的参数必须在字典里有对应占位符。
   // 传了字典里没有的占位符不会报错，只是参数被静默丢掉 —— 界面上就少了一句话。
-  const callWithParamsRe = /(?<![\w$.])t\(\s*'([^'\\]+)'\s*,\s*\{([^}]*)\}/g
+  const callWithParamsRe = /(?<![\w$.])t\(\s*(['"])((?:\\.|[^'"\\])*)\1\s*,\s*\{([^}]*)\}/g
   for (const file of jsFiles) {
     const code = readFileSync(join(root, 'src', file), 'utf8')
     for (const match of code.matchAll(callWithParamsRe)) {
-      const [, key, body] = match
+      const [, , key, body] = match
       const text = locales[base]?.[key]
       if (text == null) continue // key 不存在的情况上面已经报过了
       for (const param of topLevelParams(body)) {
