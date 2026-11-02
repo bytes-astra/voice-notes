@@ -14,6 +14,35 @@ fn recognition_config_is_locked_while_recording() {
     );
 }
 
+/// 认不出来的 kind 不能猜着取消 —— 猜错会把另一个正在跑的下载停掉。
+#[test]
+fn unknown_download_kind_cancels_nothing() {
+    let state = AppState::new(Settings::default());
+    super::cancel_download_of(&state, Some("whatever"));
+    assert!(
+        !state.cancel_download.load(Ordering::SeqCst),
+        "认不出的 kind 不该取消整段下载"
+    );
+    assert!(
+        !state.cancel_download_streaming.load(Ordering::SeqCst),
+        "认不出的 kind 不该取消流式下载"
+    );
+}
+
+/// 指名取消就只停那一条线。
+#[test]
+fn cancel_download_targets_the_named_line() {
+    let state = AppState::new(Settings::default());
+    super::cancel_download_of(&state, Some("streaming"));
+    assert!(state.cancel_download_streaming.load(Ordering::SeqCst));
+    assert!(!state.cancel_download.load(Ordering::SeqCst));
+
+    let state = AppState::new(Settings::default());
+    super::cancel_download_of(&state, Some("offline"));
+    assert!(state.cancel_download.load(Ordering::SeqCst));
+    assert!(!state.cancel_download_streaming.load(Ordering::SeqCst));
+}
+
 /// 取消录音不能动「正在启动」标志。
 ///
 /// 那个标志是 start 命令的 guard 独占的：取消时清掉它的话，

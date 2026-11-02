@@ -927,12 +927,21 @@ fn open_output_dir(app: AppHandle, state: State<AppState>) -> Result<(), String>
 
 #[tauri::command]
 fn cancel_download(state: State<AppState>, kind: Option<String>) {
-    // 两个下载可以同时跑，所以取消也要指明取消哪一个。
-    match kind.as_deref() {
+    cancel_download_of(&state, kind.as_deref());
+}
+
+/// 取消下载：两个下载可以同时跑，所以取消也要指明取消哪一个。
+///
+/// 认不出来的 kind **不猜** —— 猜错会把另一个正在跑的下载停掉。
+/// 前端两条线都传明确的 kind（`offline` / `streaming`），认不出来说明
+/// 调用方写错了，宁可什么都不做。
+fn cancel_download_of(state: &AppState, kind: Option<&str>) {
+    match kind {
         Some("streaming") => state
             .cancel_download_streaming
             .store(true, Ordering::SeqCst),
-        _ => state.cancel_download.store(true, Ordering::SeqCst),
+        Some("offline") => state.cancel_download.store(true, Ordering::SeqCst),
+        other => log::warn(format!("取消下载：认不出的 kind {other:?}，什么都不做")),
     }
 }
 
