@@ -823,6 +823,30 @@ await page.waitForTimeout(250)
 check('连续切两次语言不覆盖用户编辑', (await page.locator('#text').inputValue()).includes('用户手改的内容'))
 check('连续切两次占位符回到中文', (await page.locator('#text').inputValue()).includes('（约 3 秒未识别）'))
 
+// ── 历史里的缺口占位符要跟着界面语言走 ───────────────────
+// 历史存的是**原文**，不是存档时那一种语言 —— 否则切语言后历史里
+// 永远留着旧语言的占位符文案。
+await page.evaluate(async () => {
+  const { showTranscript } = await import('./result.js')
+  showTranscript(
+    { text: '历史里的缺口 [[gap:4]]', segments: [], durationSeconds: 2, elapsedMs: 100, language: 'zh' },
+  )
+})
+await page.waitForTimeout(150)
+await page.locator('.nav-item[data-view="history"]').click()
+await page.waitForTimeout(150)
+const historyText = () => page.locator('.history-item .history-text').first().innerText()
+check('历史里的缺口占位符初始为中文', (await historyText()).includes('（约 4 秒未识别）'))
+// 语言在下拉里，而下拉在设置页 —— 切完语言再回来看历史。
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.waitForTimeout(150)
+await page.locator('#locale-select .select-button').click()
+await page.locator('.select-popup .select-item', { hasText: 'English' }).first().click()
+await page.waitForTimeout(250)
+await page.locator('.nav-item[data-view="history"]').click()
+await page.waitForTimeout(150)
+check('历史里的缺口占位符跟着语言变', (await historyText()).includes('(4s not recognised)'), await historyText())
+
 // ── 结果 ────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.extra ? ' — ' + r.extra : ''}`)

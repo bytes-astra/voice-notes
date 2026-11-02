@@ -1,6 +1,6 @@
 /* 历史记录：本地存储 + 列表渲染 */
 
-import { I18N, els, fmtDuration, historyStorageSet, renderResultMeta, state, t } from './core.js'
+import { I18N, els, fmtDuration, historyStorageSet, localizeText, renderResultMeta, state, t } from './core.js'
 import { copyText, saveText } from './export.js'
 import { copyIcon, saveIcon, trashIcon } from './icons.js'
 
@@ -30,13 +30,16 @@ export function renderHistory() {
     const li = document.createElement('li')
     li.className = 'history-item'
 
+    // 历史存的是原文，缺口占位符在渲染时才翻成界面语言。
+    const shown = localizeText(item.text)
+
     const main = document.createElement('button')
     main.type = 'button'
     main.className = 'history-main'
     main.title = t('history.load')
     const text = document.createElement('div')
     text.className = 'history-text'
-    text.textContent = item.text
+    text.textContent = shown
     const sub = document.createElement('div')
     sub.className = 'history-sub'
     // 日期跟着界面语言走：写死 zh-CN 的话英文界面还是 24 小时制中文格式。
@@ -46,7 +49,7 @@ export function renderHistory() {
       hour: '2-digit',
       minute: '2-digit',
     })
-    const parts = [when, fmtDuration(item.durationSeconds || 0), t('result.chars', { count: [...item.text].length })]
+    const parts = [when, fmtDuration(item.durationSeconds || 0), t('result.chars', { count: [...shown].length })]
     for (const part of parts) {
       const span = document.createElement('span')
       span.textContent = part
@@ -55,8 +58,9 @@ export function renderHistory() {
     main.append(text, sub)
     main.addEventListener('click', () => {
       // 载入的是一条历史，不是「上次转写」：切语言时不能再把它重绘回去。
-      els.text.value = item.text
-      state.resultView = { rawText: item.text, rendered: item.text, meta: { kind: 'label', key: 'history.from', at: item.at } }
+      const rendered = localizeText(item.text)
+      els.text.value = rendered
+      state.resultView = { rawText: item.text, rendered, meta: { kind: 'label', key: 'history.from', at: item.at } }
       renderResultMeta()
       els.text.focus()
     })
@@ -64,8 +68,8 @@ export function renderHistory() {
     const actions = document.createElement('div')
     actions.className = 'history-actions'
     actions.append(
-      iconAction(t('history.copy'), copyIcon(), () => copyText(item.text)),
-      iconAction(t('history.save'), saveIcon(), () => saveText(item.text)),
+      iconAction(t('history.copy'), copyIcon(), () => copyText(shown)),
+      iconAction(t('history.save'), saveIcon(), () => saveText(shown)),
       iconAction(t('history.delete'), trashIcon(), () => {
         state.history = state.history.filter((entry) => entry !== item)
         saveHistory()

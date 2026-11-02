@@ -77,7 +77,9 @@ export function showTranscript(transcript, { record = true } = {}) {
     elapsed,
     rtf: audio > 0 ? (elapsed / audio).toFixed(2) : '—',
   })
-  if (record) addHistory(transcript, els.text.value)
+  // 历史存**原文**（带 [[gap:N]] 占位符），不是渲染后的文字 ——
+  // 存渲染结果的话，历史里的缺口提示会永远停在存档时那一种语言。
+  if (record) addHistory(transcript, raw)
 }
 
 /// 追加一句识别好的文本（事件是增量载荷：只带新句子）。
