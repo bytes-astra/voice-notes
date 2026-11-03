@@ -125,6 +125,21 @@ export const els = {
 
 /* ── 基础工具 ─────────────────────────────────────────── */
 
+/// 取出错误码：冒号之前的那一段。
+///
+/// 后端的错误串有两种形态：
+///   字符串 "record.micError" / "record.stopFailed:细节"（命令返回的错误）
+///   对象 { code, detail }（事件载荷）
+/// 细节挂在第一个冒号后面 —— 跟 fmtError 的切法一致（同一处判定，别各切各的）。
+export function errorCode(error) {
+  if (error && typeof error === 'object' && !Array.isArray(error)) {
+    return typeof error.code === 'string' ? error.code : ''
+  }
+  const raw = (typeof error === 'string' ? error : error?.message || String(error)).replace(/^Error:\s*/, '')
+  const cut = raw.indexOf(':')
+  return cut > 0 ? raw.slice(0, cut) : raw
+}
+
 /// 后端错误 → 界面文案。
 ///
 /// 后端只返回字典 key，不返回展示文案（AGENTS.md）：
@@ -152,9 +167,8 @@ export function fmtError(error) {
     return unknown()
   }
   const raw = (typeof error === 'string' ? error : error?.message || String(error)).replace(/^Error:\s*/, '')
-  const cut = raw.indexOf(':')
-  const key = cut > 0 ? raw.slice(0, cut) : raw
-  const detail = cut > 0 ? raw.slice(cut + 1) : ''
+  const key = errorCode(error)
+  const detail = key && raw !== key ? raw.slice(raw.indexOf(':') + 1) : ''
   // 细节只填 {value} / {seconds} 这类「用户看得懂的参数」。
   const vars = detail ? { value: detail, seconds: detail } : undefined
   const text = translateCode(key, vars)

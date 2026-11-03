@@ -61,6 +61,8 @@ await context.addInitScript(() => {
   window.__mockCalls = []
   window.__mockTranscript = ''
   window.__mockStopError = null
+  // 保存术语表后，后端会回报「有几条含模型不认识的字」（Status.hotwordsIgnored）。
+  window.__mockHotwordsIgnored = 0
   window.__mockStopWarning = null
   window.__mockStopGate = null
   window.__mockStartGate = null
@@ -92,7 +94,11 @@ await context.addInitScript(() => {
             window.__mockStatus = { ...window.__mockStatus, punct: args.enabled }
             return clone(window.__mockStatus)
           case 'set_hotwords':
-            window.__mockStatus = { ...window.__mockStatus, hotwords: args.hotwords }
+            window.__mockStatus = {
+              ...window.__mockStatus,
+              hotwords: args.hotwords,
+              hotwordsIgnored: window.__mockHotwordsIgnored,
+            }
             return clone(window.__mockStatus)
           case 'default_hotwords':
             return ['产品评审会', '玄戒芯片', '张三']
@@ -125,8 +131,20 @@ await context.addInitScript(() => {
           case 'download_streaming_model':
             // 默认挂起：模拟「正在下载」，busy 状态能保持住。
             // __mockDownloadOk 打开时正常返回，用来测「下载完成后预热失败」。
-            if (!window.__mockDownloadOk) return new Promise(() => {})
+            if (!window.__mockDownloadOk) {
+              // 挂起时把拒收句柄留着：取消下载要能把它以 setup.cancelled 拒掉
+              //（真后端 models.rs 取消后返回的就是这个字典 key）。
+              return new Promise((resolve, reject) => { window.__rejectDownload = reject })
+            }
             return clone(window.__mockStatus)
+          case 'cancel_download':
+            // 真后端：取消会让在飞的下载以字典 key setup.cancelled 失败。
+            if (window.__rejectDownload) {
+              const reject = window.__rejectDownload
+              window.__rejectDownload = null
+              reject('setup.cancelled')
+            }
+            return undefined
           case 'warm_up_streaming':
             if (window.__mockWarmError) throw window.__mockWarmError
             return null
@@ -319,6 +337,9 @@ check('术语表输入框存在', (await page.locator('#hotwords-input').count()
 await page.locator('#hotwords-example').click()
 await page.waitForTimeout(150)
 check('填入示例', (await page.locator('#hotwords-input').inputValue()).includes('产品评审会'))
+// 后端会回报「有几条含模型不认识的字」（Status.hotwordsIgnored）：
+// 流式模型是单字词表，表外的字会让整条术语作废 —— 界面必须告诉用户有几条不生效。
+await page.evaluate(() => { window.__mockHotwordsIgnored = 2 })
 await page.locator('#hotwords-save').click()
 await page.waitForTimeout(250)
 check(
@@ -329,6 +350,13 @@ check(
   }),
 )
 check('保存后回填', (await page.locator('#hotwords-input').inputValue()).includes('玄戒芯片'))
+const hotwordsToast = await text('#toast')
+check(
+  '术语表提示词表外字有几条',
+  hotwordsToast.includes('2') && hotwordsToast.includes('不认识') && !hotwordsToast.includes('{ignored}'),
+  hotwordsToast,
+)
+await page.evaluate(() => { window.__mockHotwordsIgnored = 0 })
 
 await page.locator('#locale-select .select-button').click()
 await page.waitForTimeout(150)
@@ -619,6 +647,35 @@ check('停止失败且无文本时不写历史', (await historyCount()) === hist
 check('停止失败且无文本时结果区为空', (await page.locator('#text').inputValue()) === '')
 await page.evaluate(() => { window.__mockStopError = null })
 
+// ── 停止超时 / 录音过短：错误串带细节时也要走字典文案 ──
+// 后端把细节接在冒号后面（record.stopFailed:细节 / record.tooShort:0.2），
+// 界面按第一个冒号切出错误码去查字典 —— 细节只填 {value} / {seconds}，
+// 不能把错误码或细节原样甩给用户。
+await page.evaluate(() => { window.__mockStopError = 'record.streamTimeout:通道关闭' })
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(200)
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(300)
+const timeoutToast = await text('#toast')
+check(
+  '停止超时带细节仍走超时文案',
+  timeoutToast.includes('超时') && !timeoutToast.includes('record.streamTimeout') && !timeoutToast.includes('通道关闭'),
+  timeoutToast,
+)
+
+await page.evaluate(() => { window.__mockStopError = 'record.tooShort:0.2' })
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(200)
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(300)
+const tooShortToast = await text('#toast')
+check(
+  '录音过短的提示带秒数',
+  tooShortToast.includes('0.2') && tooShortToast.includes('秒') && !tooShortToast.includes('{seconds}'),
+  tooShortToast,
+)
+await page.evaluate(() => { window.__mockStopError = null })
+
 // ── 下载进度分流：两个下载可以同时跑，进度事件同名，靠 kind 区分 ──
 await page.evaluate(() =>
   window.__emit('model:progress', {
@@ -843,6 +900,22 @@ await page.evaluate(() =>
 await page.waitForTimeout(200)
 const downloadErrorToast = await page.locator('#toast').innerText()
 check('下载失败不弹原始错误串', !downloadErrorToast.includes('hf-mirror'), downloadErrorToast)
+
+// ── 下载取消：界面必须说「已取消」，不能说失败，也不能露出内部哨兵 ──
+// 真后端：取消下载会让在飞的下载以字典 key setup.cancelled 失败
+//（models.rs 的 DOWNLOAD_CANCELLED 哨兵在命令层翻译过了）。
+// 取消按钮默认是隐藏的（同下载按钮），直接在页面里点它的 click 事件。
+await page.evaluate(() => document.getElementById('cancel-download-btn').click())
+await page.waitForTimeout(300)
+const cancelToast = await text('#toast')
+check('下载取消显示「已取消」', cancelToast.includes('已取消'), cancelToast)
+check(
+  '下载取消不露出内部哨兵',
+  !cancelToast.includes('setup.cancelled') && !cancelToast.includes('download.cancelled'),
+  cancelToast,
+)
+const cancelProgress = await page.locator('#setup-progress-text').innerText()
+check('下载取消的进度行不说失败', !cancelProgress.includes('失败'), cancelProgress)
 
 // 非应用错误码只能进日志，不能把系统路径或异常原文显示出来。
 await page.evaluate(async () => {

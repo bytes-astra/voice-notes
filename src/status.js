@@ -1,6 +1,6 @@
 /* 模型状态、识别模式、语言、输入设备、模型下载、设置项 */
 
-import { $, LANGS, STREAM_LANGS, els, errorText, fmtBytes, fmtError, idleHint, state, t, toast } from './core.js'
+import { $, LANGS, STREAM_LANGS, els, errorCode, errorText, fmtBytes, fmtError, idleHint, state, t, toast } from './core.js'
 import { invoke, logEvent, openDialog } from './tauri.js'
 
 /* 下拉框实例由入口创建后交给这里（status 不该认识 applyLocale，否则会和入口互相依赖） */
@@ -285,9 +285,11 @@ async function runDownload({
       toast(fmtError(error), 'error')
     }
   } catch (error) {
-    logEvent('ERROR', `模型下载失败: ${errorText(error)}`)
-    toast(fmtError(error), 'error')
-    progressText.textContent = t('setup.downloadFailed')
+    // 取消不是失败：文案要分开说 —— 用户点了取消，进度行不能写「下载失败」。
+    const cancelled = errorCode(error) === 'setup.cancelled'
+    logEvent(cancelled ? 'INFO' : 'ERROR', `模型下载${cancelled ? '取消' : '失败'}: ${errorText(error)}`)
+    toast(fmtError(error), cancelled ? 'info' : 'error')
+    progressText.textContent = cancelled ? t('setup.cancelled') : t('setup.downloadFailed')
   } finally {
     setBusy(false)
     button.disabled = false

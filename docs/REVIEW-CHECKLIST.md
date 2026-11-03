@@ -6,8 +6,9 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**72 条**不变量、9 组（A–I），分 3 档 —— ✅ 55 条有自动守卫 / ⚠️ 10 条守卫薄弱 /
-❌ 7 条无守卫。**17 条（⚠️+❌）就是下一轮的作业面**（2026-11-03 补完四条门禁后从 21 条降下来）。
+**当前规模**：**72 条**不变量、9 组（A–I），分 3 档 —— ✅ 59 条有自动守卫 / ⚠️ 6 条守卫薄弱 /
+❌ 7 条无守卫。**13 条（⚠️+❌）就是下一轮的作业面**（2026-11-03 补完四条门禁后从 21 条降下来，
+同日再补四条 UI 断言后从 17 条降下来）。
 
 （历史口径：5 份旧 review plan 一共提出 **26** 个 focus 项 —— 那是「轮次」的粒度；
 本文档把它们展开成 **72** 条可逐条核对的条目。两个数各指什么，不要混用。）
@@ -62,11 +63,11 @@
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
 | RC-A1 | 下载目录建不出来、下载失败、取消下载，三条路径都必须复位「忙碌」标志 | `engine/tests.rs` 下载守卫在提前返回时复位 / 下载标志互不阻塞；`settings/hotword_tests.rs` rejects_an_unusable_output_dir | ✅ |
-| RC-A2 | 模型下载中途取消，必须翻译成字典 key（`setup.cancelled`），不露出内部哨兵串 | `models/tests.rs` cancelled_sentinel_is_only_the_download_cancelled_marker / cancelled_sentinel_with_detail_is_still_cancelled / cancelled_download_returns_the_dictionary_key / cancelling_during_download_is_translated_to_the_dictionary_key | ⚠️ 后端有守卫；**UI 层无「已取消」提示断言** |
+| RC-A2 | 模型下载中途取消，必须翻译成字典 key（`setup.cancelled`），不露出内部哨兵串 | `models/tests.rs` cancelled_sentinel_is_only_the_download_cancelled_marker / cancelled_sentinel_with_detail_is_still_cancelled / cancelled_download_returns_the_dictionary_key / cancelling_during_download_is_translated_to_the_dictionary_key；UI `下载取消显示「已取消」` / `下载取消不露出内部哨兵` / `下载取消的进度行不说失败` | ✅ 2026-11-03 |
 | RC-A3 | 采集流打不开必须报错（`record.micOpenFailed`），不能静默 | `audio/tests.rs` capture_start_reports_play_failure / play_failure_maps_to_the_mic_open_code | ✅ |
 | RC-A4 | VAD 建不起来必须报错，不能 panic | `asr/tests.rs` vad_failure_is_reported_instead_of_panicking | ✅ |
 | RC-A5 | 流式引擎加载失败必须报错，**不能显示「已就绪」**、徽标不能永远停在「加载中」 | UI `预热失败不弹「已就绪」` / `预热失败给出错误提示` / `整段预热失败不弹「已就绪」` / `流式引擎报错时徽标是红底` / `流式引擎报错时状态点标红`；`engine/tests.rs` 加载结果映射成引擎状态 | ✅ |
-| RC-A6 | 停止录音超时：错误串带细节（`record.stopFailed:细节`）时也要走超时文案，不能把 key 甩给界面 | `record/tests.rs` stop_failed_is_recognised_with_and_without_detail | ⚠️ 只有后端；UI 未验「超时」文案 |
+| RC-A6 | 停止录音超时：错误串带细节（`record.stopFailed:细节`）时也要走超时文案，不能把 key 甩给界面 | `record/tests.rs` stop_failed_is_recognised_with_and_without_detail；UI `停止超时带细节仍走超时文案`（`record.streamTimeout:通道关闭` → 「流式识别超时，请重试」，不带错误码也不带细节） | ✅ 2026-11-03 |
 | RC-A7 | 停止等待失败不得交出半截结果，且要置 discard | `record/tests.rs` wait_failure_returns_no_partial_result | ✅ |
 | RC-A8 | 麦克风故障不能阻断 ASR 收尾，也不能把空结果写历史 | `record/tests.rs` capture_failure_does_not_discard_finished_transcript / capture_failure_without_transcript_returns_error；UI `麦克风异常后回到空闲` / `麦克风异常保留部分结果` / `麦克风异常写入历史` | ✅ |
 | RC-A9 | 识别结果为空（VAD 丢音频）必须留痕，不能白丢 | `asr/tests.rs` warns_only_when_speech_went_missing | ✅ |
@@ -92,7 +93,7 @@
 | --- | --- | --- | --- |
 | RC-C1 | 整段 / 流式的拼句规则逐条一致（CJK 区间带端点开闭、占位符完整形状、三条规则的表达式） | `scripts/check-join.mjs` + `check-join.test.mjs`（14 条变异测试） | ✅ |
 | RC-C2 | VAD 参数两模式一致（共有参数；`max_speech_duration` 允许不同 —— 整段 30s 切句 / 流式 20s 门控） | `engine.rs` 的 `vad_config()`（两模式唯一出处）+ `engine/tests.rs` 两模式_vad_参数一致 | ✅ 2026-11-03 |
-| RC-C3 | 录音过短的提示两模式走同一套守卫，文案带秒数（「至少说 0.2 秒」而不是「至少说 {seconds} 秒」） | `record/tests.rs` too_short_transcript_reports_seconds | ⚠️ 只有后端；**UI 未验提示文案** |
+| RC-C3 | 录音过短的提示两模式走同一套守卫，文案带秒数（「至少说 0.2 秒」而不是「至少说 {seconds} 秒」） | `record/tests.rs` too_short_transcript_reports_seconds；UI `录音过短的提示带秒数`（`record.tooShort:0.2` → 「录音太短，至少说 0.2 秒」） | ✅ 2026-11-03 |
 | RC-C4 | 徽标三态两模式一致（不能一个红一个灰） | UI `流式引擎报错时徽标是红底` / `流式引擎报错时状态点标红` | ✅ |
 | RC-C5 | 短句合并层两模式共用（短于 3 秒不立刻定稿，间隔超 2 秒不合并） | `asr/merger_tests.rs` 全 6 条 | ✅ |
 | RC-C6 | 超长句才切（阈值 90 秒），相邻两段重叠合并 | `asr/merge_tests.rs` 全 4 条 | ✅ |
@@ -139,7 +140,7 @@
 | RC-F8 | 取消录音不碰「正在启动」标志（那是 start 命令的 guard 独占） | `command_tests.rs` cancel_does_not_release_the_starting_flag | ✅ |
 | RC-F9 | 麦克风权限改成点麦克风时才申请，且界面渲染完再列设备（避免启动就弹权限框打断用户） | —— | ❌ **无守卫**：靠流程约定，`check:ui` 无法验证 |
 | RC-F10 | 落盘文件名不覆盖已有文件 | `output/tests.rs` writes_unique_files_without_overwriting | ✅ |
-| RC-F11 | 术语表按模型词表过滤：表外字整条作废；读不到词表时全部保留 | `engine/tests.rs` 词表只收单字符号 / 词表外的字整条热词作废 / 读不到词表时热词全部保留 | ⚠️ 只有后端；UI 未验「其中 N 个含模型不认识的字」提示 |
+| RC-F11 | 术语表按模型词表过滤：表外字整条作废；读不到词表时全部保留 | `engine/tests.rs` 词表只收单字符号 / 词表外的字整条热词作废 / 读不到词表时热词全部保留；UI `术语表提示词表外字有几条`（`Status.hotwordsIgnored` → 「其中 2 个含模型不认识的字，不会生效」） | ✅ 2026-11-03 |
 | RC-F12 | 录音中和启动中的语言 / ITN 锁定 | `command_tests.rs` recognition_config_is_locked_while_recording；UI `录音中语言与 ITN 锁定` / `启动中语言与 ITN 锁定` / `启动中不发送语言或 ITN 变更` / `停止后语言与 ITN 解锁` | ✅ |
 
 ### G. macOS 原生层与打包（5 条）
@@ -178,7 +179,8 @@
 
 ## 下一轮该审什么
 
-⚠️ + ❌ 共 **17 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条），按「补起来最划算」排序：
+⚠️ + ❌ 共 **13 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条，同日再补四条 UI 断言后降到 13 条），
+按「补起来最划算」排序：
 
 ### 已完成（2026-11-03）
 
@@ -188,22 +190,22 @@
 | RC-C2 | 两模式 VAD 配置收敛到唯一出处 `engine.rs` 的 `vad_config()`，加单测断言除 `max_speech_duration` 外全一致 | `src-tauri/src/engine.rs`、`src-tauri/src/engine/tests.rs` |
 | RC-H6 | 新增 `scripts/check-contract.mjs`：前后端命令名 + 载荷字段名 + mock 载荷字段一致性，配 11 条自测 | `scripts/check-contract.mjs`、`scripts/check-contract.test.mjs` |
 | RC-D5 | `check-i18n.mjs` 加经典脚本的三条硬约束：**不得加 `async`**（实测界面直接挂）、**不得写成 `type="module"`**（挪到 `app.js` 之后就挂）、**不得排在 `app.js` 之后**。附：`app.js` 必须保留 `type="module"`。配 4 条自测 | `scripts/check-i18n.mjs`、`scripts/check-i18n.test.mjs` |
+| RC-A2 / RC-A6 / RC-C3 / RC-F11 | 补四条 UI 断言（各一条）：下载取消显示「已取消」、停止超时带细节仍走超时文案、录音过短的提示带秒数、术语表提示词表外字有几条。mock 侧补：`cancel_download` 让在飞的下载以 `setup.cancelled` 失败、`set_hotwords` 回 `hotwordsIgnored` | `scripts/ui/check.mjs` |
 
 顺带补上的两条：**后端裸字符串错误**（`Err("加载失败")` 绕过字典，原文会甩到界面）
 现在由 `check:i18n` 查；**假后端漏字段**（`Status.hotwordsIgnored`）由 `check:contract` 查出并已补上。
 
-### 第 1 优先：补 UI 断言（后端已有守卫，只差界面这一侧）
+补 UI 断言时**撞出一个真缺陷**：下载被取消后，进度行写的是「下载失败」——
+用户自己点的取消，界面却说失败。已修：`runDownload` 按错误码区分取消与失败
+（`core.js` 新增 `errorCode()`，跟 `fmtError` 共用同一处切分），取消时进度行写「下载已取消」。
 
-`RC-A2`（下载取消的「已取消」提示）、`RC-A6`（停止超时的超时文案）、`RC-C3`（过短提示带秒数）、
-`RC-F11`（术语表词表外字的提示数）—— 各补一条 `check.mjs` 断言即可。
-
-### 第 2 优先：原生层与打包
+### 第 1 优先：原生层与打包
 
 `RC-G1`（mock 缺 `setTheme` / `setTitle`，导致材质、窗口外观、窗口标题在 harness 里静默 no-op）、
 `RC-G3`（麦克风 entitlement）、`RC-G4`（`install_menu` 的 `cfg`）、`RC-G5`（Windows 侧栏品牌行）。
 前两条加 mock API / CI 步骤即可；`RC-G3` 只能真机验。
 
-### 第 3 优先：质量门禁（唯一能改变曲线形状的一类）
+### 第 2 优先：质量门禁（唯一能改变曲线形状的一类）
 
 `RC-I1`（CER / RTF 不得退化）、`RC-I2`（流式路径进 CI）、`RC-I3`（长录音不丢音频）、
 `RC-I4`（内存不随时长增长）。其余改动都是把单点缺陷抓得更早，这几条是让「缺陷池变小」。
@@ -226,7 +228,7 @@
 | 2026-10-28 | （时间轴、续传、toast、编辑文本、焦点、导入图） | 10 | 同上 |
 | 2026-11-01 | （时长、徽标、停止超时、下载取消、拼句） | 6 | 同上 |
 | 2026-11-02 | （录音中编辑、含占位符的历史、键盘焦点、预热假成功、新增语言注册） | 13 | 同上 |
-| 2026-11-03 | RC-H7 / RC-C2 / RC-H6 / RC-D5（补四条门禁）+ 后端裸字符串错误 + mock 载荷字段 | 4 条门禁 | **清单成文**（72 条），并补上四条门禁 —— 缺口从 21 条降到 17 条 |
+| 2026-11-03 | RC-H7 / RC-C2 / RC-H6 / RC-D5（补四条门禁）+ 后端裸字符串错误 + mock 载荷字段 + RC-A2 / RC-A6 / RC-C3 / RC-F11（补四条 UI 断言） | 4 条门禁 + 4 条 UI 断言 | **清单成文**（72 条）；补四条门禁 —— 缺口 21 → 17；再补四条 UI 断言（撞出并修掉「下载取消却说失败」）—— 17 → 13 |
 
 「当天 fix 数」一列是 `git log` 实测值（`git log --since=<date> --until=<date>` 统计以 `fix` 开头的提交），
 不是估算 —— 它同时也是「这轮复审的产出」的度量。
