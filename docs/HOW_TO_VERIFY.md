@@ -86,7 +86,7 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
 ## 🧷 单元测试
 
 ```bash
-npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前后端契约 → clippy(-D warnings) → cargo test --lib
+npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前后端契约 → 打包配置 → clippy(-D warnings) → cargo test --lib
 ```
 
 - **门禁跑绿 ≠ 流式时间轴验证过**：`src-tauri/src/record/tests.rs` 里几个用例要真模型
@@ -126,13 +126,23 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   CJK 码位区间（带端点开闭）、缺口占位符的完整形状（`[[gap:<数字>]]`）、三条拼接规则的表达式。
   只比对子串会漏掉最自然的漂移形状（`..=` 改 `..`、`||` 改 `&&`、少写半个条件、占位符少个 `]`）——
   这几种改法都会被脚本抓住（退出码 1）。
+- `npm run check:bundle` 查打包与原生层配置（`scripts/check-bundle.mjs`）：macOS 必须 ad-hoc 签名
+  （`bundle.macOS.signingIdentity = "-"`）、必须挂麦克风 entitlement
+  （`com.apple.security.device.audio-input`）、`Info.plist` 必须有 `NSMicrophoneUsageDescription`、
+  macOS 专属代码必须整体带 `#[cfg(target_os = "macos")]`（`menu.rs` 顶层不许有 `use`，
+  `lib.rs` 里 `use menu::…` 要带 cfg）。这些配置改了都不会报错，只在真机上炸 ——
+  缺 entitlement 的表现是「能录音、有时长，就是没字」，没 ad-hoc 签名的表现是
+  「别的 Mac 从 dmg 装完 Gatekeeper 报已损坏」。门禁自己有测试（`scripts/check-bundle.test.mjs`）。
+  真机 / 产物级的那一半由 CI 验：`build.yml` 的 macOS job 在 `npm run build` 之后用
+  `codesign -dv`（看 `Signature=adhoc`）和 `codesign -d --entitlements -`（看
+  `com.apple.security.device.audio-input`）校验产物。
 
 ## 🖥️ 界面检查
 
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 130 项检查
+npm run check:ui     # 135 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 

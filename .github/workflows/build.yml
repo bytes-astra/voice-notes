@@ -62,6 +62,36 @@ jobs:
       - name: Build
         run: npm run build
 
+      # 打包版的签名与麦克风权限：这两条平时只能靠真机验，这里在 CI 里验。
+      #
+      #   缺 microphone entitlement → tccd 根本不弹授权框，直接拒绝麦克风请求，
+      #                              表现是「能录音、有时长，就是没字」。
+      #   没 ad-hoc 签名（signingIdentity 不是 "-"）→ 别的 Mac 从 dmg 装完
+      #                              Gatekeeper 直接报「已损坏」。
+      - name: 校验 macOS 签名与麦克风权限
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -n 1)"
+          if [ -z "$app" ]; then
+            echo "::error::没找到打包出来的 .app"
+            exit 1
+          fi
+          codesign -dv "$app" 2>&1 | tee /tmp/codesign.txt >/dev/null
+          if ! grep -q 'Signature=adhoc' /tmp/codesign.txt; then
+            echo "::error::不是 ad-hoc 签名 —— bundle.macOS.signingIdentity 必须是 \"-\""
+            cat /tmp/codesign.txt
+            exit 1
+          fi
+          codesign -d --entitlements - "$app" 2>&1 | tee /tmp/entitlements.txt >/dev/null
+          if ! grep -q 'com.apple.security.device.audio-input' /tmp/entitlements.txt; then
+            echo "::error::打包版缺麦克风权限（com.apple.security.device.audio-input）"
+            cat /tmp/entitlements.txt
+            exit 1
+          fi
+          echo "签名与麦克风权限校验通过：$app"
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}

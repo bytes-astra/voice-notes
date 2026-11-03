@@ -22,13 +22,17 @@ const context = await browser.newContext({ viewport, locale: 'zh-CN' })
 const page = await context.newPage()
 
 const errors = []
-page.on('console', (msg) => {
-  if (msg.type() === 'error') errors.push(`console: ${msg.text()}`)
-})
-page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`))
-page.on('requestfailed', (request) => errors.push(`requestfailed: ${request.url()} ${request.failure()?.errorText}`))
+const collectErrors = (target) => {
+  target.on('console', (msg) => {
+    if (msg.type() === 'error') errors.push(`console: ${msg.text()}`)
+  })
+  target.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`))
+  target.on('requestfailed', (request) => errors.push(`requestfailed: ${request.url()} ${request.failure()?.errorText}`))
+}
+collectErrors(page)
 
-await context.addInitScript(() => {
+/// 假后端：主页面和「Windows 场景」页面装同一套。
+const installMock = () => {
   const base = {
     modelReady: true,
     modelSource: 'app_data',
@@ -174,10 +178,27 @@ await context.addInitScript(() => {
     },
     dialog: { open: async () => null },
     clipboardManager: { writeText: async () => {} },
-    window: { getCurrentWindow: () => ({ setBackgroundColor() {}, startDragging() {} }) },
+    // 窗口 API 要跟真后端对得上：少了 setTheme / setTitle，
+    // 窗口外观（NSWindow.appearance）和窗口标题在 harness 里就静默变成 no-op ——
+    // 真机上材质明暗不跟主题、标题不跟界面语言，这两条断言会恒真。
+    window: {
+      getCurrentWindow: () => ({
+        setBackgroundColor() {},
+        startDragging() {},
+        setTheme(theme) {
+          window.__mockWindowTheme = theme
+          return Promise.resolve()
+        },
+        setTitle(title) {
+          window.__mockWindowTitle = title
+          return Promise.resolve()
+        },
+      }),
+    },
     webview: { getCurrentWebview: () => ({ onDragDropEvent() {} }) },
   }
-})
+}
+await context.addInitScript(installMock)
 
 // 页面内触发 Tauri 事件（模拟后端发进度）
 await page.addInitScript(() => {
@@ -386,6 +407,12 @@ await page.locator('#locale-select .select-button').click()
 await page.locator('.select-popup .select-item', { hasText: 'English' }).first().click()
 await page.waitForTimeout(200)
 check('空结果切语言刷新提示', (await text('#meta')).includes('Waiting'))
+// 原生窗口标题跟着界面语言走（tauri.conf.json 里的只是启动默认值）。
+check(
+  '切语言同步原生窗口标题',
+  (await page.evaluate(() => window.__mockWindowTitle)) === 'Voice to Text',
+  await page.evaluate(() => window.__mockWindowTitle || '(没调用 setTitle)'),
+)
 await page.locator('.nav-item[data-view="settings"]').click()
 check(
   '切英文后结果区按钮跟随',
@@ -424,8 +451,21 @@ await page.locator('#theme-btn').click()
 await page.waitForTimeout(200)
 check('深色主题生效', (await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark')
 check('深色无横向溢出', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+// 窗口外观（NSWindow.appearance）跟着主题走：macOS 的原生材质明暗跟的是它，
+// 不同步就是「浅色材质配深色字」。
+check(
+  '切主题同步窗口外观',
+  (await page.evaluate(() => window.__mockWindowTheme)) === 'Dark',
+  await page.evaluate(() => window.__mockWindowTheme || '(没调用 setTheme)'),
+)
 await page.screenshot({ path: `${SHOTS}/04-dark.png` })
 await page.locator('#theme-btn').click()
+await page.waitForTimeout(150)
+check(
+  '切回浅色同步窗口外观',
+  (await page.evaluate(() => window.__mockWindowTheme)) === 'Light',
+  await page.evaluate(() => window.__mockWindowTheme || '(没调用 setTheme)'),
+)
 
 // 7. 焦点在按钮上按空格不录音；空白处空格开始、Esc 取消
 await page.locator('#theme-btn').focus()
@@ -1058,6 +1098,43 @@ await page.evaluate(() => {
   window.__mockWarmError = null
   window.__mockWarmUpError = null
 })
+
+// ── Windows 场景：侧栏顶部的红绿灯占位不能套到 Windows 上 ──
+// macOS 的标题栏是覆盖式的，侧栏顶部要留 78px 给红绿灯；
+// Windows 没有红绿灯，占位必须跟着内容走 —— 写死个小高度会把 30px 高的
+// 品牌行切掉一截。harness 的 UA 决定 body 上有没有 macos 类，所以这里换一个
+// Windows UA 另开一页。
+const WINDOWS_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
+const winContext = await browser.newContext({ viewport, locale: 'zh-CN', userAgent: WINDOWS_UA })
+await winContext.addInitScript(installMock)
+const winPage = await winContext.newPage()
+collectErrors(winPage)
+await winPage.goto(`${base}/index.html`)
+await winPage.waitForSelector('#lang-row .chip')
+await winPage.waitForTimeout(400)
+check(
+  'Windows 下不加 macOS 材质类',
+  !(await winPage.evaluate(() => document.body.classList.contains('macos'))),
+  await winPage.evaluate(() => document.body.className || '(body 没 class)'),
+)
+check(
+  'Windows 下侧栏品牌行不被切掉',
+  await winPage.evaluate(() => {
+    const top = document.querySelector('.sidebar-top')
+    const brand = document.querySelector('.brand')
+    if (!top || !brand) return false
+    // 顶部容器至少要装得下品牌行：写死 12px 就会小于品牌行的高度。
+    return top.getBoundingClientRect().height >= brand.getBoundingClientRect().height
+  }),
+  await winPage.evaluate(() => {
+    const top = document.querySelector('.sidebar-top')
+    const brand = document.querySelector('.brand')
+    if (!top || !brand) return '(找不到 .sidebar-top / .brand)'
+    return `顶部 ${Math.round(top.getBoundingClientRect().height)}px / 品牌 ${Math.round(brand.getBoundingClientRect().height)}px`
+  }),
+)
+await winContext.close()
 
 // ── 结果 ────────────────────────────────────────────────────
 const failed = results.filter((r) => !r.ok)

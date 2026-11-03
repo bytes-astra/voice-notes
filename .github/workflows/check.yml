@@ -37,6 +37,9 @@ jobs:
       - name: 前后端命令名与载荷字段一致
         run: npm run check:contract
 
+      - name: 打包与原生层配置（签名 / 麦克风权限 / macOS cfg）
+        run: npm run check:bundle
+
   rust:
     runs-on: macos-latest
     steps:
@@ -61,3 +64,23 @@ jobs:
       # 需要模型的用例在没设 *_MODEL_DIR 时会自己跳过（打印「跳过：…」后 return）。
       - name: 集成回归（不需要模型）
         run: cargo test --manifest-path src-tauri/Cargo.toml --test decode_smoke --test asr_smoke
+
+  # Windows 编译检查：原生菜单只在 macOS 存在（menu.rs 整体 cfg 掉了），
+  # import 漏了 cfg 就只有打包 Windows 时才炸 —— 每个 PR 都该拦住，
+  # 别等到打 tag 才发现。
+  #
+  # 只编译不运行：Windows runner 上测试二进制在加载阶段就失败
+  # （0xc0000139，runner 的 WebView2 依赖版本不匹配）。
+  rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Windows 编译检查
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets

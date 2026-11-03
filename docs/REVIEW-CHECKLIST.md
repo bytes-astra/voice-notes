@@ -6,9 +6,9 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**72 条**不变量、9 组（A–I），分 3 档 —— ✅ 59 条有自动守卫 / ⚠️ 6 条守卫薄弱 /
-❌ 7 条无守卫。**13 条（⚠️+❌）就是下一轮的作业面**（2026-11-03 补完四条门禁后从 21 条降下来，
-同日再补四条 UI 断言后从 17 条降下来）。
+**当前规模**：**72 条**不变量、9 组（A–I），分 3 档 —— ✅ 63 条有自动守卫 / ⚠️ 5 条守卫薄弱 /
+❌ 4 条无守卫。**9 条（⚠️+❌）就是下一轮的作业面**（2026-11-03 补完四条门禁后从 21 条降下来，
+同日再补四条 UI 断言后降到 17 条，补完原生层与打包后降到 9 条）。
 
 （历史口径：5 份旧 review plan 一共提出 **26** 个 focus 项 —— 那是「轮次」的粒度；
 本文档把它们展开成 **72** 条可逐条核对的条目。两个数各指什么，不要混用。）
@@ -147,11 +147,11 @@
 
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
-| RC-G1 | 侧栏材质、窗口外观、窗口标题跟着主题走 | —— | ❌ **无守卫**：`check:ui` 的假 `__TAURI__` 只提供 `setBackgroundColor`/`startDragging`，缺 `setTheme`/`setTitle`，这些调用在 harness 里静默变成 no-op |
+| RC-G1 | 侧栏材质、窗口外观、窗口标题跟着主题走 | UI `切主题同步窗口外观` / `切回浅色同步窗口外观` / `切语言同步原生窗口标题`（假 `__TAURI__` 补上 `setTheme` / `setTitle`，此前这两个调用在 harness 里静默 no-op） | ✅ 2026-11-03 |
 | RC-G2 | macOS 根背景保持透明（材质才透得出来） | UI `macOS 根背景保持透明` | ✅ |
-| RC-G3 | 打包版必须带麦克风 entitlement，签名用 ad-hoc | —— | ❌ 无守卫：只能真机验（`npm run build` + `codesign`） |
-| RC-G4 | `install_menu` 的 import 必须跟 `cfg`，否则 Windows 编译失败 | —— | ❌ 无守卫：CI 不跑 Windows 编译 |
-| RC-G5 | Windows 上侧栏品牌行不能被切掉 | —— | ⚠️ 靠 CSS 人工确认 |
+| RC-G3 | 打包版必须带麦克风 entitlement，签名用 ad-hoc | `scripts/check-bundle.mjs`（ad-hoc 签名 / 麦克风 entitlement / Info.plist 用途说明）+ `scripts/check-bundle.test.mjs`；产物级：`build.yml` 的 macOS job 用 `codesign` 验 `Signature=adhoc` 与 `com.apple.security.device.audio-input` | ✅ 2026-11-03 |
+| RC-G4 | `install_menu` 的 import 必须跟 `cfg`，否则 Windows 编译失败 | `scripts/check-bundle.mjs`（`menu.rs` 顶层不许有 `use`、函数必须带 cfg；`lib.rs` 的 `use menu::…` 必须带 cfg）；`check.yml` 的 `rust-windows` job 每个 PR 都 `cargo check --all-targets` | ✅ 2026-11-03 |
+| RC-G5 | Windows 上侧栏品牌行不能被切掉 | UI `Windows 下不加 macOS 材质类` / `Windows 下侧栏品牌行不被切掉`（Windows UA 另开一页：顶部容器要装得下品牌行） | ✅ 2026-11-03 |
 
 ### H. 事件契约与数据流（8 条）
 
@@ -179,8 +179,8 @@
 
 ## 下一轮该审什么
 
-⚠️ + ❌ 共 **13 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条，同日再补四条 UI 断言后降到 13 条），
-按「补起来最划算」排序：
+⚠️ + ❌ 共 **9 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条，同日补四条 UI 断言后降到 13 条，
+再补完原生层与打包后降到 9 条），按「补起来最划算」排序：
 
 ### 已完成（2026-11-03）
 
@@ -191,6 +191,8 @@
 | RC-H6 | 新增 `scripts/check-contract.mjs`：前后端命令名 + 载荷字段名 + mock 载荷字段一致性，配 11 条自测 | `scripts/check-contract.mjs`、`scripts/check-contract.test.mjs` |
 | RC-D5 | `check-i18n.mjs` 加经典脚本的三条硬约束：**不得加 `async`**（实测界面直接挂）、**不得写成 `type="module"`**（挪到 `app.js` 之后就挂）、**不得排在 `app.js` 之后**。附：`app.js` 必须保留 `type="module"`。配 4 条自测 | `scripts/check-i18n.mjs`、`scripts/check-i18n.test.mjs` |
 | RC-A2 / RC-A6 / RC-C3 / RC-F11 | 补四条 UI 断言（各一条）：下载取消显示「已取消」、停止超时带细节仍走超时文案、录音过短的提示带秒数、术语表提示词表外字有几条。mock 侧补：`cancel_download` 让在飞的下载以 `setup.cancelled` 失败、`set_hotwords` 回 `hotwordsIgnored` | `scripts/ui/check.mjs` |
+| RC-G1 / RC-G5 | 假 `__TAURI__` 补 `setTheme` / `setTitle`，加三条断言（切主题、切回浅色、切语言同步窗口标题）；再用一个 Windows UA 另开一页，验侧栏品牌行没被切掉 | `scripts/ui/check.mjs` |
+| RC-G3 / RC-G4 | 新增 `scripts/check-bundle.mjs`：ad-hoc 签名、麦克风 entitlement、Info.plist 用途说明、macOS 专属代码的 cfg（`menu.rs` 顶层不许有 `use`，`lib.rs` 的 `use menu::…` 必须带 cfg）。CI 两头都补上：`check.yml` 加 `rust-windows` job（每个 PR `cargo check --all-targets`），`build.yml` 的 macOS job 在 build 后用 `codesign` 验签名与 entitlement | `scripts/check-bundle.mjs`、`scripts/check-bundle.test.mjs`、`.github/workflows/check.yml`、`.github/workflows/build.yml` |
 
 顺带补上的两条：**后端裸字符串错误**（`Err("加载失败")` 绕过字典，原文会甩到界面）
 现在由 `check:i18n` 查；**假后端漏字段**（`Status.hotwordsIgnored`）由 `check:contract` 查出并已补上。
@@ -199,13 +201,7 @@
 用户自己点的取消，界面却说失败。已修：`runDownload` 按错误码区分取消与失败
 （`core.js` 新增 `errorCode()`，跟 `fmtError` 共用同一处切分），取消时进度行写「下载已取消」。
 
-### 第 1 优先：原生层与打包
-
-`RC-G1`（mock 缺 `setTheme` / `setTitle`，导致材质、窗口外观、窗口标题在 harness 里静默 no-op）、
-`RC-G3`（麦克风 entitlement）、`RC-G4`（`install_menu` 的 `cfg`）、`RC-G5`（Windows 侧栏品牌行）。
-前两条加 mock API / CI 步骤即可；`RC-G3` 只能真机验。
-
-### 第 2 优先：质量门禁（唯一能改变曲线形状的一类）
+### 第 1 优先：质量门禁（唯一能改变曲线形状的一类）
 
 `RC-I1`（CER / RTF 不得退化）、`RC-I2`（流式路径进 CI）、`RC-I3`（长录音不丢音频）、
 `RC-I4`（内存不随时长增长）。其余改动都是把单点缺陷抓得更早，这几条是让「缺陷池变小」。
@@ -228,7 +224,7 @@
 | 2026-10-28 | （时间轴、续传、toast、编辑文本、焦点、导入图） | 10 | 同上 |
 | 2026-11-01 | （时长、徽标、停止超时、下载取消、拼句） | 6 | 同上 |
 | 2026-11-02 | （录音中编辑、含占位符的历史、键盘焦点、预热假成功、新增语言注册） | 13 | 同上 |
-| 2026-11-03 | RC-H7 / RC-C2 / RC-H6 / RC-D5（补四条门禁）+ 后端裸字符串错误 + mock 载荷字段 + RC-A2 / RC-A6 / RC-C3 / RC-F11（补四条 UI 断言） | 4 条门禁 + 4 条 UI 断言 | **清单成文**（72 条）；补四条门禁 —— 缺口 21 → 17；再补四条 UI 断言（撞出并修掉「下载取消却说失败」）—— 17 → 13 |
+| 2026-11-03 | RC-H7 / RC-C2 / RC-H6 / RC-D5（补四条门禁）+ 后端裸字符串错误 + mock 载荷字段 + RC-A2 / RC-A6 / RC-C3 / RC-F11（补四条 UI 断言）+ RC-G1 / RC-G3 / RC-G4 / RC-G5（原生层与打包） | 4 条门禁 + 4 条 UI 断言 + 1 条打包门禁 | **清单成文**（72 条）；补四条门禁 —— 缺口 21 → 17；再补四条 UI 断言（撞出并修掉「下载取消却说失败」）—— 17 → 13；再补原生层与打包 —— 13 → 9 |
 
 「当天 fix 数」一列是 `git log` 实测值（`git log --since=<date> --until=<date>` 统计以 `fix` 开头的提交），
 不是估算 —— 它同时也是「这轮复审的产出」的度量。
