@@ -31,6 +31,11 @@ hex = "0.4"
 chrono = "0.4"
 tokio = { version = "1", features = ["sync", "time", "rt"] }
 
+# 内存探针要读进程的峰值内存（getrusage）。libc 本来就在依赖树里
+# （cpal / chrono 都要它），加进来不增加编译成本。
+[dev-dependencies]
+libc = "0.2"
+
 [profile.release]
 codegen-units = 1
 lto = true

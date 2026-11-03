@@ -156,6 +156,8 @@ const installMock = () => {
             if (window.__mockWarmUpError) throw window.__mockWarmUpError
             return null
           case 'list_input_devices':
+            // 列设备会触发 macOS 的麦克风权限弹框 —— 记下这一刻界面画完了没有。
+            window.__mockDevicesListedAfterRender = document.querySelectorAll('#lang-row .chip').length > 0
             return [{ name: 'Mock Mic', isDefault: true }]
           case 'stop_recording':
             if (window.__mockStopGate) await window.__mockStopGate
@@ -219,6 +221,20 @@ await page.waitForTimeout(1200) // 等 init 的 900ms 设备枚举走完
 // 1. 首屏
 check('标题已翻译', (await text('#view-title')) === '转写')
 check('6 个语言芯片', (await page.locator('#lang-row .chip').count()) === 6)
+// 麦克风权限不能一启动就申请：点麦克风时才申请（warm_up_mic）。
+// 列设备（会触发 macOS 的权限弹框）也要等界面画完 —— 否则弹框时窗口是空白的。
+check(
+  '启动时不申请麦克风权限',
+  (await page.evaluate(() => window.__mockCalls.filter(([cmd]) => cmd === 'warm_up_mic').length)) === 0,
+  await page.evaluate(
+    () => `warm_up_mic 调了 ${window.__mockCalls.filter(([cmd]) => cmd === 'warm_up_mic').length} 次`,
+  ),
+)
+check(
+  '列设备时界面已经画完',
+  (await page.evaluate(() => window.__mockDevicesListedAfterRender)) === true,
+  await page.evaluate(() => String(window.__mockDevicesListedAfterRender)),
+)
 check('波形 48 根', (await page.locator('#wave span').count()) === 48)
 check('空闲剪影有高度', (await page.locator('#wave span').nth(4).evaluate((el) => el.style.height)) === '18px')
 check('无横向溢出', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
@@ -404,9 +420,29 @@ await page.locator('.nav-item[data-view="transcribe"]').click()
 await page.locator('#clear-btn').click()
 await page.locator('.nav-item[data-view="settings"]').click()
 await page.locator('#locale-select .select-button').click()
+await page.waitForTimeout(150)
+// 界面语言（locale）只有「跟随系统 + 两种」，识别语言是上面那排 6 个芯片 ——
+// 两者不是一回事，界面语言的下拉里不该出现识别语言的选项。
+const localeItemTexts = await page.locator('.select-popup .select-item').allInnerTexts()
+check('界面语言下拉只有三个选项', localeItemTexts.length === 3, localeItemTexts.join(' | '))
+check(
+  '界面语言下拉不混进识别语言',
+  !localeItemTexts.some((label) => ['粤语', '日本語', '한국어', '中文'].includes(label.trim())),
+  localeItemTexts.join(' | '),
+)
+const recognitionLangBefore = await page.evaluate(
+  () => document.querySelector('#lang-row .chip[aria-pressed="true"]')?.dataset.lang || '(没有选中的)',
+)
 await page.locator('.select-popup .select-item', { hasText: 'English' }).first().click()
 await page.waitForTimeout(200)
 check('空结果切语言刷新提示', (await text('#meta')).includes('Waiting'))
+// 切界面语言不能改识别语言：两者混了，用户说的话就用另一种语言去认了。
+check(
+  '切界面语言不改识别语言',
+  (await page.evaluate(() => document.querySelector('#lang-row .chip[aria-pressed="true"]')?.dataset.lang || '(没有选中的)')) ===
+    recognitionLangBefore,
+  `切换前 ${recognitionLangBefore}`,
+)
 // 原生窗口标题跟着界面语言走（tauri.conf.json 里的只是启动默认值）。
 check(
   '切语言同步原生窗口标题',

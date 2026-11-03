@@ -121,5 +121,13 @@ fn probe_streaming_long_recording() {
         if segments.len() > 10 {
             println!("    …（还有 {} 段）", segments.len() - 10);
         }
+
+        // 守卫：连续语音不该有音频到不了文字。流式没有静音可 excuses，
+        // 留 1 秒余量给切句边界（VAD 门控 + 尾部补静音）。
+        let uncovered = fed - covered;
+        assert!(
+            uncovered <= 1.0,
+            "连续语音 {seconds:.1}s：{uncovered:.1}s 音频没变成文字（上限 1.0s）—— 长录音丢音频了",
+        );
     }
 }

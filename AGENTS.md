@@ -37,7 +37,7 @@
    - `npm run check:ui`：界面检查（真实 WebKit + 假 `__TAURI__`），前端改动后跑。
    - `npm run shots`：重出 README 截图，改了界面后跑。
 
-3. Rust 侧测试：`cargo test --lib`（纯逻辑），以及 `src-tauri/tests/` 下的 `asr_smoke`（整段真模型，需 `VOICE_NOTES_MODEL_DIR`）、`streaming_smoke`（流式，需 `VOICE_NOTES_STREAMING_MODEL_DIR`）、`decode_smoke`（后端解码全链路）、`quality_probe`（质量探针，只打印不断言）。
+3. Rust 侧测试：`cargo test --lib`（纯逻辑），以及 `src-tauri/tests/` 下的 `asr_smoke`（整段真模型，需 `VOICE_NOTES_MODEL_DIR`）、`streaming_smoke`（流式，需 `VOICE_NOTES_STREAMING_MODEL_DIR`）、`decode_smoke`（后端解码全链路）、`quality_probe`（质量探针，只打印不断言）、`quality_gate`（质量门禁，**带阈值断言**：整段/流式的 CER 与 RTF）、`memory_probe`（内存门禁：峰值内存不随录音时长增长）。长录音四探针（`vad_long_probe` / `offline_long_probe` / `streaming_long_probe` / `resample_probe`）**打印 + 断言**：超阈值就是回归。
 
 4. **复审清单**：[`docs/REVIEW-CHECKLIST.md`](docs/REVIEW-CHECKLIST.md) —— 复审的**固定作业面**。每轮复审从清单里挑「⚠️ 守卫薄弱 / ❌ 未审」的条目审，**不要另起一份 Focus 清单**：清单轮换会让每轮都「发现新问题」，其实是一批老缺陷被不同角度翻出来（背景见该文档）。发现清单里没有的不变量，追加到该文档末尾并给它一个稳定 ID。
 
@@ -86,7 +86,7 @@
 
 界面文案与技术细节是两条线，分开写：
 
-- **界面文案 = 一句中性的话 + 用户看得懂的参数**（字典里只留 `{value}` / `{seconds}` 这类占位符）。措辞中性（不用「识别跟不上，丢掉了…」这种口语），也不出现内部黑话（线程、预热、收尾、引擎状态、断句）—— 用「麦克风发生异常」「识别已停止」这种说法。
+- **界面文案 = 一句中性的话 + 用户看得懂的参数**（字典里只留 `{value}` / `{seconds}` 这类占位符）。措辞中性（不用「识别跟不上，丢掉了…」这种口语），也不出现内部黑话（线程、预热、收尾、引擎状态、断句）—— 用「麦克风发生异常」「识别已停止」这种说法。**黑话由 `npm run check:i18n` 查**（只查文案的值，不查 key）。
 - **技术细节（系统错误文本、路径、采样格式名）只进日志**：`code_detail()` 会把细节写进日志文件。**字典里不放 `{error}` 占位符** —— `{error}` 只用来装「嵌套的干净文案」，比如 `result.fileFailed` 里那句已经翻译过的原因。
 - 字典里查不到的错误码 → 界面显示 `error.unknown`，错误码和细节都不原样甩给用户。前端把错误抛给界面时同理：toast 里放干净文案，细节用 `logEvent('ERROR', …)` 记进日志。
 
@@ -296,7 +296,12 @@ VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test
 VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test noise_probe  -- --nocapture   # 噪声/背景人声
 VOICE_NOTES_MIC_FILE=/tmp/x-16k.wav cargo test --manifest-path src-tauri/Cargo.toml --test mic_probe -- --nocapture   # 离线分析一段真实音频
 VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test quiet_pipeline_probe -- --nocapture   # 低电平录音走真实管线还能不能出字
+VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test quality_gate -- --nocapture --test-threads=1   # 质量门禁：CER / RTF 退化就红
 ```
+
+**改模型 / 换参数 / 加热词之后要跑 `quality_gate`**：它量的是**生产路径**（`OfflineSession` / `StreamingSession`），
+阈值是整段 CER ≤ 25%、流式 CER ≤ 55%、RTF ≤ 1.0（可用环境变量覆盖）。语料要先
+`bash scripts/gen-tts-corpus.sh` 生成（不入库）。基线见 `docs/HOW_TO_VERIFY.md`。
 
 `quiet_pipeline_probe` 走**生产的 `record::run_offline` 管线**，对照「不经 AGC」与「经 AGC」两条路：干净人声衰减到 ×0.001 时，不经 AGC 是 **0 字**，经管线是 **113 字**。它守住的是「AGC 还接在 `record.rs` 里」—— 单测只测 `Agc` 自己，有人把它从管线里摘掉，单测照样绿。
 

@@ -135,5 +135,15 @@ fn probe_long_continuous_speech() {
             "  VAD 缓冲 {buffer:>5.0}s → 喂进 {fed:>8} 采样，切出 {out:>8} 采样（{segments:>3} 句），**被吞 {lost:>8} 采样 = {:.1}s**",
             lost as f32 / 16000.0
         );
+        // 守卫：VAD 只能吞掉两样东西 —— 故意留的静音，和每句边界上的一点点
+        // （sherpa 的切句会在边界上丢几十毫秒）。超出这个量就是音频真被吞了。
+        let intentional = gap as f32 / 16000.0 * (repeat - 1) as f32;
+        let allowance = intentional + 0.2 * segments as f32 + 0.5;
+        let lost_seconds = lost as f32 / 16000.0;
+        assert!(
+            lost_seconds <= allowance,
+            "{label}：VAD 吞了 {lost_seconds:.1}s 音频（故意留的静音 {intentional:.1}s + \
+             每句边界 0.2s + 余量 0.5s = {allowance:.1}s）—— 音频真的被吞了",
+        );
     }
 }

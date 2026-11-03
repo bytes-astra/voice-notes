@@ -176,6 +176,29 @@ test('字典里有的裸字符串错误不该报出来', () => {
   assert.deepEqual(problems, [])
 })
 
+test('文案里有内部黑话要报出来（技术细节只进日志）', () => {
+  const dir = makeFixture({
+    'src/locales/zh-CN.js':
+      "window.I18N_LOCALES = window.I18N_LOCALES || {}\n" +
+      "window.I18N_LOCALES['zh-CN'] = { 'app.title': '语音转文字', 'record.empty': '识别线程已停止' }\n",
+  })
+  const { problems } = collectProblems(dir)
+  assert.ok(
+    problems.some((problem) => problem.includes('线程')),
+    `文案里的黑话被放过了：${JSON.stringify(problems)}`,
+  )
+})
+
+test('key 里有黑话不算（只查文案的值）', () => {
+  const dir = makeFixture({
+    'src/locales/zh-CN.js':
+      "window.I18N_LOCALES = window.I18N_LOCALES || {}\n" +
+      "window.I18N_LOCALES['zh-CN'] = { 'app.title': '语音转文字', 'record.threadExited': '识别已停止' }\n",
+  })
+  const { problems } = collectProblems(dir)
+  assert.deepEqual(problems, [])
+})
+
 /// 造一个最小的仓库骨架，让 collectProblems 能跑起来。
 function makeFixture(files) {
   const dir = mkdtempSync(join(tmpdir(), 'check-i18n-'))

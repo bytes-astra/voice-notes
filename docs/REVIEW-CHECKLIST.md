@@ -6,9 +6,9 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**72 条**不变量、9 组（A–I），分 3 档 —— ✅ 63 条有自动守卫 / ⚠️ 5 条守卫薄弱 /
-❌ 4 条无守卫。**9 条（⚠️+❌）就是下一轮的作业面**（2026-11-03 补完四条门禁后从 21 条降下来，
-同日再补四条 UI 断言后降到 17 条，补完原生层与打包后降到 9 条）。
+**当前规模**：**72 条**不变量、9 组（A–I），分 3 档 —— ✅ 69 条有自动守卫 / ⚠️ 2 条守卫薄弱 /
+❌ 1 条无守卫。**3 条（⚠️+❌）就是下一轮的作业面**（2026-11-03 补完四条门禁后从 21 条降下来，
+同日再补四条 UI 断言后降到 17 条，补完原生层与打包后降到 9 条，补完质量门禁后降到 3 条）。
 
 （历史口径：5 份旧 review plan 一共提出 **26** 个 focus 项 —— 那是「轮次」的粒度；
 本文档把它们展开成 **72** 条可逐条核对的条目。两个数各指什么，不要混用。）
@@ -109,10 +109,10 @@
 | RC-D4 | locale 文件必须排在 `i18n.js` 之前（否则 `window.I18N_LOCALES` 读不到） | `check-i18n.mjs` 脚本顺序检查 | ✅ |
 | RC-D5 | 经典脚本（`i18n.js`/`select.js`）不得加 `async`（实测界面直接挂）、不得写成 `type="module"`（挪到 `app.js` 之后就挂）、不得排在 `app.js` 之后 | `check-i18n.mjs` 的经典脚本检查 + `check-i18n.test.mjs` | ✅ 2026-11-03 |
 | RC-D6 | 错误文案不暴露技术细节（错误码、本地路径、镜像地址、原始异常） | UI `模型加载失败显示字典文案` / `错误提示不泄露错误码和本地路径` / `下载失败不弹原始错误串` / `未知对象错误不泄露细节` / `未知字符串错误不泄露细节` / `Error 对象不泄露原文` + 3 条「细节写入日志」 | ✅ |
-| RC-D7 | 界面文案不带内部黑话（线程 / 预热 / 收尾 / 引擎状态），技术细节只进日志 | —— | ⚠️ 靠人工审；`check-i18n` 只查 key 存在与占位符，不查文案质量 |
+| RC-D7 | 界面文案不带内部黑话（线程 / 预热 / 收尾 / 引擎状态），技术细节只进日志 | `scripts/check-i18n.mjs` 的黑话规则（只查文案的值，不查 key）+ `scripts/check-i18n.test.mjs` 两条自测 | ✅ 2026-11-03 |
 | RC-D8 | 切语言不覆盖用户编辑过的文本 | UI `切语言不覆盖用户编辑` / `切英文不覆盖用户编辑` / `连续切两次语言不覆盖用户编辑` / `历史载入后切语言保留用户编辑` | ✅ |
 | RC-D9 | 缺口占位符跟着界面语言走（历史里也跟） | UI `缺口占位符初始为中文` / `切英文占位符跟着变` / `连续切两次占位符回到中文` / `历史里的缺口占位符初始为中文` / `历史里的缺口占位符跟着语言变` | ✅ |
-| RC-D10 | 界面语言 ≠ 识别语言（6 个识别语言芯片 vs 2 个界面 locale）不能混淆 | —— | ❌ 无守卫（文档已区分，界面未断言） |
+| RC-D10 | 界面语言 ≠ 识别语言（6 个识别语言芯片 vs 2 个界面 locale）不能混淆 | UI `界面语言下拉只有三个选项` / `界面语言下拉不混进识别语言` / `切界面语言不改识别语言` | ✅ 2026-11-03 |
 
 ### E. 用户编辑、焦点与交互（7 条）
 
@@ -138,7 +138,7 @@
 | RC-F6 | 认不出的 `kind` 不能猜着取消（猜错会停掉另一个正在跑的下载） | `command_tests.rs` unknown_download_kind_cancels_nothing | ✅ |
 | RC-F7 | 录音启动预留的锁，退出时必须复位 | `engine/tests.rs` 录音启动预留锁配置且退出复位 | ✅ |
 | RC-F8 | 取消录音不碰「正在启动」标志（那是 start 命令的 guard 独占） | `command_tests.rs` cancel_does_not_release_the_starting_flag | ✅ |
-| RC-F9 | 麦克风权限改成点麦克风时才申请，且界面渲染完再列设备（避免启动就弹权限框打断用户） | —— | ❌ **无守卫**：靠流程约定，`check:ui` 无法验证 |
+| RC-F9 | 麦克风权限改成点麦克风时才申请，且界面渲染完再列设备（避免启动就弹权限框打断用户） | UI `启动时不申请麦克风权限`（启动后 `warm_up_mic` 调了 0 次）/ `列设备时界面已经画完`（列设备那一刻界面已有语言芯片） | ✅ 2026-11-03 |
 | RC-F10 | 落盘文件名不覆盖已有文件 | `output/tests.rs` writes_unique_files_without_overwriting | ✅ |
 | RC-F11 | 术语表按模型词表过滤：表外字整条作废；读不到词表时全部保留 | `engine/tests.rs` 词表只收单字符号 / 词表外的字整条热词作废 / 读不到词表时热词全部保留；UI `术语表提示词表外字有几条`（`Status.hotwordsIgnored` → 「其中 2 个含模型不认识的字，不会生效」） | ✅ 2026-11-03 |
 | RC-F12 | 录音中和启动中的语言 / ITN 锁定 | `command_tests.rs` recognition_config_is_locked_while_recording；UI `录音中语言与 ITN 锁定` / `启动中语言与 ITN 锁定` / `启动中不发送语言或 ITN 变更` / `停止后语言与 ITN 解锁` | ✅ |
@@ -170,17 +170,17 @@
 
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
-| RC-I1 | 识别质量不得退化（整段 CER、实时性 RTF） | —— | ❌ **无守卫**：`quality_probe.rs` 等 12 个探针只打印不断言，`npm run check` 与 CI 对「识别变差了」零反应 |
-| RC-I2 | 流式路径必须有 CI 覆盖 | —— | ❌ **无守卫**：`streaming_smoke` 从未被 workflow 调用；lib 里的流式用例无环境变量时静默跳过 |
-| RC-I3 | 长录音不得丢音频（VAD / 整段会话 / 流式会话 / 重采样四条路） | `src-tauri/tests/` 四个长录音探针（只打印不断言） | ⚠️ 需真模型 + 人工读输出 |
-| RC-I4 | 内存不随录音时长增长（消费式缓冲） | `audio/tests.rs` take_new_consumes_samples / pending_limit_follows_sample_rate | ⚠️ 只测了队列语义，没测端到端内存曲线 |
+| RC-I1 | 识别质量不得退化（整段 CER、实时性 RTF） | `src-tauri/tests/quality_gate.rs`：量**生产路径**（`OfflineSession` / `StreamingSession`），整段 CER ≤ 25%、流式 CER ≤ 55%、RTF ≤ 1.0（环境变量可覆盖）；基线整段 16.39% / 流式 43.28% | ✅ 2026-11-03（**本地跑**：要真模型 + TTS 语料；不进 CI，见 RC-I2 的取舍） |
+| RC-I2 | 流式路径必须有 CI 覆盖 | —— | ❌ **保持未审（决定不做）**：CI 要下 ~500 MB 模型 + 生成语料，单次 10-15 分钟，macOS runner 计费 10×；2026-11-03 明确取舍为「不进 CI，只留本地命令」—— 代价是 CI 对「识别变差」依然零反应 |
+| RC-I3 | 长录音不得丢音频（VAD / 整段会话 / 流式会话 / 重采样四条路） | 四个长录音探针现在**带断言**：`vad_long_probe`（吞掉的 ≤ 故意静音 + 每句 0.2 s + 0.5 s）、`offline_long_probe`（未覆盖 ≤ 故意静音 + 1 s）、`streaming_long_probe`（未覆盖 ≤ 1 s）、`resample_probe`（长度比例 ±1%、识别差异 ≤ 5%） | ✅ 2026-11-03 |
+| RC-I4 | 内存不随录音时长增长（消费式缓冲） | `src-tauri/tests/memory_probe.rs`：一个会话跑 30 分钟，300 s 与 1800 s 两点的峰值内存（`getrusage`）增长 < 32 MB（这 25 分钟音频本身就有 96 MB）；实测整段 +4.4 MB、流式 +0.0 MB。另有 `audio/tests.rs` take_new_consumes_samples / pending_limit_follows_sample_rate | ✅ 2026-11-03 |
 
 ---
 
 ## 下一轮该审什么
 
-⚠️ + ❌ 共 **9 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条，同日补四条 UI 断言后降到 13 条，
-再补完原生层与打包后降到 9 条），按「补起来最划算」排序：
+⚠️ + ❌ 共 **3 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条，同日补四条 UI 断言后降到 13 条，
+再补完原生层与打包后降到 9 条，补完质量门禁后降到 3 条），按「补起来最划算」排序：
 
 ### 已完成（2026-11-03）
 
@@ -193,6 +193,11 @@
 | RC-A2 / RC-A6 / RC-C3 / RC-F11 | 补四条 UI 断言（各一条）：下载取消显示「已取消」、停止超时带细节仍走超时文案、录音过短的提示带秒数、术语表提示词表外字有几条。mock 侧补：`cancel_download` 让在飞的下载以 `setup.cancelled` 失败、`set_hotwords` 回 `hotwordsIgnored` | `scripts/ui/check.mjs` |
 | RC-G1 / RC-G5 | 假 `__TAURI__` 补 `setTheme` / `setTitle`，加三条断言（切主题、切回浅色、切语言同步窗口标题）；再用一个 Windows UA 另开一页，验侧栏品牌行没被切掉 | `scripts/ui/check.mjs` |
 | RC-G3 / RC-G4 | 新增 `scripts/check-bundle.mjs`：ad-hoc 签名、麦克风 entitlement、Info.plist 用途说明、macOS 专属代码的 cfg（`menu.rs` 顶层不许有 `use`，`lib.rs` 的 `use menu::…` 必须带 cfg）。CI 两头都补上：`check.yml` 加 `rust-windows` job（每个 PR `cargo check --all-targets`），`build.yml` 的 macOS job 在 build 后用 `codesign` 验签名与 entitlement | `scripts/check-bundle.mjs`、`scripts/check-bundle.test.mjs`、`.github/workflows/check.yml`、`.github/workflows/build.yml` |
+| RC-I1 | 新增 `src-tauri/tests/quality_gate.rs`：量**生产路径**（`OfflineSession` / `StreamingSession`）的 CER 与 RTF，带阈值断言（整段 ≤ 25%、流式 ≤ 55%、RTF ≤ 1.0）。语料列举与归一化挪到 `tests/common/mod.rs`（探针与门禁共用一份） | `src-tauri/tests/quality_gate.rs`、`src-tauri/tests/common/mod.rs` |
+| RC-I3 | 四个长录音探针从「只打印」改成「打印 + 断言」：VAD 吞掉的、整段未覆盖的、流式未覆盖的、重采样后的长度与识别差异，各有阈值 | `src-tauri/tests/vad_long_probe.rs`、`offline_long_probe.rs`、`streaming_long_probe.rs`、`resample_probe.rs` |
+| RC-I4 | 新增 `src-tauri/tests/memory_probe.rs`：一个会话跑 30 分钟音频，300 s / 1800 s 两点的峰值内存增长 < 32 MB。加了 `libc` 作为 dev-dependency（本来就在依赖树里，不增加编译成本） | `src-tauri/tests/memory_probe.rs`、`src-tauri/Cargo.toml` |
+| RC-D7 | `check-i18n.mjs` 加黑话规则：界面文案里出现线程 / 预热 / 收尾 / 引擎状态 / 解码器 / 采样率 / 推理（或对应英文）就红（只查文案的值，不查 key）。配 2 条自测 | `scripts/check-i18n.mjs`、`scripts/check-i18n.test.mjs` |
+| RC-D10 / RC-F9 | 补四条 UI 断言：界面语言下拉只有三个选项、不混进识别语言、切界面语言不改识别语言；启动时不申请麦克风权限、列设备时界面已经画完 | `scripts/ui/check.mjs` |
 
 顺带补上的两条：**后端裸字符串错误**（`Err("加载失败")` 绕过字典，原文会甩到界面）
 现在由 `check:i18n` 查；**假后端漏字段**（`Status.hotwordsIgnored`）由 `check:contract` 查出并已补上。
@@ -201,15 +206,13 @@
 用户自己点的取消，界面却说失败。已修：`runDownload` 按错误码区分取消与失败
 （`core.js` 新增 `errorCode()`，跟 `fmtError` 共用同一处切分），取消时进度行写「下载已取消」。
 
-### 第 1 优先：质量门禁（唯一能改变曲线形状的一类）
+### 剩下的 3 条
 
-`RC-I1`（CER / RTF 不得退化）、`RC-I2`（流式路径进 CI）、`RC-I3`（长录音不丢音频）、
-`RC-I4`（内存不随时长增长）。其余改动都是把单点缺陷抓得更早，这几条是让「缺陷池变小」。
-
-### 其余
-
-`RC-D7`（文案不带黑话）、`RC-D10`（界面语言 ≠ 识别语言）、`RC-F9`（麦克风权限申请时机）、
-`RC-B8` / `RC-B10`（需真模型环境变量，CI 上静默跳过）—— 靠人工审或补文档说明，暂不占门禁位。
+- `RC-I2`（流式路径进 CI）：**决定不做** —— CI 要下 ~500 MB 模型 + 生成语料，单次 10-15 分钟，
+  macOS runner 计费 10×。代价：CI 对「识别变差」依然零反应，质量门禁靠手动跑
+  （见 `docs/HOW_TO_VERIFY.md` 的「质量门禁」一节）。
+- `RC-B8` / `RC-B10`（需真模型环境变量，CI 上静默跳过）：守卫本身在（`asr/streaming_time_tests.rs`），
+  只是 CI 不跑真模型用例；要跑得先解决 RC-I2 的模型下载问题。
 
 ---
 
@@ -224,7 +227,7 @@
 | 2026-10-28 | （时间轴、续传、toast、编辑文本、焦点、导入图） | 10 | 同上 |
 | 2026-11-01 | （时长、徽标、停止超时、下载取消、拼句） | 6 | 同上 |
 | 2026-11-02 | （录音中编辑、含占位符的历史、键盘焦点、预热假成功、新增语言注册） | 13 | 同上 |
-| 2026-11-03 | RC-H7 / RC-C2 / RC-H6 / RC-D5（补四条门禁）+ 后端裸字符串错误 + mock 载荷字段 + RC-A2 / RC-A6 / RC-C3 / RC-F11（补四条 UI 断言）+ RC-G1 / RC-G3 / RC-G4 / RC-G5（原生层与打包） | 4 条门禁 + 4 条 UI 断言 + 1 条打包门禁 | **清单成文**（72 条）；补四条门禁 —— 缺口 21 → 17；再补四条 UI 断言（撞出并修掉「下载取消却说失败」）—— 17 → 13；再补原生层与打包 —— 13 → 9 |
+| 2026-11-03 | RC-H7 / RC-C2 / RC-H6 / RC-D5（补四条门禁）+ 后端裸字符串错误 + mock 载荷字段 + RC-A2 / RC-A6 / RC-C3 / RC-F11（补四条 UI 断言）+ RC-G1 / RC-G3 / RC-G4 / RC-G5（原生层与打包）+ RC-I1 / RC-I3 / RC-I4 / RC-D7 / RC-D10 / RC-F9（质量门禁与文案守卫） | 4 条门禁 + 4 条 UI 断言 + 1 条打包门禁 + 1 条质量门禁 + 1 条内存门禁 | **清单成文**（72 条）；补四条门禁 —— 缺口 21 → 17；再补四条 UI 断言（撞出并修掉「下载取消却说失败」）—— 17 → 13；再补原生层与打包 —— 13 → 9；再补质量门禁与文案守卫 —— 9 → 3（RC-I2 是明确决定不做的取舍） |
 
 「当天 fix 数」一列是 `git log` 实测值（`git log --since=<date> --until=<date>` 统计以 `fix` 开头的提交），
 不是估算 —— 它同时也是「这轮复审的产出」的度量。

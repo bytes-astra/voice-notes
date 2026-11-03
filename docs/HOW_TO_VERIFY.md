@@ -45,7 +45,8 @@ zh + ITN 整段模式，含 pre-roll 修复 + 短句合并 + min_silence 0.3，4
 
 ## 🔍 长录音排查探针
 
-怀疑「录音丢了」（长录音后面少字、句子断在半截）先跑探针，别猜。四个探针在 `src-tauri/tests/`，只打印不断言；共用的小工具在 `src-tauri/tests/common/mod.rs`，探针里写 `mod common;` 引入：
+怀疑「录音丢了」（长录音后面少字、句子断在半截）先跑探针，别猜。四个探针在 `src-tauri/tests/`，
+**打印 + 断言**（超阈值就红）；共用的小工具在 `src-tauri/tests/common/mod.rs`，探针里写 `mod common;` 引入：
 
 ```bash
 VOICE_NOTES_MODEL_DIR=... cargo test --test vad_long_probe -- --nocapture      # VAD 吞不吞音频
@@ -53,6 +54,53 @@ VOICE_NOTES_MODEL_DIR=... cargo test --test offline_long_probe -- --nocapture   
 VOICE_NOTES_STREAMING_MODEL_DIR=... cargo test --test streaming_long_probe -- --nocapture
 VOICE_NOTES_MODEL_DIR=... cargo test --test resample_probe -- --nocapture       # 48k→16k 重采样
 ```
+
+四条探针的断言（**超了就是回归**）：
+
+| 探针 | 断言 | 余量是怎么算的 |
+| --- | --- | --- |
+| `vad_long_probe` | VAD 吞掉的音频 ≤ 故意留的静音 + 每句 0.2 s + 0.5 s | 切句边界上本来就会丢几十毫秒 |
+| `offline_long_probe` | 没变成文字的音频 ≤ 故意留的静音 + 1.0 s | 同上 |
+| `streaming_long_probe` | 没变成文字的音频 ≤ 1.0 s | 流式没有静音可 excuses |
+| `resample_probe` | 重采样一圈后长度比例 ±1%、识别结果差异 ≤ 5% | 比例不对 = 采样率算错了 |
+
+## 📉 质量门禁：识别质量不得退化
+
+`src-tauri/tests/quality_gate.rs` 量的是**生产路径**（`OfflineSession` / `StreamingSession`，
+不是裸引擎），语料用 macOS `say` 合成的那批 TTS（文本已知 → 能算 CER）：
+
+```bash
+bash scripts/gen-tts-corpus.sh                      # 生成 TTS 语料（不入库）
+node scripts/fetch-quality-corpus.mjs               # 可选：抓真人语料（只打印，不设阈值）
+cd src-tauri
+VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
+  cargo test --test quality_gate -- --nocapture --test-threads=1
+```
+
+阈值（可用环境变量覆盖）：整段 CER ≤ 25%、流式 CER ≤ 55%、RTF ≤ 1.0
+（`VOICE_NOTES_MAX_OFFLINE_CER` / `VOICE_NOTES_MAX_STREAMING_CER` / `VOICE_NOTES_MAX_RTF`）。
+
+**基线（2026-11-03，本机 Apple Silicon，TTS 20 条）**：整段 CER 16.39%、流式 43.28%，
+RTF 0.028 / 0.036。阈值留了余量 —— 语料是本机合成的，不同 macOS 版本的 `say` 声线会有细微差别。
+**流式的绝对 CER 高不代表流式差**：这个 `say` 声线对 Zipformer 是域外的，
+真人语料上两者的差距要小得多（真人语料只打印，不设阈值 —— 每次抓到的样本可能不一样）。
+
+**这个门禁不进 CI**（macOS runner 要下 ~500 MB 模型、跑 10-15 分钟，计费是 ubuntu 的 10 倍）——
+换模型或调参数时**手动跑一次**，这是「先量后改」的下限。
+
+## 🧠 内存门禁：不随录音时长增长
+
+`src-tauri/tests/memory_probe.rs`：一个会话跑完 30 分钟音频，在 300 秒和 1800 秒两个点看
+**峰值内存**（`getrusage` 的 `ru_maxrss`），增长必须 < 32 MB —— 这 25 分钟的音频本身就有 96 MB，
+真把音频攒在内存里的话增长会远超上限。
+
+```bash
+VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
+  cargo test --test memory_probe -- --nocapture --test-threads=1
+```
+
+实测（2026-11-03）：整段 300s 826.6 MB → 1800s 830.9 MB（+4.4 MB）、流式 +0.0 MB。
+开头从 550 MB 跳到 830 MB 是**一次性预热**（模型 + ONNX arena + VAD 缓冲），不是随时长增长。
 
 2026-10-24 实测结论（176 秒连续语音）：**VAD、整段会话、流式会话、重采样四条路都不丢音频**
 （覆盖 175.6/176.0 秒，误差只有句边界）。**队列上限 60 秒是唯一的丢失点** —— 超了会丢**最旧**的
@@ -112,6 +160,8 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   `.ok_or("…")`）绕过字典，前端查不到就原文甩给用户 —— 也一起查。
   还要查 `i18n.js` / `select.js` 是不是被写成了 `type="module"`：module 脚本是 deferred 的，
   `app.js`（也是 module）可能先跑，那时 `window.I18N` 还不存在。
+  另外查**界面文案里的内部黑话**（线程 / 预热 / 收尾 / 引擎状态 / 解码器 / 采样率 / 推理
+  以及对应英文）：技术细节只进日志，不往界面上贴（AGENTS.md「文本分层」）。
   门禁自己有测试（`scripts/check-i18n.test.mjs`），
   改扫描规则要连它一起改 —— 正则是文本级的，漏一个写法就漏一个错误码。
 - `npm run check:contract` 查前后端命令名与载荷字段名一致：前端 `invoke('x', { field })` 的
@@ -142,7 +192,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 135 项检查
+npm run check:ui     # 140 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 

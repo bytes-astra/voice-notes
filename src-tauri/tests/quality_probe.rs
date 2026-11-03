@@ -63,30 +63,11 @@ fn legacy() -> Vec<(String, PathBuf)> {
 }
 
 /// 质量语料（本机生成/抓取，见 scripts/）。
+///
+/// 语料的列举与归一化在 `tests/common/mod.rs` 里 —— 质量门禁
+/// （`quality_gate.rs`）量的是同一批语料，两边各写一份就会漂。
 fn corpus(prefix: &str) -> Vec<(String, PathBuf)> {
-    let dir = Path::new("tests/fixtures/quality");
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("wav"))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with(prefix))
-                .unwrap_or(false)
-        })
-        .collect();
-    files.sort();
-    files
-        .into_iter()
-        .map(|p| {
-            let name = p.file_name().unwrap().to_string_lossy().to_string();
-            (name, p)
-        })
-        .collect()
+    common::corpus(prefix)
 }
 
 fn all_corpus() -> Vec<(String, PathBuf)> {
@@ -100,37 +81,15 @@ fn all_corpus() -> Vec<(String, PathBuf)> {
 }
 
 fn norm(text: &str) -> String {
-    text.chars()
-        .filter(|c| {
-            !c.is_whitespace()
-                && !c.is_ascii_punctuation()
-                && !"，。！？、；：“”‘’（）《》…—～·「」".contains(*c)
-        })
-        .collect()
+    common::norm(text)
 }
 
 fn reference_for(file: &Path) -> Option<String> {
-    let txt = file.with_extension("txt");
-    std::fs::read_to_string(txt)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    common::reference_for(file)
 }
 
 fn category(name: &str) -> &str {
-    if name.starts_with("noisy-") {
-        "noisy"
-    } else if name.starts_with("real-") {
-        "real"
-    } else if name.starts_with("tts-") {
-        "tts"
-    } else if name.starts_with("long-") {
-        "long"
-    } else if name.starts_with("num-") {
-        "num"
-    } else {
-        "legacy"
-    }
+    common::category(name)
 }
 
 /// 真模型 + 整段模式跑全语料：逐条 CER + 分类汇总。

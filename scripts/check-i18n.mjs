@@ -55,6 +55,33 @@ export function rustSourceFiles(dir) {
   return found
 }
 
+// 界面文案里的内部黑话。
+//
+// AGENTS.md「文本分层」：界面文案 = 一句中性的话 + 用户看得懂的参数；
+// 技术细节（线程、预热、收尾、引擎状态……）只进日志，不往界面上贴。
+// 这一条以前只能靠人工审 —— 现在机器查：文案里出现这些词就红。
+export const JARGON = [
+  '线程',
+  '预热',
+  '收尾',
+  '引擎状态',
+  '解码器',
+  '采样率',
+  '推理',
+  'thread',
+  'warm-up',
+  'warm up',
+  'decoder',
+  'sampling rate',
+  'inference',
+]
+
+/** 挑出文案里的黑话（只查值，不查 key —— key 里写 threadExited 没关系）。 */
+export function jargonIn(text) {
+  const lower = String(text).toLowerCase()
+  return JARGON.filter((word) => lower.includes(word.toLowerCase()))
+}
+
 /** 跑一遍体检，返回问题清单和统计（problems 为空 = 通过）。 */
 export function collectProblems(root) {
   const problems = []
@@ -275,6 +302,20 @@ export function collectProblems(root) {
       if (mine !== theirs) {
         problems.push(
           `${name} 的 ${key} 占位符和 ${base} 不一致：${base}=「${text}」 ${name}=「${other}」`
+        )
+      }
+    }
+  }
+
+  // 7. 界面文案不带内部黑话：技术细节只进日志。
+  // 这一条以前只能靠人工审 —— 机器查一遍，文案里出现黑话就红。
+  for (const [name, dict] of Object.entries(locales)) {
+    for (const [key, text] of Object.entries(dict)) {
+      const words = jargonIn(text)
+      if (words.length) {
+        problems.push(
+          `${name} 的 ${key} 文案里有内部黑话「${words.join('、')}」：「${text}」—— ` +
+            '界面文案要中性，技术细节只进日志'
         )
       }
     }

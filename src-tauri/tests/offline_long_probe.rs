@@ -87,5 +87,15 @@ fn probe_long_recording_loss() {
         if segments.len() > 12 {
             println!("    …（还有 {} 段）", segments.len() - 12);
         }
+
+        // 守卫：没被任何段落覆盖的时间，只能是**故意留的静音**（VAD 不该把静音
+        // 算成语音）加上一点边界余量。超出这个量 = 长录音真的丢了音频。
+        let intentional = gap as f32 / 16000.0 * (repeat - 1) as f32;
+        let uncovered = fed - covered;
+        let allowance = intentional + 1.0;
+        assert!(
+            uncovered <= allowance,
+            "{label}：{uncovered:.1}s 音频没变成文字（故意留的静音 {intentional:.1}s + 余量 1.0s = {allowance:.1}s）",
+        );
     }
 }

@@ -7,7 +7,7 @@
 //! （`check:rust` 带 `-D warnings`，删掉这行会让五个测试 crate 一起报错。）
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use voice_notes_lib::models::ModelPaths;
 
@@ -71,3 +71,97 @@ pub fn edit_distance(a: &[char], b: &[char]) -> usize {
     }
     prev[b.len()]
 }
+
+/// 质量语料目录（不入库，本机生成或抓取）。
+pub const QUALITY_DIR: &str = "tests/fixtures/quality";
+
+/// 语料里某个前缀的文件（`tts-` / `real-` / `noisy-` / `num-` / `long-`）。
+pub fn corpus(prefix: &str) -> Vec<(String, PathBuf)> {
+    let dir = Path::new(QUALITY_DIR);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("wav"))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(prefix))
+                .unwrap_or(false)
+        })
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            (name, p)
+        })
+        .collect()
+}
+
+/// 全部语料（按类别顺序）。
+pub fn all_corpus() -> Vec<(String, PathBuf)> {
+    corpus("real-")
+        .into_iter()
+        .chain(corpus("tts-"))
+        .chain(corpus("noisy-"))
+        .chain(corpus("long-"))
+        .chain(corpus("num-"))
+        .collect()
+}
+
+/// 归一化文本：去掉空白与标点，只留可比对的字符。
+pub fn norm(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !c.is_whitespace()
+                && !c.is_ascii_punctuation()
+                && !"，。！？、；：“”‘’（）《》…—～·「」".contains(*c)
+        })
+        .collect()
+}
+
+/// 语料的参考文本（同名 `.txt`）。没有就返回 None（只观察输出，不算 CER）。
+pub fn reference_for(file: &Path) -> Option<String> {
+    let txt = file.with_extension("txt");
+    std::fs::read_to_string(txt)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// 语料类别（按文件名前缀）。
+pub fn category(name: &str) -> &str {
+    if name.starts_with("noisy-") {
+        "noisy"
+    } else if name.starts_with("real-") {
+        "real"
+    } else if name.starts_with("tts-") {
+        "tts"
+    } else if name.starts_with("long-") {
+        "long"
+    } else if name.starts_with("num-") {
+        "num"
+    } else {
+        "legacy"
+    }
+}
+
+/// CER（字符错误率）：编辑距离 / 参考文本长度。
+pub fn cer(hypothesis: &str, reference: &str) -> (usize, usize) {
+    let hyp: Vec<char> = norm(hypothesis).chars().collect();
+    let refc: Vec<char> = norm(reference).chars().collect();
+    (edit_distance(&hyp, &refc), refc.len())
+}
+
+/// 读环境变量里的浮点数（拿不到就用默认值）。
+pub fn env_f64(name: &str, default: f64) -> f64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .unwrap_or(default)
+}
+

@@ -91,5 +91,20 @@ fn probe_resample_quality() {
             "  两者 CER（以原始识别为参考）：{:.1}%",
             cer(&direct.text, &resampled.text) * 100.0
         );
+
+        // 守卫：重采样这一圈不该改变识别结果，也不该改变音频长度。
+        // 长度不对 = 采样率算错了（音频会变快或变慢）。
+        let ratio = round_trip.len() as f32 / original.len() as f32;
+        assert!(
+            (ratio - 1.0).abs() <= 0.01,
+            "{fixture}：重采样后长度比例 {ratio:.3}（原 {} → {}），采样率算错了",
+            original.len(),
+            round_trip.len(),
+        );
+        let degraded = cer(&direct.text, &resampled.text) * 100.0;
+        assert!(
+            degraded <= 5.0,
+            "{fixture}：走了一圈重采样，识别结果变了 {degraded:.1}%（上限 5%）",
+        );
     }
 }
