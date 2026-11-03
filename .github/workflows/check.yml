@@ -34,6 +34,9 @@ jobs:
       - name: 前后端拼句规则一致
         run: npm run check:join
 
+      - name: 前后端命令名与载荷字段一致
+        run: npm run check:contract
+
   rust:
     runs-on: macos-latest
     steps:

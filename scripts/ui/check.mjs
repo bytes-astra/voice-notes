@@ -50,6 +50,9 @@ await context.addInitScript(() => {
     punct: true,
     punctReady: true,
     hotwords: [],
+    // 术语表里有几条含模型不认识的字（真后端：Status.hotwordsIgnored）。
+    // 少了它，界面检查就测不到「其中 N 个不会生效」这条提示。
+    hotwordsIgnored: 0,
     inputDevice: null,
     punctBytes: 294_372_519,
     punctTotalBytes: 294_372_519,

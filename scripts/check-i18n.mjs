@@ -25,6 +25,25 @@ export function rustErrorCodes(source) {
   return [...source.matchAll(RUST_CODE_RE)].map((match) => match[1])
 }
 
+// 裸字符串错误：返回给前端的错误字面量，但没走 code()/code_detail()。
+//
+// 形态：`Err("…")` / `.ok_or("…")` / `.ok_or_else(|| "…")` / `.map_err(|_| "…")`。
+// 这些字符串会原样到界面上（前端 fmtError() 在字典里查不到就显示原文）。
+const RAW_ERROR_RE =
+  /(?:\bErr\(|\.ok_or\(|\.ok_or_else\(\|\|\s*|\.map_err\(\|[^|]*\|\s*)(['"])((?:\\.|[^'"\\])*)\1/g
+
+/** 扫出一份 Rust 源码里没走 code()/code_detail() 的裸字符串错误。 */
+export function rawErrorLiterals(source) {
+  const found = []
+  for (const match of source.matchAll(RAW_ERROR_RE)) {
+    // code()/code_detail() 包着的已经单独查过了，不算裸字符串。
+    const before = source.slice(Math.max(0, match.index - 12), match.index)
+    if (/code(?:_detail)?\($/.test(before)) continue
+    found.push(match[2])
+  }
+  return found
+}
+
 /** 递归列出目录下的 .rs 文件（子目录里也可能有生产代码）。 */
 export function rustSourceFiles(dir) {
   const found = []
@@ -72,9 +91,13 @@ export function collectProblems(root) {
   // 字典文件必须在 index.html 里注册，且排在 i18n.js 之前 ——
   // 漏了这行，语言文件永远加载不到，切语言时部分文案不跟着变。
   const html = readFileSync(join(root, 'src/index.html'), 'utf8')
-  const scriptTags = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((match) => ({
-    src: match[1],
+  const scriptTags = [...html.matchAll(/<script([^>]+)src="([^"]+)"/g)].map((match) => ({
+    src: match[2],
     at: match.index,
+    attrs: match[1],
+    isModule: /\btype="module"/.test(match[1]),
+    isAsync: /\basync\b/.test(match[1]),
+    isDefer: /\bdefer\b/.test(match[1]),
   }))
   const registered = scriptTags
     .filter((tag) => tag.src.startsWith('locales/') && tag.src.endsWith('.js'))
@@ -91,6 +114,53 @@ export function collectProblems(root) {
         problems.push(`${tag.src} 必须排在 i18n.js 之前，否则 window.I18N_LOCALES 还读不到`)
       }
     }
+  }
+
+  // 经典脚本（i18n.js / select.js / locales/*.js）的加载方式有硬约束。
+  //
+  // 实测（改一处跑一次 check:ui）：
+  //   加 async                        → 界面直接挂（等 .chip 超时）
+  //   加 defer                        → 124/124 通过
+  //   改成 type="module"（位置不变）    → 124/124 通过
+  //   改成 type="module" 且挪到 app.js 之后 → 界面直接挂
+  //   保持经典脚本、挪到 app.js 之后     → 124/124 通过
+  //
+  // 结论：**顺序本身不是问题**（经典脚本在解析期就执行完了，app.js 是 module、
+  // deferred，所以经典脚本永远先跑）；真正会坏的是 `async`（脱离文档顺序，
+  // 可能晚于 app.js 跑，那时 window.I18N 还不存在）。
+  //
+  // `type="module"` 本身也不坏 —— 但它把「位置」变成决定性的（module 之间按文档
+  // 顺序执行），一旦挪到 app.js 之后就挂。所以顺手把它也禁掉：两条规则一起守，
+  // 「i18n.js 在 app.js 之前 + 不是 module」这个组合就不会被悄悄拆开。
+  for (const tag of scriptTags) {
+    const base = tag.src.replace(/^.*\//, '')
+    const isClassic = base === 'i18n.js' || base === 'select.js' || tag.src.startsWith('locales/')
+    if (!isClassic) continue
+    if (tag.isAsync) {
+      problems.push(
+        `${tag.src} 不能加 async —— async 脚本脱离文档顺序，可能晚于 app.js 执行，` +
+          '那时 window.I18N 还不存在，界面直接挂（实测过）'
+      )
+    }
+    if (tag.isModule) {
+      problems.push(
+        `${tag.src} 不能写成 type="module" —— 改成 module 后位置变成决定性的：` +
+          '挪到 app.js 之后界面就挂（实测过）'
+      )
+    }
+  }
+
+  // app.js 必须是 module：它是 ES module 入口（用 import）。
+  // 写成经典脚本的话 import 语句直接语法错误，整页都不跑。
+  const appTag = scriptTags.find((tag) => tag.src === 'app.js')
+  if (appTag && !appTag.isModule) {
+    problems.push('app.js 必须是 type="module" —— 它用 import 加载依赖')
+  }
+
+  // i18n.js 必须在 app.js 之前：一旦 i18n.js 被改成 module 或挪到后面，
+  // app.js（也是 module，按文档顺序执行）就会先跑。
+  if (appTag && i18nTag && i18nTag.at > appTag.at) {
+    problems.push('i18n.js 必须排在 app.js 之前 —— app.js 是 module，module 之间按文档顺序执行')
   }
 
   // HTML 里用到的 key 必须在字典里。
@@ -133,6 +203,17 @@ export function collectProblems(root) {
     for (const key of rustErrorCodes(code)) {
       if (!baseKeys.includes(key)) {
         problems.push(`${relative(root, file)} 用了不存在的错误码：${key}`)
+      }
+    }
+    // 裸字符串错误（没走 code()/code_detail()）也要查：
+    // 它绕过了字典，前端 fmtError() 查不到就直接把原文甩给用户 ——
+    // 「加载流式模型失败（文件可能损坏）」这种内部黑话就漏到界面上了。
+    for (const literal of rawErrorLiterals(code)) {
+      if (!baseKeys.includes(literal)) {
+        problems.push(
+          `${relative(root, file)} 返回了不在字典里的裸字符串错误：${literal} —— ` +
+            '后端错误必须走 code()/code_detail()，否则界面会显示这句原文'
+        )
       }
     }
   }

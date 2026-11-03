@@ -86,7 +86,7 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
 ## 🧷 单元测试
 
 ```bash
-npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → clippy(-D warnings) → cargo test --lib
+npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前后端契约 → clippy(-D warnings) → cargo test --lib
 ```
 
 - **门禁跑绿 ≠ 流式时间轴验证过**：`src-tauri/src/record/tests.rs` 里几个用例要真模型
@@ -100,10 +100,26 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → clipp
   ```
 
 - `npm run check:deps` 查前端 import 图：单向依赖不能反、也不能成环（链见 AGENTS.md）。
-- `npm run check:i18n` 查字典对齐 + 引用完整性 + **后端错误码**。后端错误码的扫描是**文本级正则**：
+  另外两条：**经典脚本（`i18n.js` / `select.js` / `locales/*.js`）不得被 import** ——
+  它们挂 window 上，被 import 会执行两遍（实测：`i18n.js` 执行 2 次，`window.I18N`
+  被换成第二个实例）。**当前代码恰好没因此坏掉**（谁生效取决于模块求值顺序），
+  但这种依赖求值顺序的隐患不值得留；**每个模块都要登记在层表里** ——
+  没登记的模块它的 import 边一条都不查（旧洞）。门禁自己有测试（`scripts/check-deps.test.mjs`）。
+- `npm run check:i18n` 查字典对齐 + 引用完整性 + **后端错误码** + **后端裸字符串错误**。
+  后端错误码的扫描是**文本级正则**：
   `code("…")` / `code_detail("…")` 都要认，`crate::` 前缀也算（`crate::code_detail("record.tooShort", …)`
-  这种写法很常见，排掉冒号就会静默漏网）。门禁自己有测试（`scripts/check-i18n.test.mjs`），
+  这种写法很常见，排掉冒号就会静默漏网）。裸字符串错误（`Err("加载失败")`、
+  `.ok_or("…")`）绕过字典，前端查不到就原文甩给用户 —— 也一起查。
+  还要查 `i18n.js` / `select.js` 是不是被写成了 `type="module"`：module 脚本是 deferred 的，
+  `app.js`（也是 module）可能先跑，那时 `window.I18N` 还不存在。
+  门禁自己有测试（`scripts/check-i18n.test.mjs`），
   改扫描规则要连它一起改 —— 正则是文本级的，漏一个写法就漏一个错误码。
+- `npm run check:contract` 查前后端命令名与载荷字段名一致：前端 `invoke('x', { field })` 的
+  命令与字段必须在后端存在（`#[tauri::command] fn x(..., field: …)`）。改一边不会让另一边变红 ——
+  字段名对不上时 Tauri **静默忽略**，值永远是默认值，界面看着正常但行为是错的。
+  还查界面检查的假后端（`scripts/ui/check.mjs`）返回的字段与真后端的 `Status` / `InputDevice`
+  一致 —— 历史上出过 mock 写 `is_default`、真后端是 `isDefault`，界面检查全绿、真机上标记不显示。
+  门禁自己有测试（`scripts/check-contract.test.mjs`）。
 - `npm run check:join` 查前后端拼句规则一致：前端 `core.js` 的 `joinText()` 与后端 `asr.rs` 的
   `join_segments()` 是同一套规则的两份实现（实时出字在前端拼、最终文本在后端拼 ——
   两边不一致时界面上的字和保存下来的字会不一样）。脚本把两边的**判定结构**归一化后比对：

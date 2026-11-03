@@ -147,3 +147,45 @@ fn 加载结果映射成引擎状态() {
     assert_eq!(failed.phase, "error");
     assert_eq!(failed.message.as_deref(), Some("model.streamLoadFailed"));
 }
+
+/// 整段和流式的 VAD 参数必须完全一致 —— 除了 max_speech_duration。
+///
+/// 两边各写一份 VAD 配置字面量时，改一边忘了另一边，断句行为就会分叉：
+/// 同一段音频在两个模式里切出不同数量的句子，而界面上看不出任何异常。
+///
+/// 这条守的是「两边走同一个 `vad_config`」这个结构事实：参数不同就一定
+/// 是有人绕过 builder 手写了配置。
+#[test]
+fn 两模式_vad_参数一致() {
+    let offline = vad_config(Some("/tmp/vad.onnx".to_string()), MAX_SEGMENT_SECONDS);
+    let streaming = vad_config(Some("/tmp/vad.onnx".to_string()), STREAM_MAX_SPEECH_SECONDS);
+
+    // 唯一允许不同的是「一句话最长」阈值（两条路径用它的地方不同）。
+    assert_ne!(
+        offline.silero_vad.max_speech_duration,
+        streaming.silero_vad.max_speech_duration,
+        "两模式的 max_speech_duration 本来就该不同（见两个常量的注释）"
+    );
+
+    // 其余全部必须一致。
+    assert_eq!(
+        offline.silero_vad.threshold, streaming.silero_vad.threshold,
+        "VAD threshold 分叉了"
+    );
+    assert_eq!(
+        offline.silero_vad.min_silence_duration, streaming.silero_vad.min_silence_duration,
+        "VAD min_silence_duration 分叉了 —— 断句行为会不一样"
+    );
+    assert_eq!(
+        offline.silero_vad.min_speech_duration, streaming.silero_vad.min_speech_duration,
+        "VAD min_speech_duration 分叉了"
+    );
+    assert_eq!(
+        offline.silero_vad.window_size, streaming.silero_vad.window_size,
+        "VAD window_size 分叉了"
+    );
+    assert_eq!(offline.sample_rate, streaming.sample_rate, "VAD sample_rate 分叉了");
+    assert_eq!(offline.num_threads, streaming.num_threads, "VAD num_threads 分叉了");
+    assert_eq!(offline.provider, streaming.provider, "VAD provider 分叉了");
+    assert_eq!(offline.debug, streaming.debug, "VAD debug 分叉了");
+}

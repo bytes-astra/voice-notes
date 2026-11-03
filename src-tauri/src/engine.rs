@@ -379,6 +379,41 @@ const MAX_SEGMENT_SECONDS: f32 = 30.0;
 /// 不一样，同一段音频在两个模式里会切出不同数量的句子。
 const VAD_MIN_SILENCE: f32 = 0.3;
 
+/// 流式门控 VAD 的「一句话最长」阈值（秒）。
+///
+/// 与整段的 MAX_SEGMENT_SECONDS 不同是**有意的**：流式拿 VAD 只做静音门控
+/// （判「现在是不是在说」），20 秒是门控的耐心上限 —— 连续说话到 20 秒时
+/// sherpa 会收紧参数逼它找静音，好让端点规则有机会收句。
+/// 整段拿 VAD 直接切句，阈值是 30 秒。
+///
+/// 除此之外，两边的 VAD 参数必须完全一致 —— 见 `vad_config`。
+const STREAM_MAX_SPEECH_SECONDS: f32 = 20.0;
+
+/// 两种模式共用的 VAD 配置。
+///
+/// **整段和流式必须用同一个函数建 VAD 配置**：两份字面量各改各的，
+/// 断句行为就会在两个模式里分叉（同一段音频切出不同数量的句子）。
+///
+/// 唯一允许不同的是 `max_speech_duration` —— 两条路径用它的地方不同，
+/// 见 MAX_SEGMENT_SECONDS 与 STREAM_MAX_SPEECH_SECONDS 的注释。
+fn vad_config(model: Option<String>, max_speech_duration: f32) -> VadModelConfig {
+    VadModelConfig {
+        silero_vad: SileroVadModelConfig {
+            model,
+            threshold: 0.5,
+            min_silence_duration: VAD_MIN_SILENCE,
+            min_speech_duration: 0.25,
+            window_size: VAD_WINDOW as i32,
+            max_speech_duration,
+        },
+        sample_rate: SAMPLE_RATE,
+        num_threads: 1,
+        provider: Some("cpu".into()),
+        debug: false,
+        ..Default::default()
+    }
+}
+
 pub struct Engine {
     pub language: String,
     pub itn: bool,
@@ -403,21 +438,10 @@ impl Engine {
         let recognizer = OfflineRecognizer::create(&config)
             .ok_or_else(|| code_detail("model.loadFailed", &paths.model))?;
 
-        let vad = paths.vad.as_ref().map(|_| VadModelConfig {
-            silero_vad: SileroVadModelConfig {
-                model: paths.vad.clone(),
-                threshold: 0.5,
-                min_silence_duration: VAD_MIN_SILENCE,
-                min_speech_duration: 0.25,
-                window_size: VAD_WINDOW as i32,
-                max_speech_duration: MAX_SEGMENT_SECONDS,
-            },
-            sample_rate: SAMPLE_RATE,
-            num_threads: 1,
-            provider: Some("cpu".into()),
-            debug: false,
-            ..Default::default()
-        });
+        let vad = paths
+            .vad
+            .as_ref()
+            .map(|_| vad_config(paths.vad.clone(), MAX_SEGMENT_SECONDS));
 
         Ok(Self {
             language: language.to_string(),
@@ -663,21 +687,10 @@ impl StreamingEngine {
 
         let recognizer = OnlineRecognizer::create(&config)
             .ok_or_else(|| code_detail("model.streamLoadFailed", &paths.encoder))?;
-        let vad = paths.vad.as_ref().map(|path| VadModelConfig {
-            silero_vad: SileroVadModelConfig {
-                model: Some(path.clone()),
-                threshold: 0.5,
-                min_silence_duration: VAD_MIN_SILENCE,
-                min_speech_duration: 0.25,
-                window_size: VAD_WINDOW as i32,
-                max_speech_duration: 20.0,
-            },
-            sample_rate: SAMPLE_RATE,
-            num_threads: 1,
-            provider: Some("cpu".into()),
-            debug: false,
-            ..Default::default()
-        });
+        let vad = paths
+            .vad
+            .as_ref()
+            .map(|path| vad_config(Some(path.clone()), STREAM_MAX_SPEECH_SECONDS));
         Ok(Self { recognizer, vad })
     }
 

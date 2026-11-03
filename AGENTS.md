@@ -28,10 +28,11 @@
 
 2. 门禁与检查（逐条说明）：
 
-   - `npm run check`：门禁 —— i18n → 前端依赖图 → 拼句规则 → clippy（`-D warnings`）→ `cargo test --lib`。
-   - `npm run check:i18n`：各语言 key 对齐 + HTML/JS 引用的 key 存在（改文案后必跑）。
-   - `npm run check:deps`：前端 import 图 —— 单向依赖不能反、也不能成环（改前端依赖后必跑）。
+   - `npm run check`：门禁 —— i18n → 前端依赖图 → 拼句规则 → 前后端契约 → clippy（`-D warnings`）→ `cargo test --lib`。
+   - `npm run check:i18n`：各语言 key 对齐 + HTML/JS 引用的 key 存在 + 后端错误码必须在字典里 + 后端不许返回裸字符串错误 + `i18n.js`/`select.js` 必须是经典脚本（改文案后必跑）。
+   - `npm run check:deps`：前端 import 图 —— 单向依赖不能反、也不能成环、经典脚本不得被 import、每个模块都要登记在层表里（改前端依赖后必跑）。
    - `npm run check:join`：前后端拼句规则一致 —— 把两边的判定结构归一化后比对（CJK 码位区间带端点开闭、缺口占位符的完整形状、三条拼接规则的表达式）。改了 `src/core.js` 的 `joinText()` 或 `src-tauri/src/asr.rs` 的 `join_segments()` 后必跑。
+   - `npm run check:contract`：前后端命令名与载荷字段一致 —— 前端 `invoke()` 的命令与字段必须在后端存在（改了命令名、参数名或 `Status` 字段后必跑）。
    - `npm run check:ui`：界面检查（真实 WebKit + 假 `__TAURI__`），前端改动后跑。
    - `npm run shots`：重出 README 截图，改了界面后跑。
 
@@ -66,7 +67,11 @@
 
 - JS 用 `t('key', {变量})`，HTML 用 `data-i18n` / `-title` / `-placeholder` / `-aria`，启动时 `I18N.apply()` 填充。
 - **加语言 = 加一个字典文件 + 在 `index.html` 里加一行 `<script src="locales/xx.js"></script>`**，且必须排在 `i18n.js` 之前（`i18n.js` 启动时读 `window.I18N_LOCALES`，晚加载就没了）。
-- **`i18n.js` / `select.js` 保持经典脚本**（挂 `window.I18N` / `window.UISelect`），在 `index.html` 里必须排在 `<script type="module" src="app.js">` 之前。用 `import` 引入它们会被重新执行一遍、覆盖 `window.I18N`，表现为「切语言后部分文案不跟着变」。
+- **`i18n.js` / `select.js` 保持经典脚本**（挂 `window.I18N` / `window.UISelect`），在 `index.html` 里排在 `<script type="module" src="app.js">` 之前。三条硬约束（`npm run check:i18n` 守着，每条都实测过）：
+  - **不能加 `async`** —— async 脚本脱离文档顺序，可能晚于 `app.js` 跑，那时 `window.I18N` 还不存在 → 界面直接挂（等 `.chip` 超时）。
+  - **不能写成 `type="module"`** —— 改成 module 后「位置」变成决定性的：挪到 `app.js` 之后界面就挂（实测过）。
+  - **不能被 `import`** —— 被 import 会执行两遍（实测 `i18n.js` 执行 2 次、`window.I18N` 被换成第二个实例）。当前代码恰好没因此坏掉（哪个实例生效取决于模块求值顺序），但这种依赖求值顺序的隐患不值得留。
+  - 顺带说明：**经典脚本排在 `app.js` 之前本身不会坏**（经典脚本在解析期执行，`app.js` 是 module、deferred，所以经典脚本永远先跑）—— 实测把 `i18n.js` 挪到 `app.js` 之后仍然 124/124 通过。位置这条约束是为了跟上面「不能是 module」配套：一旦它变成 module，位置就决定成败了。
 - **字典文案在渲染时取**：存 key，渲染时 `t(key)`。模块顶层取 `t()` 会在切语言时不更新（语言芯片、阶段提示、视图标题都踩过）。视图标题是 `VIEW_KEYS` + `viewTitle()`。
 - **随状态变的标签**（麦克风「开始录音 / 结束录音」）用单独的渲染函数（如 `renderMicLabel()`），并在 `applyLocale()` 里重调一次 —— `I18N.apply()` 只认 HTML 上的静态 `data-i18n-aria`。
 - **同一个控件的文案不按模式变**：麦克风下方的空闲提示两种模式统一写「点击麦克风开始录音」，模式差异由「整段 / 流式」芯片的副标题说明。
@@ -165,7 +170,7 @@
 - **VAD 会切掉开头第一个字**：音频开头直接是语音（没前导静音，比如 TTS、剪过的文件）时 sherpa VAD 的内部 padding 只有 ≈314 ms（「今天下午」→「天下午」）。`asr.rs` 的 `should_pre_roll` 只在「第一段 + 起点 < 0.6 s + 段前 RMS > 段 RMS × 0.3」时把起点回扩 0.4 s。回扩保持**带门控** —— 无门控回扩会把开头噪声当语音（真人样本多出「您好」）。
 - **ITN 自带标点**（ITN 开关在 `engine.rs` 的 `Engine::new`）：开 ITN 的 SenseVoice 自己就输出标点（关 ITN 才是纯文本）。标点模型只用于流式，叠在整段上会变成「。。」。
 - **短句合并**（`asr.rs` 的 `SegmentMerger`）：VAD 切出来的句子短于 3 秒（`MERGE_MIN_SECONDS`）不立刻定稿，等下一句来了**在音频层**合成一句再识别 —— 短句单独送 SenseVoice 时上下文太少，容易把词认错。两段之间隔超过 2 秒（`MERGE_MAX_GAP_SECONDS`）就不合并，否则「说完停顿十秒再开口」会被连成一句。**录音和文件转写两条生产路径都走 `OfflineSession`**，所以行为一致；`Engine::transcribe`（只给测试/探针用）也接了同一个合并器，否则两边结果对不上。
-- **VAD 参数整段和流式必须一致**（`engine.rs` 的 `VAD_MIN_SILENCE`）：整段 `Engine::new` 和流式 `StreamingEngine::new` 用同一个常量（min_silence 0.3 秒），否则同一段音频在两个模式里切出的句子数量不同。
+- **VAD 参数整段和流式必须一致**：两边都走 `engine.rs` 的同一个 `vad_config()` 构造（`threshold` / `min_silence_duration` / `min_speech_duration` / `window_size` 等共有参数只写一份，改一边忘了另一边 → 同一段音频在两个模式里切出不同数量的句子）。**唯一允许不同的是 `max_speech_duration`**：整段 30 秒（用来切句）、流式 20 秒（门控的耐心上限）—— 两条路径用它的地方不同，**不要统一**。`engine/tests.rs` 的 `两模式_vad_参数一致` 守着这条。
 
 ### 流式模式
 
