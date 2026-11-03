@@ -46,6 +46,11 @@ const TOTAL_SECONDS: f32 = 1800.0;
 /// 进程的峰值内存（字节）。
 ///
 /// macOS 上 `ru_maxrss` 的单位是字节，Linux 上是 KB —— 换算成字节再比。
+///
+/// **只有 Unix 有 `getrusage`**（libc 在 Windows 上没有这个函数）——
+/// 所以整段按 `cfg` 分开：Windows 上这个探针只编译桩函数，
+/// CI 的 `rust-windows` job（每个 PR 都 `cargo check --all-targets`）才编得过。
+#[cfg(unix)]
 fn peak_rss() -> i64 {
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
@@ -55,6 +60,12 @@ fn peak_rss() -> i64 {
     } else {
         usage.ru_maxrss as i64 * 1024
     }
+}
+
+/// 非 Unix 平台：没有峰值内存可读，探针在这里直接跳过。
+#[cfg(not(unix))]
+fn peak_rss() -> i64 {
+    0
 }
 
 /// 造一段指定长度的语音（把 zh.wav 首尾静音去掉后重复）。
@@ -76,6 +87,10 @@ fn speech_of(seconds: f32) -> Vec<f32> {
 /// （整段有 VAD 缓冲 + 句子合并，流式是常量内存的解码器）。
 #[test]
 fn probe_memory_does_not_grow_with_duration() {
+    if !cfg!(unix) {
+        eprintln!("跳过：峰值内存的读法（getrusage）只有 Unix 有");
+        return;
+    }
     let offline_dir = std::env::var("VOICE_NOTES_MODEL_DIR").ok();
     let streaming_dir = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR").ok();
     if offline_dir.is_none() && streaming_dir.is_none() {
