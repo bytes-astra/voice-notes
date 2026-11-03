@@ -133,4 +133,5 @@ npm run shots        # 重出 README 9 张截图
 ## 📚 相关文档
 
 - 工程约定、模块边界、参数不变式、踩过的坑：[../AGENTS.md](../AGENTS.md)
+- 复审的固定作业面（每轮从「⚠️ / ❌」条目开始，别另起清单）：[REVIEW-CHECKLIST.md](REVIEW-CHECKLIST.md)
 - 质量调研与优化方案：[research/](research/)
