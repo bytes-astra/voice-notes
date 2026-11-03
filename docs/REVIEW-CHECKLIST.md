@@ -173,7 +173,7 @@
 | RC-I1 | 识别质量不得退化（整段 CER、实时性 RTF） | `src-tauri/tests/quality_gate.rs`：量**生产路径**（`OfflineSession` / `StreamingSession`），整段 CER ≤ 25%、流式 CER ≤ 55%、RTF ≤ 1.0（环境变量可覆盖）；基线整段 16.39% / 流式 43.28% | ✅ 2026-11-03（**本地跑**：要真模型 + TTS 语料；不进 CI，见 RC-I2 的取舍） |
 | RC-I2 | 流式路径必须有 CI 覆盖 | —— | ❌ **保持未审（决定不做）**：CI 要下 ~500 MB 模型 + 生成语料，单次 10-15 分钟，macOS runner 计费 10×；2026-11-03 明确取舍为「不进 CI，只留本地命令」—— 代价是 CI 对「识别变差」依然零反应 |
 | RC-I3 | 长录音不得丢音频（VAD / 整段会话 / 流式会话 / 重采样四条路） | 四个长录音探针现在**带断言**：`vad_long_probe`（吞掉的 ≤ 故意静音 + 每句 0.2 s + 0.5 s）、`offline_long_probe`（未覆盖 ≤ 故意静音 + 1 s）、`streaming_long_probe`（未覆盖 ≤ 1 s）、`resample_probe`（长度比例 ±1%、识别差异 ≤ 5%） | ✅ 2026-11-03 |
-| RC-I4 | 内存不随录音时长增长（消费式缓冲） | `src-tauri/tests/memory_probe.rs`：一个会话跑 30 分钟，300 s 与 1800 s 两点的峰值内存（`getrusage`）增长 < 32 MB（这 25 分钟音频本身就有 96 MB）；实测整段 +4.4 MB、流式 +0.0 MB。另有 `audio/tests.rs` take_new_consumes_samples / pending_limit_follows_sample_rate | ✅ 2026-11-03 |
+| RC-I4 | 内存不随录音时长增长（消费式缓冲） | `src-tauri/tests/memory_probe.rs`：一个会话跑 30 分钟，300 s 与 1800 s 两点的常驻内存（`ps -o rss=`）增长 < 32 MB（这 25 分钟音频本身就有 96 MB）；实测整段 −11.2 MB、流式 +0.0 MB。另有 `audio/tests.rs` take_new_consumes_samples / pending_limit_follows_sample_rate | ✅ 2026-11-03（**不加 libc**：改 `Cargo.lock` 会让 CI 重下 sherpa-onnx 预编译库而失败） |
 
 ---
 

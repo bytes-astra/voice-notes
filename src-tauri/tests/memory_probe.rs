@@ -4,21 +4,28 @@
 //! （`audio::SampleQueue` 的 `take_new()` 取走即释放），识别会话边跑边扔。
 //! 但这条只有「队列语义」的单测守着（`audio/tests.rs`），**端到端的内存曲线没人量过**。
 //!
-//! 量的方式：**一个会话**跑完一整段录音（生产形态），在两个时间点看**峰值内存**
-//! （`getrusage` 的 `ru_maxrss`，单调不减）：
+//! 量的方式：**一个会话**跑完一整段录音（生产形态），在两个时间点看进程的
+//! **常驻内存**（`ps -o rss=`）：
 //!
 //!   - 300 秒：已经过了预热（模型、ONNX arena、VAD 缓冲都到顶了），此时是平台期
 //!   - 1800 秒（30 分钟）：平台期之后又跑了 25 分钟
 //!
-//! 判据：这两点之间的峰值增长必须远小于这 25 分钟音频本身的体积
+//! 判据：这两点之间的增长必须远小于这 25 分钟音频本身的体积
 //! （1500 秒 × 16000 × 4 字节 ≈ 96 MB）。要是实现把音频攒在内存里，
-//! 这 96 MB 会直接长在峰值上 —— 门禁就是抓这个。
+//! 这 96 MB 会直接长在常驻内存上 —— 门禁就是抓这个。
 //!
-//! 实测（2026-11-03，本机 Apple Silicon）：300s 829.6 MB → 1800s 829.6 MB，
-//! **一点没涨**。开头从 550 MB 跳到 830 MB 是一次性的预热（模型 + arena + 缓冲），
-//! 不是随时长增长。
+//! **为什么不加 libc**（`getrusage` 的 `ru_maxrss`）：加 dev-dependency 会改
+//! `Cargo.lock`，rust-cache 的 key 跟着变 → CI 里的 sherpa-onnx 预编译库要重下，
+//! 而那个下载会失败（链接时报「找不到 sherpa-onnx-c-api」）。`ps` 是现成的。
 //!
-//! 运行（要真模型；**必须单线程**，两个路径的峰值会互相干扰）：
+//! **只有 Unix 有 `ps`** —— Windows 上这个探针不存在（CI 的 Windows job 只做
+//! `cargo check --all-targets`，编得过就行）。
+//!
+//! 实测（2026-11-03，本机 Apple Silicon）：300s 829.6 MB → 1800s 813.2 MB，
+//! **一点没涨**（略降是分配器把内存还给系统）。开头从 550 MB 跳到 830 MB 是
+//! 一次性的预热（模型 + ONNX arena + VAD 缓冲），不是随时长增长。
+//!
+//! 运行（要真模型；**必须单线程**，两个路径的读数会互相干扰）：
 //! ```bash
 //! VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
 //!   cargo test --test memory_probe -- --nocapture --test-threads=1
@@ -32,7 +39,7 @@ use voice_notes_lib::engine::{Engine, StreamingEngine};
 mod common;
 use common::trim_silence;
 
-/// 峰值内存允许增长的上限（字节）。
+/// 常驻内存允许增长的上限（字节）。
 ///
 /// 300s → 1800s 之间是 1500 秒音频 ≈ 96 MB。真把音频攒在内存里的话，
 /// 增长会远超这个数；正常增长只有识别出来的文本（几 KB）。
@@ -43,28 +50,21 @@ const CHECKPOINT_SECONDS: f32 = 300.0;
 /// 检查点 B：整段跑完。
 const TOTAL_SECONDS: f32 = 1800.0;
 
-/// 进程的峰值内存（字节）。
-///
-/// macOS 上 `ru_maxrss` 的单位是字节，Linux 上是 KB —— 换算成字节再比。
-///
-/// **只有 Unix 有 `getrusage`**（libc 在 Windows 上没有这个函数）——
-/// 所以整段按 `cfg` 分开：Windows 上这个探针只编译桩函数，
-/// CI 的 `rust-windows` job（每个 PR 都 `cargo check --all-targets`）才编得过。
+/// 进程的常驻内存（字节）。
 #[cfg(unix)]
-fn peak_rss() -> i64 {
-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
-    assert_eq!(rc, 0, "getrusage 失败");
-    if cfg!(target_os = "macos") {
-        usage.ru_maxrss as i64
-    } else {
-        usage.ru_maxrss as i64 * 1024
-    }
+fn current_rss() -> i64 {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .expect("跑 ps 失败");
+    // ps 给的是 KB。
+    let kb: i64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0);
+    kb * 1024
 }
 
-/// 非 Unix 平台：没有峰值内存可读，探针在这里直接跳过。
+/// 非 Unix 平台：读不到常驻内存，探针在这里直接跳过。
 #[cfg(not(unix))]
-fn peak_rss() -> i64 {
+fn current_rss() -> i64 {
     0
 }
 
@@ -81,16 +81,13 @@ fn speech_of(seconds: f32) -> Vec<f32> {
     out
 }
 
-/// 峰值内存不能跟着音频时长线性涨。
+/// 常驻内存不能跟着音频时长线性涨。
 ///
 /// 整段与流式各量一次：两条生产路径的「常驻」结构不一样
 /// （整段有 VAD 缓冲 + 句子合并，流式是常量内存的解码器）。
 #[test]
+#[cfg(unix)]
 fn probe_memory_does_not_grow_with_duration() {
-    if !cfg!(unix) {
-        eprintln!("跳过：峰值内存的读法（getrusage）只有 Unix 有");
-        return;
-    }
     let offline_dir = std::env::var("VOICE_NOTES_MODEL_DIR").ok();
     let streaming_dir = std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR").ok();
     if offline_dir.is_none() && streaming_dir.is_none() {
@@ -109,24 +106,24 @@ fn probe_memory_does_not_grow_with_duration() {
             session.push(chunk);
             let seconds = (index * 512) as f32 / 16000.0;
             if checkpoint == 0 && seconds >= CHECKPOINT_SECONDS {
-                checkpoint = peak_rss();
+                checkpoint = current_rss();
                 println!(
-                    "[整段] {seconds:.0}s → 峰值 {:.1} MB",
+                    "[整段] {seconds:.0}s → 常驻 {:.1} MB",
                     checkpoint as f64 / 1048576.0
                 );
             }
         }
         session.finish();
-        let grown = peak_rss() - checkpoint;
+        let grown = current_rss() - checkpoint;
         println!(
-            "[整段] {TOTAL_SECONDS:.0}s → 峰值 {:.1} MB（比 {CHECKPOINT_SECONDS:.0}s 时长了 {:.1} MB，上限 {} MB）",
-            peak_rss() as f64 / 1048576.0,
+            "[整段] {TOTAL_SECONDS:.0}s → 常驻 {:.1} MB（比 {CHECKPOINT_SECONDS:.0}s 时长了 {:.1} MB，上限 {} MB）",
+            current_rss() as f64 / 1048576.0,
             grown as f64 / 1048576.0,
             ALLOWANCE / 1048576,
         );
         assert!(
             grown < ALLOWANCE,
-            "整段：从 {CHECKPOINT_SECONDS:.0}s 到 {TOTAL_SECONDS:.0}s，峰值内存长了 {:.1} MB（上限 {} MB）—— 内存随时长增长了",
+            "整段：从 {CHECKPOINT_SECONDS:.0}s 到 {TOTAL_SECONDS:.0}s，常驻内存长了 {:.1} MB（上限 {} MB）—— 内存随时长增长了",
             grown as f64 / 1048576.0,
             ALLOWANCE / 1048576,
         );
@@ -145,24 +142,24 @@ fn probe_memory_does_not_grow_with_duration() {
             session.push(chunk);
             let seconds = (index * 3200) as f32 / 16000.0;
             if checkpoint == 0 && seconds >= CHECKPOINT_SECONDS {
-                checkpoint = peak_rss();
+                checkpoint = current_rss();
                 println!(
-                    "[流式] {seconds:.0}s → 峰值 {:.1} MB",
+                    "[流式] {seconds:.0}s → 常驻 {:.1} MB",
                     checkpoint as f64 / 1048576.0
                 );
             }
         }
         session.finish();
-        let grown = peak_rss() - checkpoint;
+        let grown = current_rss() - checkpoint;
         println!(
-            "[流式] {TOTAL_SECONDS:.0}s → 峰值 {:.1} MB（比 {CHECKPOINT_SECONDS:.0}s 时长了 {:.1} MB，上限 {} MB）",
-            peak_rss() as f64 / 1048576.0,
+            "[流式] {TOTAL_SECONDS:.0}s → 常驻 {:.1} MB（比 {CHECKPOINT_SECONDS:.0}s 时长了 {:.1} MB，上限 {} MB）",
+            current_rss() as f64 / 1048576.0,
             grown as f64 / 1048576.0,
             ALLOWANCE / 1048576,
         );
         assert!(
             grown < ALLOWANCE,
-            "流式：从 {CHECKPOINT_SECONDS:.0}s 到 {TOTAL_SECONDS:.0}s，峰值内存长了 {:.1} MB（上限 {} MB）—— 内存随时长增长了",
+            "流式：从 {CHECKPOINT_SECONDS:.0}s 到 {TOTAL_SECONDS:.0}s，常驻内存长了 {:.1} MB（上限 {} MB）—— 内存随时长增长了",
             grown as f64 / 1048576.0,
             ALLOWANCE / 1048576,
         );

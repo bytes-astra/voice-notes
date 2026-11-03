@@ -37,7 +37,7 @@
    - `npm run check:ui`：界面检查（真实 WebKit + 假 `__TAURI__`），前端改动后跑。
    - `npm run shots`：重出 README 截图，改了界面后跑。
 
-3. Rust 侧测试：`cargo test --lib`（纯逻辑），以及 `src-tauri/tests/` 下的 `asr_smoke`（整段真模型，需 `VOICE_NOTES_MODEL_DIR`）、`streaming_smoke`（流式，需 `VOICE_NOTES_STREAMING_MODEL_DIR`）、`decode_smoke`（后端解码全链路）、`quality_probe`（质量探针，只打印不断言）、`quality_gate`（质量门禁，**带阈值断言**：整段/流式的 CER 与 RTF）、`memory_probe`（内存门禁：峰值内存不随录音时长增长）。长录音四探针（`vad_long_probe` / `offline_long_probe` / `streaming_long_probe` / `resample_probe`）**打印 + 断言**：超阈值就是回归。
+3. Rust 侧测试：`cargo test --lib`（纯逻辑），以及 `src-tauri/tests/` 下的 `asr_smoke`（整段真模型，需 `VOICE_NOTES_MODEL_DIR`）、`streaming_smoke`（流式，需 `VOICE_NOTES_STREAMING_MODEL_DIR`）、`decode_smoke`（后端解码全链路）、`quality_probe`（质量探针，只打印不断言）、`quality_gate`（质量门禁，**带阈值断言**：整段/流式的 CER 与 RTF）、`memory_probe`（内存门禁：常驻内存不随录音时长增长）。长录音四探针（`vad_long_probe` / `offline_long_probe` / `streaming_long_probe` / `resample_probe`）**打印 + 断言**：超阈值就是回归。
 
 4. **复审清单**：[`docs/REVIEW-CHECKLIST.md`](docs/REVIEW-CHECKLIST.md) —— 复审的**固定作业面**。每轮复审从清单里挑「⚠️ 守卫薄弱 / ❌ 未审」的条目审，**不要另起一份 Focus 清单**：清单轮换会让每轮都「发现新问题」，其实是一批老缺陷被不同角度翻出来（背景见该文档）。发现清单里没有的不变量，追加到该文档末尾并给它一个稳定 ID。
 

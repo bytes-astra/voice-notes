@@ -90,8 +90,8 @@ RTF 0.028 / 0.036。阈值留了余量 —— 语料是本机合成的，不同 
 
 ## 🧠 内存门禁：不随录音时长增长
 
-`src-tauri/tests/memory_probe.rs`：一个会话跑完 30 分钟音频，在 300 秒和 1800 秒两个点看
-**峰值内存**（`getrusage` 的 `ru_maxrss`），增长必须 < 32 MB —— 这 25 分钟的音频本身就有 96 MB，
+`src-tauri/tests/memory_probe.rs`：一个会话跑完 30 分钟音频，在 300 秒和 1800 秒两个点看进程的
+**常驻内存**（`ps -o rss=`），增长必须 < 32 MB —— 这 25 分钟的音频本身就有 96 MB，
 真把音频攒在内存里的话增长会远超上限。
 
 ```bash
@@ -99,8 +99,13 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
   cargo test --test memory_probe -- --nocapture --test-threads=1
 ```
 
-实测（2026-11-03）：整段 300s 826.6 MB → 1800s 830.9 MB（+4.4 MB）、流式 +0.0 MB。
-开头从 550 MB 跳到 830 MB 是**一次性预热**（模型 + ONNX arena + VAD 缓冲），不是随时长增长。
+实测（2026-11-03）：整段 300s 826.7 MB → 1800s 815.5 MB（**降了** 11 MB，分配器把内存还给系统）、
+流式 698.4 MB → 698.4 MB。开头从 550 MB 跳到 830 MB 是**一次性预热**（模型 + ONNX arena + VAD 缓冲），
+不是随时长增长。
+
+> **别为了这个探针加 libc**：`getrusage` 的 `ru_maxrss` 更准，但加 dev-dependency 会改
+> `Cargo.lock` → rust-cache 的 key 跟着变 → CI 里的 sherpa-onnx 预编译库要重下，
+> 而那个下载会失败（链接时报「找不到 `sherpa-onnx-c-api`」）。`ps` 是现成的。
 
 2026-10-24 实测结论（176 秒连续语音）：**VAD、整段会话、流式会话、重采样四条路都不丢音频**
 （覆盖 175.6/176.0 秒，误差只有句边界）。**队列上限 60 秒是唯一的丢失点** —— 超了会丢**最旧**的
