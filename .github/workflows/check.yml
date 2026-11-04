@@ -40,6 +40,9 @@ jobs:
       - name: 打包与原生层配置（签名 / 麦克风权限 / macOS cfg）
         run: npm run check:bundle
 
+      - name: async 路径上的阻塞锁（引擎槽）
+        run: npm run check:async
+
   rust:
     runs-on: macos-latest
     steps:

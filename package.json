@@ -12,10 +12,11 @@
     "check:join": "node scripts/check-join.mjs && node --test scripts/check-join.test.mjs",
     "check:contract": "node scripts/check-contract.mjs && node --test scripts/check-contract.test.mjs",
     "check:bundle": "node scripts/check-bundle.mjs && node --test scripts/check-bundle.test.mjs",
+    "check:async": "node scripts/check-async.mjs && node --test scripts/check-async.test.mjs",
     "check:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --lib",
     "check:ui": "node scripts/ui/check.mjs",
     "shots": "node scripts/ui/shots.mjs",
-    "check": "npm run check:i18n && npm run check:deps && npm run check:join && npm run check:contract && npm run check:bundle && npm run check:rust"
+    "check": "npm run check:i18n && npm run check:deps && npm run check:join && npm run check:contract && npm run check:bundle && npm run check:async && npm run check:rust"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
