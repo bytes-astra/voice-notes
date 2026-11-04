@@ -34,6 +34,7 @@
    - `npm run check:join`：前后端拼句规则一致 —— 把两边的判定结构归一化后比对（CJK 码位区间带端点开闭、缺口占位符的完整形状、三条拼接规则的表达式）。改了 `src/core.js` 的 `joinText()` 或 `src-tauri/src/asr.rs` 的 `join_segments()` 后必跑。
    - `npm run check:contract`：前后端命令名与载荷字段一致 —— 前端 `invoke()` 的命令与字段必须在后端存在（改了命令名、参数名或 `Status` 字段后必跑）。
    - `npm run check:bundle`：打包与原生层配置 —— macOS 必须 ad-hoc 签名、必须挂麦克风 entitlement、Info.plist 必须有用途说明、macOS 专属代码必须整体带 `#[cfg(target_os = "macos")]`（改了 `tauri.conf.json` / `Entitlements.plist` / `Info.plist` / `menu.rs` 后必跑）。
+   - `npm run check:async`：async 路径上的阻塞锁 —— 引擎槽的阻塞式 `.lock()` 只许出现在 `spawn_blocking` 闭包里（沿调用图从 async 函数出发；`try_lock()` 不算）。改了 `engine.rs` 的引擎加载或新增 async 命令后必跑。
    - `npm run check:ui`：界面检查（真实 WebKit + 假 `__TAURI__`），前端改动后跑。
    - `npm run shots`：重出 README 截图，改了界面后跑。
 
@@ -135,13 +136,15 @@
 - **lib.rs 只放命令层**：新逻辑先找对应模块放 —— `record.rs`（录音编排）、`engine.rs`（引擎与状态）、`asr.rs`（识别会话）、`audio.rs`（采集与重采样）、`decode.rs`（解码）、`models.rs`（模型下载）、`output.rs`（落盘）、`settings.rs`（设置）、`log.rs`（日志）、`menu.rs`（macOS 菜单）。命令本身保持薄：一个命令别同时干两件事（录音按模式拆成 `start_streaming_recording` / `start_offline_recording` 两个独立命令）。
 - **`record.rs` 不认识 Tauri**：结果通过 `emit` 回调交出去，所以它能被单测直接调用。`AppHandle` 不进 `record.rs` —— 实在要发事件就在 lib.rs 那层包一下。
 - **名字别撞**：`record.rs` 是「录音怎么跑」，`asr.rs` 里的 `OfflineSession` / `StreamingSession` 是「识别会话」，两回事 —— 所以前者不叫 session.rs。两种录音共用 `RecordingRun { stop, discard, rx }`，停止统一走 `finish_recording`：麦克风故障也要先等 ASR 收尾，不能当取消丢文本。
+- **两个槽一起登记**（`record.rs` 的 `register_slots`）：采集器槽（`recorder`）与会话槽（`stream` / `offline_session`）必须**一起**写 —— 只写采集器不写会话，识别线程就永远收不到 stop（线程泄漏、麦克风不关、语言/ITN 永久锁死）。函数先拿齐两把锁再写，任一把锁被 poison 时两个槽都不变；锁序固定 采集器 → 会话。登记失败时，已经起起来的识别线程要靠 `stop` / `discard` 标志让它退出。
 - **单元测试不进源文件**：测试放同目录子文件夹，`src/asr.rs` 里写 `#[cfg(test)] mod tests;`，实现放 `src/asr/tests.rs`（一个模块有多个测试组就是 `src/asr/gap_tests.rs` 这样另起文件）。crate root 例外 —— `lib.rs` 的子模块落在 `src/` 根下（`src/command_tests.rs`）。**拆出去仍是单元测试**：`use super::*` 照样能摸到父模块的私有项，`cargo test --lib` 照样跑得到，门禁不用改。别为了「看起来整齐」搬到 `src-tauri/tests/` —— 那是集成测试，只碰得到 `pub` 项，而且 `cargo test --lib` 不再覆盖它。
 
 ### 命令与运行时
 
 - **命令参数名用 camelCase**，如 `audioBase64`、`fileName`。
 - **推理是同步阻塞的**，一律放进 `tauri::async_runtime::spawn_blocking`，别阻塞 async 执行器。
-- **引擎按 `(language, itn)` 缓存**，语言或 ITN 变化时重建。想「切语言不重载」得走 C API 的 `setConfig`，Rust 绑定没暴露。录音中语言和 ITN 前后端都锁定；自定义模型目录变更由 `set_model_dir` 清缓存。
+- **引擎按「身份」缓存**：整段的身份是 `(模型目录, language, itn)`，流式是 `hotwords`（`engine.rs` 的 `OfflineEngineKey` / `StreamingEngineKey`）。任何一项变了就重建 —— 原来只看 `(language, itn)`，换模型目录会被静默吞掉。想「切语言不重载」得走 C API 的 `setConfig`，Rust 绑定没暴露。录音中语言和 ITN 前后端都锁定；自定义模型目录变更由 `set_model_dir` 清缓存。
+- **装引擎要锁内读设置**（`engine.rs` 的 `install_engine`）：拿引擎槽的锁 → **在锁内**读设置 → 比身份 → 复用或重建。设置是在锁外被改的（`set_model_dir` / `set_hotwords`），读设置和装引擎之间只要有缝，旧快照就会把新设置顶掉。`load_engine` 直接返回 `Arc<Engine>`，不要再加一个「二次取锁」的助手（async 路径上阻塞等引擎锁会把整个执行器卡住）。
 - **文件解码在后端**：`decode::decode_to_16k()` 逐块解码，内存恒定。symphonia 锁 **0.5**（0.6 要 Rust 1.85，会破本项目声明的 1.78）。
 
 ### 事件契约

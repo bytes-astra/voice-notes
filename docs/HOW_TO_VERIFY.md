@@ -139,7 +139,7 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
 ## 🧷 单元测试
 
 ```bash
-npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前后端契约 → 打包配置 → clippy(-D warnings) → cargo test --lib
+npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前后端契约 → 打包配置 → async 阻塞锁 → clippy(-D warnings) → cargo test --lib
 ```
 
 - **门禁跑绿 ≠ 流式时间轴验证过**：`src-tauri/src/record/tests.rs` 里几个用例要真模型
@@ -191,6 +191,15 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   真机 / 产物级的那一半由 CI 验：`build.yml` 的 macOS job 在 `npm run build` 之后用
   `codesign -dv`（看 `Signature=adhoc`）和 `codesign -d --entitlements -`（看
   `com.apple.security.device.audio-input`）校验产物。
+- `npm run check:async` 查 **async 路径上的阻塞锁**（`scripts/check-async.mjs`）：引擎槽
+  （`engine` / `streaming_engine` / `punct_engine`）的**阻塞式** `.lock()` 只能出现在
+  `spawn_blocking` 闭包里。引擎加载要好几秒（239 MB / 161 MB / 294 MB），那把锁会被占住；
+  async 命令在执行器线程上死等它，整个执行器就卡住 —— 表现是「点了没反应，过几秒才动」。
+  `try_lock()` 不算（拿不到就往下走加载路径）。采集器槽 / 会话槽**故意不查**：
+  那些临界区只有几行，不存在长等待。
+  门禁沿**调用图**从 async 函数出发，所以「async 命令调一个同步取锁助手」（原来的
+  `shared_engine`）也会被抓住，而只在 `spawn_blocking` 里调的 `install_engine` 不会。
+  门禁自己有测试（`scripts/check-async.test.mjs`，含「把旧的 `shared_engine` 加回真源码会被抓住」）。
 
 ## 🖥️ 界面检查
 
