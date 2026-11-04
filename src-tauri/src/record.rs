@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::asr;
@@ -31,6 +32,45 @@ pub struct RecordingRun {
 pub struct FinishedRecording {
     pub transcript: Transcript,
     pub capture_error: Option<String>,
+}
+
+/// 两个槽登记失败的原因。
+#[derive(Debug)]
+pub enum SlotError {
+    /// 采集器槽的锁被 poison
+    RecorderLocked,
+    /// 会话槽的锁被 poison
+    SessionLocked,
+    /// 已经有录音在跑
+    AlreadyRecording,
+}
+
+/// 采集器和会话两个槽**一起**登记：要么都写成功，要么都不写。
+///
+/// 这两个槽必须同时成立：只写采集器不写会话，识别线程就永远收不到 stop
+/// —— 线程泄漏（永久占着 239 MB / 161 MB 引擎）、麦克风不关、
+/// 语言/ITN 永久锁死，下一次 start 直接撞「已经在录音」。
+///
+/// 先拿齐两把锁再写：任一把锁被 poison 时，两个槽都还没被改动，
+/// 不会留下「有采集器没会话」的中间态。
+///
+/// 锁序固定为「采集器 → 会话」（`stop_recording` 也按这个顺序拿）。
+pub fn register_slots<R, S>(
+    recorder_slot: &Mutex<Option<R>>,
+    session_slot: &Mutex<Option<S>>,
+    recorder: R,
+    session: S,
+) -> Result<(), SlotError> {
+    let mut recorder_guard = recorder_slot.lock().map_err(|_| SlotError::RecorderLocked)?;
+    let mut session_guard = session_slot.lock().map_err(|_| SlotError::SessionLocked)?;
+    // 两个槽都要空：会话槽还占着说明上一轮没清干净，
+    // 顶掉它，上一轮的识别线程就永远收不到 stop。
+    if recorder_guard.is_some() || session_guard.is_some() {
+        return Err(SlotError::AlreadyRecording);
+    }
+    *recorder_guard = Some(recorder);
+    *session_guard = Some(session);
+    Ok(())
 }
 
 /// 停止时等待识别线程收尾失败：调用方据此换成对应模式的超时文案。

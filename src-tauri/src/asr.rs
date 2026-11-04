@@ -558,7 +558,7 @@ impl OfflineSession {
 
     /// 这次识别用的语言（结果里要带上）。
     pub fn language(&self) -> String {
-        self.engine.language.clone()
+        self.engine.key.language.clone()
     }
 
     /// 这一段的转写结果。

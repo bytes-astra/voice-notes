@@ -5,6 +5,7 @@ use crate::engine::Engine;
 use crate::models;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 /// 太短的转写要报出秒数 —— 界面显示「至少说 0.2 秒」，
 /// 不是把字典里的 {seconds} 占位符原样甩出去。
@@ -635,5 +636,96 @@ fn offline_stop_keeps_the_tail() {
         "停止录音后队列里还剩 {} 个采样没被识别 —— 这段音频被静默丢掉了",
         queue.pending()
     );
+}
+
+// ──────────────────── 两个槽一起登记 ────────────────────
+
+/// 故意 poison 一个锁：拿它当毒源，模拟「锁被 panic 污染」。
+fn poison(slot: &Mutex<Option<u8>>) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = slot.lock().unwrap();
+        panic!("故意 poison 这个锁");
+    }));
+}
+
+/// 看一个被 poison 的槽里装了什么（`lock()` 在 poison 后会返回 Err）。
+fn peek(slot: &Mutex<Option<u8>>) -> Option<u8> {
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 会话槽坏了，采集器槽也必须没被写过。
+///
+/// 登记分两步写（先采集器、后会话）时，第二步失败就会留下「有采集器、
+/// 没会话」的中间态：识别线程永远收不到 stop（线程泄漏、永久占着 239 MB
+/// 引擎）、麦克风不关、语言/ITN 永久锁死。
+#[test]
+fn 会话槽坏了采集器槽也不能被写() {
+    let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
+    let session_slot: Mutex<Option<u8>> = Mutex::new(None);
+    poison(&session_slot);
+
+    let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
+    assert!(result.is_err(), "会话槽被 poison 时登记必须失败");
+    assert_eq!(
+        peek(&recorder_slot),
+        None,
+        "登记失败时采集器槽必须没被写过 —— 有采集器没会话 = 识别线程永远收不到 stop"
+    );
+    assert_eq!(peek(&session_slot), None, "会话槽必须没被写过");
+}
+
+/// 采集器槽坏了，会话槽也不能被写过。
+#[test]
+fn 采集器槽坏了会话槽也不能被写() {
+    let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
+    let session_slot: Mutex<Option<u8>> = Mutex::new(None);
+    poison(&recorder_slot);
+
+    let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
+    assert!(result.is_err(), "采集器槽被 poison 时登记必须失败");
+    assert_eq!(peek(&recorder_slot), None, "采集器槽必须没被写过");
+    assert_eq!(
+        peek(&session_slot),
+        None,
+        "登记失败时会话槽必须没被写过 —— 有会话没采集器 = 停不掉"
+    );
+}
+
+/// 登记成功：两个槽都装上了。
+#[test]
+fn 登记成功两个槽都有() {
+    let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
+    let session_slot: Mutex<Option<u8>> = Mutex::new(None);
+    register_slots(&recorder_slot, &session_slot, 1u8, 2u8).expect("登记");
+    assert_eq!(peek(&recorder_slot), Some(1));
+    assert_eq!(peek(&session_slot), Some(2));
+}
+
+/// 已经在录音时登记要报占用，且不能动任何一个槽。
+#[test]
+fn 已经在录音时登记要报占用() {
+    let recorder_slot: Mutex<Option<u8>> = Mutex::new(Some(9));
+    let session_slot: Mutex<Option<u8>> = Mutex::new(None);
+    let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
+    assert!(
+        matches!(result, Err(SlotError::AlreadyRecording)),
+        "已经在录音时要报占用"
+    );
+    assert_eq!(peek(&recorder_slot), Some(9), "已有的采集器不能被顶掉");
+    assert_eq!(peek(&session_slot), None, "占用时不该写会话槽");
+}
+
+/// 会话槽还占着（上一轮没清干净）时也不能登记。
+#[test]
+fn 会话槽占着时登记要报占用() {
+    let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
+    let session_slot: Mutex<Option<u8>> = Mutex::new(Some(7));
+    let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
+    assert!(
+        matches!(result, Err(SlotError::AlreadyRecording)),
+        "会话槽占着时要报占用 —— 顶掉它，上一轮的识别线程就永远收不到 stop"
+    );
+    assert_eq!(peek(&recorder_slot), None, "占用时不该写采集器槽");
+    assert_eq!(peek(&session_slot), Some(7), "已有的会话不能被顶掉");
 }
 

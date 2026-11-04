@@ -30,7 +30,9 @@ use crate::record::RecordingRun;
 use crate::settings::{self, Settings};
 use crate::{code, code_detail};
 pub struct AppState {
-    pub settings: Mutex<Settings>,
+    /// 设置的锁外面包一层 `Arc`：加载引擎的阻塞线程要在**持有引擎锁**的前提下
+    /// 读设置（见 `install_engine`），得能把它带进那个线程。
+    pub settings: Arc<Mutex<Settings>>,
     pub recorder: Mutex<Option<Recorder>>,
     pub recording_starting: AtomicBool,
     pub next_recording_id: std::sync::atomic::AtomicU64,
@@ -78,7 +80,7 @@ impl Drop for DownloadFlagGuard {
 impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
-            settings: Mutex::new(settings),
+            settings: Arc::new(Mutex::new(settings)),
             recorder: Mutex::new(None),
             recording_starting: AtomicBool::new(false),
             next_recording_id: std::sync::atomic::AtomicU64::new(1),
@@ -236,13 +238,66 @@ fn engine_state_for<T>(outcome: &Result<T, String>) -> EngineState {
     }
 }
 
-pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<(), String> {
-    let settings = state.settings();
-    let paths = models::resolve(app, settings.model_dir.as_deref())
-        .ok_or_else(|| code("model.needOffline"))?;
-    let engine = state.engine.clone();
-    let language = settings.language.clone();
-    let itn = settings.itn;
+/// 整段引擎的身份：它是照着哪些设置建的。
+///
+/// 引擎照着**当时的**设置构建。设置变了（模型目录 / 语言 / ITN），
+/// 旧引擎就过期了 —— 继续用它 = 把新设置静默吞掉。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfflineEngineKey {
+    /// 实际用的模型目录（解析后的真实路径，不是设置里那个原始字符串）
+    pub model_dir: String,
+    pub language: String,
+    pub itn: bool,
+}
+
+/// 流式引擎的身份：照着哪份热词表建的。
+///
+/// 词表是建解码器时定死的（greedy vs modified_beam_search），
+/// 换了词表不重建 = 新术语表不生效。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamingEngineKey {
+    pub hotwords: Vec<String>,
+}
+
+/// 装引擎的骨架：拿槽锁 → 锁内读设置 → 算这次要装的身份 → 比身份 → 复用或重建。
+///
+/// 「锁内读设置」是关键：设置是在**锁外**被改的（`set_model_dir` /
+/// `set_hotwords`），读设置和装引擎之间只要有缝，旧快照就会把新设置顶掉；
+/// 而原来的陈旧判定只看语言和 ITN，还不自愈 —— 新设置被静默吞掉。
+///
+/// 身份必须覆盖**所有**影响识别的设置：整段是模型目录 / 语言 / ITN，
+/// 流式是热词。只比语言和 ITN 的话，换了模型目录照样复用旧引擎。
+pub fn install_engine<T, K, P>(
+    engine_slot: &Mutex<Option<Arc<T>>>,
+    settings: &Mutex<Settings>,
+    key_of: impl Fn(&T) -> K,
+    prepare: impl Fn(&Settings) -> Result<(K, P), String>,
+    build: impl FnOnce(P) -> Result<T, String>,
+    lock_error: &str,
+) -> Result<Arc<T>, String>
+where
+    K: PartialEq,
+{
+    let mut guard = engine_slot.lock().map_err(|_| code(lock_error))?;
+    // ★ 锁内读设置：设置在锁外被改，这里读到的就是改完之后的那份。
+    let current = settings.lock().map(|s| s.clone()).unwrap_or_default();
+    let (wanted, prepared) = prepare(&current)?;
+    if let Some(existing) = guard.as_ref() {
+        if key_of(existing) == wanted {
+            return Ok(existing.clone());
+        }
+    }
+    let built = Arc::new(build(prepared)?);
+    *guard = Some(built.clone());
+    Ok(built)
+}
+
+/// 加载（必要时重建）整段引擎，返回可用的引擎句柄。
+///
+/// 返回句柄而不是让调用方再去取一次：二次取锁既会在 async 执行器上
+/// 阻塞（模型加载时那把锁能被占住好几秒），也会出现「load 与取之间
+/// 引擎被换掉」的缝。
+pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<Arc<Engine>, String> {
     let handle = app.clone();
     let _ = handle.emit(
         "engine:state",
@@ -251,22 +306,36 @@ pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<(), String
             message: None,
         },
     );
-    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let mut guard = engine.lock().map_err(|_| code("error.engineState"))?;
-        let stale = guard
-            .as_ref()
-            .map(|e| e.language != language || e.itn != itn)
-            .unwrap_or(true);
-        if stale {
-            let loaded = Engine::new(&paths, &language, itn)?;
-            log::info(format!(
-                "离线引擎加载完成：语言 {language}，ITN {}，模型 {}",
-                on_off(itn),
-                paths.dir
-            ));
-            *guard = Some(Arc::new(loaded));
-        }
-        Ok(())
+    let slot = state.engine.clone();
+    let settings = state.settings.clone();
+    let build_app = handle.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<Arc<Engine>, String> {
+        install_engine(
+            &slot,
+            &settings,
+            |engine: &Engine| engine.key.clone(),
+            |s: &Settings| {
+                let paths = models::resolve(&build_app, s.model_dir.as_deref())
+                    .ok_or_else(|| code("model.needOffline"))?;
+                let key = OfflineEngineKey {
+                    model_dir: paths.dir.clone(),
+                    language: s.language.clone(),
+                    itn: s.itn,
+                };
+                Ok((key.clone(), (paths, key)))
+            },
+            |(paths, key): (ModelPaths, OfflineEngineKey)| {
+                let loaded = Engine::new(&paths, &key.language, key.itn)?;
+                log::info(format!(
+                    "离线引擎加载完成：语言 {}，ITN {}，模型 {}",
+                    key.language,
+                    on_off(key.itn),
+                    paths.dir
+                ));
+                Ok(loaded)
+            },
+            "error.engineState",
+        )
     })
     .await
     .map_err(|e| code_detail("model.loadFailed", e))?;
@@ -286,15 +355,39 @@ pub fn cached_engine<T>(slot: &Mutex<Option<Arc<T>>>) -> Option<Arc<T>> {
     slot.try_lock().ok().and_then(|guard| guard.clone())
 }
 
+/// 快路径：缓存里的流式引擎身份与当前设置对得上就直接拿。
+///
+/// 对不上（刚改过热词）就不能拿 —— 拿了就等于把新设置静默吞掉。
+///
+/// 用 `try_lock` 而不是 `lock`：锁被占着说明**别的线程正在加载模型**
+/// （239 MB / 161 MB / 294 MB，要好几秒）。在 async 执行器线程上死等
+/// 会把整个执行器卡住 —— 命令的响应被拖到模型加载完，用户看着像界面冻住。
+/// 拿不到就往下走加载路径：它在阻塞线程上等，而且拿到锁后会重新检查
+/// 一遍，不会重复加载同一份模型。
+pub fn cached_streaming_engine(
+    engine_slot: &Mutex<Option<Arc<StreamingEngine>>>,
+    settings: &Mutex<Settings>,
+) -> Option<Arc<StreamingEngine>> {
+    let guard = engine_slot.try_lock().ok()?;
+    let engine = guard.as_ref()?.clone();
+    let current = settings
+        .lock()
+        .map(|s| s.hotwords.clone())
+        .unwrap_or_default();
+    if engine.key.hotwords == current {
+        Some(engine)
+    } else {
+        None
+    }
+}
+
 pub async fn ensure_streaming_engine(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<Arc<StreamingEngine>, String> {
-    if let Some(engine) = cached_engine(&state.streaming_engine) {
+    if let Some(engine) = cached_streaming_engine(&state.streaming_engine, &state.settings) {
         return Ok(engine);
     }
-    let paths = models::resolve_streaming(app).ok_or_else(|| code("model.needStreaming"))?;
-    let hotwords = state.settings().hotwords;
     let _ = app.emit(
         "streaming:state",
         EngineState {
@@ -302,22 +395,35 @@ pub async fn ensure_streaming_engine(
             message: None,
         },
     );
-    // 检查和加载放在同一把锁里：预热和点录音并发时只会加载一份 161 MB 模型。
     let slot = state.streaming_engine.clone();
+    let settings = state.settings.clone();
+    let build_app = app.clone();
+    // 检查和加载放在同一把锁里：预热和点录音并发时只会加载一份 161 MB 模型。
     let outcome =
         match tauri::async_runtime::spawn_blocking(move || -> Result<Arc<StreamingEngine>, String> {
-            let mut guard = slot.lock().map_err(|_| code("error.streamEngineState"))?;
-            if let Some(engine) = guard.as_ref() {
-                return Ok(engine.clone());
-            }
-            let engine = Arc::new(StreamingEngine::new(&paths, &hotwords)?);
-            log::info(format!(
-                "流式引擎加载完成：热词 {} 条，模型 {}",
-                hotwords.len(),
-                paths.dir
-            ));
-            *guard = Some(engine.clone());
-            Ok(engine)
+            install_engine(
+                &slot,
+                &settings,
+                |engine: &StreamingEngine| engine.key.clone(),
+                |s: &Settings| {
+                    let key = StreamingEngineKey {
+                        hotwords: s.hotwords.clone(),
+                    };
+                    Ok((key.clone(), key))
+                },
+                |key: StreamingEngineKey| {
+                    let paths = models::resolve_streaming(&build_app)
+                        .ok_or_else(|| code("model.needStreaming"))?;
+                    let engine = StreamingEngine::new(&paths, &key.hotwords)?;
+                    log::info(format!(
+                        "流式引擎加载完成：热词 {} 条，模型 {}",
+                        key.hotwords.len(),
+                        paths.dir
+                    ));
+                    Ok(engine)
+                },
+                "error.streamEngineState",
+            )
         })
         .await
         {
@@ -340,10 +446,10 @@ pub async fn ensure_punctuation(
     }
     let model = models::resolve_punctuation(app).ok_or_else(|| code("model.punctNotReady"))?;
     // 同上：检查和加载在同一把锁里，避免并发加载两份 294 MB 标点模型。
-    let slot = state.punct_engine.clone();
+    let engine_slot = state.punct_engine.clone();
     let engine =
         tauri::async_runtime::spawn_blocking(move || -> Result<Arc<PunctuationEngine>, String> {
-            let mut guard = slot.lock().map_err(|_| code("error.punctEngineState"))?;
+            let mut guard = engine_slot.lock().map_err(|_| code("error.punctEngineState"))?;
             if let Some(engine) = guard.as_ref() {
                 return Ok(engine.clone());
             }
@@ -355,14 +461,6 @@ pub async fn ensure_punctuation(
         .await
         .map_err(|e| code_detail("model.punctLoadFailed", e))??;
     Ok(engine)
-}
-
-pub fn shared_engine(state: &AppState) -> Result<Arc<Engine>, String> {
-    let guard = state.engine.lock().map_err(|_| code("error.engineState"))?;
-    guard
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| code("error.engineNotReady"))
 }
 
 // ──────────────────── 引擎构造 ────────────────────
@@ -415,8 +513,8 @@ fn vad_config(model: Option<String>, max_speech_duration: f32) -> VadModelConfig
 }
 
 pub struct Engine {
-    pub language: String,
-    pub itn: bool,
+    /// 这个引擎是照着哪份设置建的（判断能不能复用）。
+    pub key: OfflineEngineKey,
     recognizer: OfflineRecognizer,
     vad: Option<VadModelConfig>,
 }
@@ -444,8 +542,11 @@ impl Engine {
             .map(|_| vad_config(paths.vad.clone(), MAX_SEGMENT_SECONDS));
 
         Ok(Self {
-            language: language.to_string(),
-            itn,
+            key: OfflineEngineKey {
+                model_dir: paths.dir.clone(),
+                language: language.to_string(),
+                itn,
+            },
             recognizer,
             vad,
         })
@@ -572,7 +673,7 @@ impl Engine {
             &segments,
             duration,
             started.elapsed().as_millis() as u64,
-            &self.language,
+            &self.key.language,
         )
     }
 }
@@ -691,7 +792,13 @@ impl StreamingEngine {
             .vad
             .as_ref()
             .map(|path| vad_config(Some(path.clone()), STREAM_MAX_SPEECH_SECONDS));
-        Ok(Self { recognizer, vad })
+        Ok(Self {
+            key: StreamingEngineKey {
+                hotwords: hotwords.to_vec(),
+            },
+            recognizer,
+            vad,
+        })
     }
 
     /// 静音门控用的 VAD 配置（模型缺失时为 None，退化为全量喂入）。
@@ -735,6 +842,8 @@ impl PunctuationEngine {
 
 /// 流式模型句柄。
 pub struct StreamingEngine {
+    /// 这个引擎是照着哪份热词表建的（判断能不能复用）。
+    pub key: StreamingEngineKey,
     pub recognizer: OnlineRecognizer,
     vad: Option<VadModelConfig>,
 }

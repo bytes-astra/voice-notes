@@ -21,8 +21,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use asr::{OfflineEvent, StreamEvent, Transcript};
 use audio::AudioErrorPayload;
 use engine::{
-    ensure_punctuation, ensure_streaming_engine, load_engine, output_dir, persist, shared_engine,
-    status_of, AppState, Status,
+    ensure_punctuation, ensure_streaming_engine, load_engine, output_dir, persist, status_of,
+    AppState, Status,
 };
 use engine::{DownloadFlagGuard, RecordingStartGuard};
 use log::on_off;
@@ -33,7 +33,7 @@ use menu::install_menu;
 use output::{sanitize_name, write_text_file, Saved};
 use record::{
     ensure_transcript_usable, finish_recording, log_transcript, run_offline, run_streaming_core,
-    FinishedRecording, RecordingRun, STOP_FAILED,
+    FinishedRecording, RecordingRun, SlotError, STOP_FAILED,
 };
 
 /// 错误码：后端只返回字典 key（前端 i18n 翻译），不返回展示文案。
@@ -496,6 +496,24 @@ async fn download_streaming_model(
     Ok(status_of(&app, &state))
 }
 
+/// 两个槽登记失败的错误码。
+///
+/// 流式的会话槽是 `stream`（`error.streamState`），整段的是 `offline_session`
+/// （`error.recordState`）—— 两条路径的错误码本来就不一样。
+fn slot_error_code(error: SlotError, streaming: bool) -> String {
+    match error {
+        SlotError::RecorderLocked => code("error.recordState"),
+        SlotError::SessionLocked => {
+            if streaming {
+                code("error.streamState")
+            } else {
+                code("error.recordState")
+            }
+        }
+        SlotError::AlreadyRecording => code("record.alreadyRecording"),
+    }
+}
+
 #[tauri::command]
 async fn start_streaming_recording(
     app: AppHandle,
@@ -570,23 +588,18 @@ async fn start_streaming_recording(
             let _ = tx.send(transcript);
         })
         .map_err(|e| code_detail("error.streamThreadFailed", e))?;
-    // 检查和写入放在同一把锁里：两次 start 并发时不能各起一个会话，
-    // 否则先注册的那个识别线程永远收不到 stop（线程泄漏）。
-    {
-        let mut slot = state
-            .recorder
-            .lock()
-            .map_err(|_| code("error.recordState"))?;
-        if slot.is_some() {
-            drop(slot);
-            stop.store(true, Ordering::SeqCst);
-            discard.store(true, Ordering::SeqCst);
-            drop(recorder);
-            return Err(code("record.alreadyRecording"));
-        }
-        *slot = Some(recorder);
-        let session = RecordingRun { stop, discard, rx };
-        *state.stream.lock().map_err(|_| code("error.streamState"))? = Some(session);
+    // 采集器和会话一起登记：只写采集器不写会话，识别线程就永远收不到 stop
+    // （线程泄漏、麦克风不关、语言/ITN 永久锁死）。
+    let run = RecordingRun {
+        stop: stop.clone(),
+        discard: discard.clone(),
+        rx,
+    };
+    if let Err(error) = record::register_slots(&state.recorder, &state.stream, recorder, run) {
+        // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
+        stop.store(true, Ordering::SeqCst);
+        discard.store(true, Ordering::SeqCst);
+        return Err(slot_error_code(error, true));
     }
     starting.release();
     Ok(session_id)
@@ -618,8 +631,7 @@ async fn start_offline_recording(
         .clone()
         .unwrap_or_else(|| "默认".into());
     // 整段模式：边录边按句识别（音频消费掉即释放，内存不随录音时长增长）
-    load_engine(&app, &state).await?;
-    let engine = shared_engine(&state)?;
+    let engine = load_engine(&app, &state).await?;
     let vad = engine
         .vad_config()
         .ok_or_else(|| code("model.vadMissing"))?;
@@ -675,24 +687,18 @@ async fn start_offline_recording(
             let _ = tx.send(transcript);
         })
         .map_err(|e| code_detail("error.offlineThreadFailed", e))?;
-    // 同上：检查和写入在同一把锁里，并发 start 只能成功一个。
+    // 同上：采集器和会话一起登记，并发 start 只能成功一个。
+    let run = RecordingRun {
+        stop: stop.clone(),
+        discard: discard.clone(),
+        rx,
+    };
+    if let Err(error) = record::register_slots(&state.recorder, &state.offline_session, recorder, run)
     {
-        let mut slot = state
-            .recorder
-            .lock()
-            .map_err(|_| code("error.recordState"))?;
-        if slot.is_some() {
-            drop(slot);
-            stop.store(true, Ordering::SeqCst);
-            discard.store(true, Ordering::SeqCst);
-            drop(recorder);
-            return Err(code("record.alreadyRecording"));
-        }
-        *slot = Some(recorder);
-        *state
-            .offline_session
-            .lock()
-            .map_err(|_| code("error.recordState"))? = Some(RecordingRun { stop, discard, rx });
+        // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
+        stop.store(true, Ordering::SeqCst);
+        discard.store(true, Ordering::SeqCst);
+        return Err(slot_error_code(error, false));
     }
     starting.release();
     Ok(session_id)
@@ -783,8 +789,7 @@ async fn transcribe_file(
     session_id: u64,
 ) -> Result<Transcript, String> {
     log::info(format!("文件转写开始：{path}"));
-    load_engine(&app, &state).await?;
-    let engine = shared_engine(&state)?;
+    let engine = load_engine(&app, &state).await?;
     let thread_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<Transcript, String> {
         let vad = engine
@@ -840,8 +845,6 @@ async fn transcribe_file(
     .await
     .map_err(|e| code_detail(STOP_FAILED, e))?
 }
-
-/// 从缓存里拿一个可共享的整段引擎（录音线程和文件转写共用同一份模型）。
 
 #[tauri::command]
 fn cancel_recording(state: State<AppState>) -> Result<(), String> {

@@ -5,6 +5,160 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
+// ──────────────────── 引擎身份：复用还是重建 ────────────────────
+
+/// 假的整段引擎：只带身份，够验「复用还是重建」。
+struct FakeEngine {
+    key: OfflineEngineKey,
+}
+
+/// 假的流式引擎。
+struct FakeStreaming {
+    key: StreamingEngineKey,
+}
+
+/// 假整段引擎的身份：照着设置里的模型目录 / 语言 / ITN 算。
+fn fake_offline_key(settings: &Settings) -> OfflineEngineKey {
+    OfflineEngineKey {
+        model_dir: settings.model_dir.clone().unwrap_or_default(),
+        language: settings.language.clone(),
+        itn: settings.itn,
+    }
+}
+
+/// 装一个假整段引擎（走生产同一条 `install_engine` 路径）。
+fn 装假整段(
+    slot: &Mutex<Option<Arc<FakeEngine>>>,
+    settings: &Mutex<Settings>,
+) -> Result<Arc<FakeEngine>, String> {
+    install_engine(
+        slot,
+        settings,
+        |engine: &FakeEngine| engine.key.clone(),
+        |s: &Settings| {
+            let key = fake_offline_key(s);
+            Ok((key.clone(), key))
+        },
+        |key: OfflineEngineKey| Ok(FakeEngine { key }),
+        "error.engineState",
+    )
+}
+
+/// 装一个假流式引擎（走生产同一条 `install_engine` 路径）。
+fn 装假流式(
+    slot: &Mutex<Option<Arc<FakeStreaming>>>,
+    settings: &Mutex<Settings>,
+) -> Result<Arc<FakeStreaming>, String> {
+    install_engine(
+        slot,
+        settings,
+        |engine: &FakeStreaming| engine.key.clone(),
+        |s: &Settings| {
+            let key = StreamingEngineKey {
+                hotwords: s.hotwords.clone(),
+            };
+            Ok((key.clone(), key))
+        },
+        |key: StreamingEngineKey| Ok(FakeStreaming { key }),
+        "error.streamEngineState",
+    )
+}
+
+/// 设置没变就该复用同一个引擎 —— 不该每次都重新加载 239 MB 模型。
+#[test]
+fn 设置没变就复用引擎() {
+    let slot: Mutex<Option<Arc<FakeEngine>>> = Mutex::new(None);
+    let settings = Mutex::new(Settings::default());
+    let first = 装假整段(&slot, &settings).expect("装引擎");
+    let second = 装假整段(&slot, &settings).expect("装引擎");
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "设置没变就该复用同一个引擎，不该重新加载模型"
+    );
+}
+
+/// 换了模型目录，旧引擎必须作废。
+///
+/// 陈旧判定原来只看语言和 ITN：换了模型目录照样复用旧引擎，
+/// 新模型目录被静默吞掉 —— 界面上看不出任何异常。
+#[test]
+fn 换了模型目录就重建引擎() {
+    let slot: Mutex<Option<Arc<FakeEngine>>> = Mutex::new(None);
+    let settings = Mutex::new(Settings::default());
+    let first = 装假整段(&slot, &settings).expect("装引擎");
+    settings.lock().unwrap().model_dir = Some("/models/other".into());
+    let second = 装假整段(&slot, &settings).expect("装引擎");
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "换了模型目录必须重建引擎 —— 否则新模型目录被静默吞掉"
+    );
+}
+
+/// 语言变了必须重建（这条原来就有，守住别改回去）。
+#[test]
+fn 换了语言就重建引擎() {
+    let slot: Mutex<Option<Arc<FakeEngine>>> = Mutex::new(None);
+    let settings = Mutex::new(Settings::default());
+    let first = 装假整段(&slot, &settings).expect("装引擎");
+    settings.lock().unwrap().language = "en".into();
+    let second = 装假整段(&slot, &settings).expect("装引擎");
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "换了语言必须重建引擎 —— 否则新语言被静默吞掉"
+    );
+}
+
+/// 热词变了必须重建流式引擎 —— 词表是建解码器时定死的。
+#[test]
+fn 换了热词就重建流式引擎() {
+    let slot: Mutex<Option<Arc<FakeStreaming>>> = Mutex::new(None);
+    let settings = Mutex::new(Settings::default());
+    let first = 装假流式(&slot, &settings).expect("装引擎");
+    settings.lock().unwrap().hotwords = vec!["番茄".to_string()];
+    let second = 装假流式(&slot, &settings).expect("装引擎");
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "换了热词必须重建流式引擎 —— 否则新术语表被静默吞掉"
+    );
+}
+
+/// 装引擎必须用**当前**设置，不能用进锁前读到的旧快照。
+///
+/// 设置是在锁外被改的（set_model_dir / set_hotwords）：读设置和装引擎之间
+/// 只要有缝，旧快照就会把新设置顶掉，而且陈旧判定不自愈 —— 新设置被吞掉。
+#[test]
+fn 等锁期间设置改了也要用新设置() {
+    let slot = Arc::new(Mutex::new(None::<Arc<FakeEngine>>));
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let old_language = settings.lock().unwrap().language.clone();
+
+    // 线程 A 持住引擎槽锁：后面的装引擎进不来。
+    let held = slot.clone();
+    let (tx, rx) = mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _guard = held.lock().unwrap();
+        tx.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+    });
+    rx.recv().expect("线程 A 持锁");
+
+    // 线程 B 去装引擎（阻塞在槽锁上）。
+    let slot2 = slot.clone();
+    let settings2 = settings.clone();
+    let loader = std::thread::spawn(move || 装假整段(&slot2, &settings2));
+
+    std::thread::sleep(Duration::from_millis(100)); // 让 B 真的堵在锁上
+    settings.lock().unwrap().language = "en".into(); // 等锁期间改设置
+    holder.join().expect("线程 A 放锁");
+
+    let built = loader.join().expect("线程 B 结束").expect("装引擎");
+    assert_ne!(
+        built.key.language, old_language,
+        "装引擎必须用当前设置，不能用进锁前读到的旧快照"
+    );
+    assert_eq!(built.key.language, "en", "装引擎必须用当前设置");
+}
+
 /// 快路径在锁被占着时不能干等。
 ///
 /// 锁被占着 = 别的线程正在加载模型（239 MB / 161 MB / 294 MB，要好几秒）。

@@ -156,7 +156,6 @@ window.I18N_LOCALES['en'] = {
   'error.settingsState': 'Internal error: could not read the settings',
   'error.createDirFailed': 'Could not create the folder',
   'error.engineState': 'Internal error: the recognition service is in a bad state',
-  'error.engineNotReady': 'Internal error: the recognition service is not ready',
   'error.recordState': 'Internal error: the recorder is in a bad state',
   'error.streamState': 'Internal error: streaming recognition is in a bad state',
   'error.streamEngineState': 'Internal error: the streaming recognition service is in a bad state',

@@ -153,7 +153,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'error.settingsState': '内部错误：无法读取设置',
   'error.createDirFailed': '无法创建目录',
   'error.engineState': '内部错误：识别服务异常',
-  'error.engineNotReady': '内部错误：识别服务未就绪',
   'error.recordState': '内部错误：录音状态异常',
   'error.streamState': '内部错误：流式识别状态异常',
   'error.streamEngineState': '内部错误：流式识别服务异常',
