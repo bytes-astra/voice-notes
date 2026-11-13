@@ -108,11 +108,14 @@ CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2
 npm install          # 只装 devDependencies（@tauri-apps/cli + playwright）
 npm run dev          # 开发模式
 npm run build        # 打包（macOS: .app/.dmg；Windows: .msi/.exe）
-npm run check        # 门禁：i18n → 前端依赖图 → 拼句规则 → clippy → 单元测试
-npm run check:i18n   # 只改文案时跑这个就够
-npm run check:deps   # 只改前端 import 图时跑这个
-npm run check:join   # 前后端拼句规则一致性
-npm run check:ui     # 界面检查：真实 WebKit + 假 __TAURI__
+npm run check          # 门禁：i18n → 依赖图 → 拼句规则 → 契约 → 打包配置 → 阻塞锁 → clippy + 单元测试
+npm run check:i18n     # 只改文案时跑这个就够
+npm run check:deps     # 只改前端 import 图时跑这个
+npm run check:join     # 前后端拼句规则一致性
+npm run check:contract # 前后端命令名与载荷字段一致
+npm run check:bundle   # 打包与原生层配置
+npm run check:async    # async 路径上的阻塞锁
+npm run check:ui       # 界面检查：真实 WebKit + 假 __TAURI__
 ```
 
 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 下载对应平台的**预编译静态库**（onnxruntime 等），之后走缓存。
@@ -162,10 +165,6 @@ npm run check:ui     # 界面检查：真实 WebKit + 假 __TAURI__
 **如果你想改质量验证流程，或想知道当前的实测准确率：**
 
 请阅读 [docs/HOW_TO_VERIFY.md](docs/HOW_TO_VERIFY.md) —— 质量探针、语料生成、界面检查与当前基线。
-
-**如果你想了解质量调研的背景：**
-
-见 [docs/research/](docs/research/)，先看 [质量路线图](docs/research/2026-10-23-asr-quality-roadmap.md)。
 
 **如果你是 AI AGENT：**
 
