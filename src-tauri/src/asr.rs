@@ -805,13 +805,14 @@ impl Timeline {
     /// 识别器吃到音频：当前这句从现在起有内容了。
     ///
     /// `audio_start` 是这段音频在真实录音时间轴上的起点。句子可以横跨多个
-    /// 分片，句子的音频起点取**最早**的那一段（分片按时间顺序喂入）。
+    /// 分片，句子的音频起点取**第一个**分片的 —— 分片按时间顺序喂入，第一个
+    /// 就是这句最早的音频。后来的分片不改写它：结尾补的静音不是真实音频，
+    /// 它的「起点」是补出来的，算不准。
     fn note_audio(&mut self, audio_start: usize) {
         self.segment_has_audio = true;
-        self.sentence_audio_start = Some(match self.sentence_audio_start {
-            Some(start) => start.min(audio_start),
-            None => audio_start,
-        });
+        if self.sentence_audio_start.is_none() {
+            self.sentence_audio_start = Some(audio_start);
+        }
     }
 
     /// 本批余量已经属于下一句（endpoint 清掉了句子状态）。
