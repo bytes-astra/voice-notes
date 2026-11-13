@@ -398,10 +398,14 @@ where
 /// 这里只拿 VAD 做门控，不消费识别句段 —— 判完必须 clear()，
 /// 否则已切出的音频会一直压在队列里，越攒越多。
 fn vad_is_speech(detector: &sherpa_onnx::VoiceActivityDetector, samples: &[f32]) -> bool {
+    let mut detected = false;
     for window in samples.chunks(512) {
         detector.accept_waveform(window);
+        // 逐窗取「或」：一批里有一窗是语音就整批算语音。只看批末状态的话，
+        // 一次喂进整批（或识别落后时的补批）会被批尾的静音判成非语音，
+        // 整批音频被门控丢掉。
+        detected |= detector.detected();
     }
-    let detected = detector.detected();
     // 取完状态立即释放已切出的音频：门控不需要那些句段。
     detector.clear();
     detected
