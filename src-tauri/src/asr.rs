@@ -765,6 +765,9 @@ struct Timeline {
     recorded: usize,
     /// 当前这句的起点（真实录音时间轴，16 kHz 采样数）。
     segment_start: usize,
+    /// 上一句定稿的终点。重放的分片整段落在句起点之前时，这句的时间
+    /// 只能退到这里 —— 不能退进上一句的区间。
+    last_end: usize,
     /// 当前这句已经吃到音频了吗（吃到 = 这个洞在这句**里面**）。
     ///
     /// 判定口径与整段模式一致：洞的「喂入位置」落在这句的喂入起点**之前**
@@ -799,13 +802,24 @@ impl Timeline {
 
     /// 一句定稿：返回它在真实录音时间轴上的 `[起点, 终点)`（采样数），
     /// 并把下一句的起点挪到现在。
-    fn commit_at(&mut self, end: usize) -> (usize, usize) {
-        // 预录可能包含上句已定稿的静音，不能把时间倒退到上句里面。
-        let end = end.max(self.segment_start).min(self.recorded);
-        let span = (self.segment_start, end);
+    ///
+    /// `audio_start` 是当前分片在这条时间轴上的起点。静音期时钟一直在走
+    /// （`advance_dropped(0)` 把句起点跟到批末），随后重放的预录 / 端点后
+    /// 余量可能整段早于 `segment_start` —— 这时把这句退到分片自己的音频
+    /// 起点，而不是把区间压成零时长；退不到上一句里面（`last_end`）。
+    fn commit_at(&mut self, end: usize, audio_start: usize) -> (usize, usize) {
+        let end = end.min(self.recorded);
+        let start = if end <= self.segment_start {
+            audio_start.max(self.last_end).min(self.segment_start)
+        } else {
+            self.segment_start
+        };
+        // 退无可退时保持原来的钳制：终点抬到起点，宁可零时长也不倒退。
+        let end = end.max(start);
         self.segment_start = end;
+        self.last_end = end;
         self.segment_has_audio = false;
-        span
+        (start, end)
     }
 }
 
@@ -917,11 +931,11 @@ impl StreamingSession {
         // 放在 pump 之前：pump 里可能定稿，定稿会把这个标记复位（下一句是新的）。
         self.timeline.note_audio();
         self.stream.accept_waveform(SAMPLE_RATE, chunk);
-        self.pump(events, end);
+        self.pump(events, end, end.saturating_sub(chunk.len()));
     }
 
     /// 只在 ready 时 decode，否则 sherpa-onnx 的特征缓冲会越界。
-    fn pump(&mut self, events: &mut Vec<StreamEvent>, end: usize) {
+    fn pump(&mut self, events: &mut Vec<StreamEvent>, end: usize, audio_start: usize) {
         while self.recognizer.recognizer.is_ready(&self.stream) {
             self.recognizer.recognizer.decode(&self.stream);
             if let Some(result) = self.recognizer.recognizer.get_result(&self.stream) {
@@ -935,14 +949,14 @@ impl StreamingSession {
                 }
             }
             if self.recognizer.recognizer.is_endpoint(&self.stream) {
-                self.commit(events, end);
+                self.commit(events, end, audio_start);
                 self.recognizer.recognizer.reset(&self.stream);
             }
         }
     }
 
-    fn commit(&mut self, events: &mut Vec<StreamEvent>, end: usize) {
-        let (start, end) = self.timeline.commit_at(end);
+    fn commit(&mut self, events: &mut Vec<StreamEvent>, end: usize, audio_start: usize) {
+        let (start, end) = self.timeline.commit_at(end, audio_start);
         if self.partial.is_empty() {
             return;
         }
@@ -978,7 +992,7 @@ impl StreamingSession {
     /// 检测到静音时主动收尾：提交当前句子并重置解码器。
     pub fn force_end(&mut self) -> Vec<StreamEvent> {
         let mut events = Vec::new();
-        self.commit(&mut events, self.timeline.recorded);
+        self.commit(&mut events, self.timeline.recorded, self.timeline.recorded);
         self.recognizer.recognizer.reset(&self.stream);
         self.partial.clear();
         events
@@ -999,8 +1013,8 @@ impl StreamingSession {
             self.accept(chunk, end, &mut events);
         }
         self.stream.input_finished();
-        self.pump(&mut events, end);
-        self.commit(&mut events, end);
+        self.pump(&mut events, end, end);
+        self.commit(&mut events, end, end);
         events
     }
 

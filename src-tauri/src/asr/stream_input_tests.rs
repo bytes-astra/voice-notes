@@ -12,7 +12,7 @@ fn multiple_endpoints_in_one_batch_have_nonzero_time_ranges() {
     let mut spans = Vec::new();
     while let Some((_chunk, end)) = input.next_chunk(&mut timeline) {
         timeline.note_audio();
-        spans.push(timeline.commit_at(end));
+        spans.push(timeline.commit_at(end, end.saturating_sub(3_200)));
     }
 
     assert_eq!(spans, vec![(0, 3_200), (3_200, 6_400), (6_400, 9_600)]);
@@ -53,7 +53,7 @@ fn chunk_after_a_gap_uses_its_real_recording_position() {
     let mut spans = Vec::new();
     while let Some((_chunk, end)) = input.next_chunk(&mut timeline) {
         timeline.note_audio();
-        spans.push(timeline.commit_at(end));
+        spans.push(timeline.commit_at(end, end.saturating_sub(3_200)));
     }
     assert_eq!(spans, vec![(0, 35_200), (35_200, 38_400)]);
     assert_eq!(timeline.recorded, 38_400);
@@ -78,6 +78,24 @@ fn preroll_uses_its_own_end_instead_of_the_current_batch_end() {
     assert_eq!(timeline.recorded, 166_400, "重放预录不能再次推进总时长");
 }
 
+/// 静音期时钟一直在走，随后重放预录：重放分片整段早于当前句起点，
+/// 定稿时不能压成零时长。
+#[test]
+fn replayed_preroll_keeps_nonzero_spans_after_the_clock_moved() {
+    let mut input = StreamInput::default();
+    let mut timeline = Timeline::default();
+    timeline.advance(166_400);
+    timeline.advance_dropped(0); // 静音期：下一句起点跟到批末
+    input.push(&vec![0.1; 6_400], 160_000);
+    let mut spans = Vec::new();
+    while let Some((chunk, end)) = input.next_chunk(&mut timeline) {
+        timeline.note_audio();
+        spans.push(timeline.commit_at(end, end.saturating_sub(chunk.len())));
+    }
+    assert_eq!(spans, vec![(153_600, 156_800), (156_800, 160_000)]);
+    assert!(spans.iter().all(|(start, end)| start < end));
+}
+
 #[test]
 fn final_remainder_keeps_the_last_real_input_end() {
     let mut input = StreamInput::default();
@@ -87,14 +105,14 @@ fn final_remainder_keeps_the_last_real_input_end() {
     let mut spans = Vec::new();
     while let Some((_chunk, end)) = input.next_chunk(&mut timeline) {
         timeline.note_audio();
-        spans.push(timeline.commit_at(end));
+        spans.push(timeline.commit_at(end, end.saturating_sub(3_200)));
     }
     // 后来的门控静音已计入录音，但没有喂给识别器；不能拿它给旧余量定时。
     timeline.advance(1_600);
     let (tail, end) = input.finish().expect("不足 200ms 的真实尾包");
     assert_eq!(tail.len(), 1_600);
     timeline.note_audio();
-    spans.push(timeline.commit_at(end));
+    spans.push(timeline.commit_at(end, end.saturating_sub(tail.len())));
     assert_eq!(spans, vec![(0, 3_200), (3_200, 6_400), (6_400, 8_000)]);
     assert_eq!(input.end, 8_000, "补静音仍使用最后一个真实输入位置");
     assert_eq!(timeline.recorded, 9_600);
@@ -112,7 +130,10 @@ fn endpoint_remainder_keeps_its_start_across_the_next_capture_batch() {
         timeline.note_audio();
         let (_chunk, end) = input.next_chunk(&mut timeline).unwrap();
         timeline.note_audio();
-        assert_eq!(timeline.commit_at(end), (0, 3_200));
+        assert_eq!(
+            timeline.commit_at(end, end.saturating_sub(3_200)),
+            (0, 3_200)
+        );
         assert!(input.next_chunk(&mut timeline).is_none());
 
         // 与生产循环同序：每轮先报告丢弃量，即便本轮丢弃量为零。
@@ -121,7 +142,7 @@ fn endpoint_remainder_keeps_its_start_across_the_next_capture_batch() {
         input.push(&vec![0.2; 1_600], timeline.recorded);
         let (_chunk, end) = input.next_chunk(&mut timeline).unwrap();
         timeline.note_audio();
-        let span = timeline.commit_at(end);
+        let span = timeline.commit_at(end, end.saturating_sub(3_200));
         assert_eq!(span, expected, "dropped={dropped} 时不能跳过前批 pending");
         assert!(span.0 < span.1);
     }
