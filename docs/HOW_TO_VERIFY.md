@@ -136,6 +136,23 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
 
 缺 `VOICE_NOTES_STREAMING_MODEL_DIR` 时流式那半会静默跳过（见上面的警告）—— 那是「没验」，不是「过了」。
 
+### 同批多个 endpoint 的真模型验证
+
+本机已有 Zipformer + VAD 时显式运行：
+
+```bash
+VOICE_NOTES_STREAMING_MODEL_DIR="$HOME/Library/Application Support/com.github.bytes-astra.voicenotes/models/streaming" \
+  cargo test --manifest-path src-tauri/Cargo.toml --test streaming_endpoint_time -- --ignored --nocapture --test-threads=1
+```
+
+两条用例默认标为 `ignored`；上面的 `--ignored` 会强制执行。缺少环境变量或模型文件时直接失败，不会静默 `return`。
+
+- `one_batch_multiple_endpoints_match_realtime_and_final_segments`：把 `zh.wav` 重复 3 次、每次后接 3 秒静音，只调用一次 `StreamingSession::push`；`finish` 前必须已有 3 个 endpoint。
+- `one_capture_batch_matches_realtime_and_final_segments`：相同音频一次放入 `SampleQueue`，走真实 `run_streaming_core`（含 VAD）；首批回调必须已有 3 个 endpoint。
+- 两条都逐段断言 `start < end`、时间单调、各句位于对应音频周期、实时事件与最终 `segments` 的 `text/start/end` 完全相同，并与正常 200ms 喂法逐项对照。
+
+本机实测（2026-11-13）：总时长 25.776s，两条路径与 200ms 对照均得到 `[0.0, 7.0)`、`[9.6, 15.6)`、`[18.2, 24.2)`；两条显式执行结果为 `2 passed; 0 failed; 0 ignored`。这里检查的是后端 `StreamEvent`/回调，不包含 Tauri WebView 事件传输；不把 `segment start` 当成精确的声学起音位置。本次验证未改变模型、参数或生产代码。
+
 ## 🧷 单元测试
 
 ```bash

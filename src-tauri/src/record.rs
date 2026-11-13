@@ -435,6 +435,7 @@ where
     // 说话起点前留 0.4s，避免 VAD 起音延迟把字头切掉
     let preroll_limit = (asr::SAMPLE_RATE as usize) / 5 * 2;
     let mut preroll: Vec<f32> = Vec::new();
+    let mut preroll_end = 0usize;
     let mut active = false;
     // 识别跟不上时丢掉的音频，在结果里留个可见的缺口
     let mut gaps: Vec<asr::Segment> = Vec::new();
@@ -469,7 +470,7 @@ where
         // 提电平要在 VAD 之前 —— 流式路径的门控 VAD 判的就是这段音频，
         // 偏小的电平会让它整段判成非语音（见 audio::Agc）。
         agc.process(&mut samples);
-        session.advance_samples(samples.len());
+        let sample_end = session.advance_samples(samples.len());
 
         let Some(detector) = vad.as_ref() else {
             if !discard.load(Ordering::Relaxed) {
@@ -490,7 +491,7 @@ where
             if !active {
                 active = true;
                 if !preroll.is_empty() && !discard.load(Ordering::Relaxed) {
-                    let events = session.push(&std::mem::take(&mut preroll));
+                    let events = session.push_at(&std::mem::take(&mut preroll), preroll_end);
                     log_stream_events("流式识别出一句", &events);
                     emit(events);
                 }
@@ -511,6 +512,7 @@ where
                 }
             }
             preroll.extend_from_slice(&samples);
+            preroll_end = sample_end;
             let excess = preroll.len().saturating_sub(preroll_limit);
             if excess > 0 {
                 preroll.drain(..excess);

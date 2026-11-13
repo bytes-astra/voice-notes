@@ -23,11 +23,12 @@ fn a_hole_before_the_sentence_moves_its_start_past_the_hole() {
     // 第一句：喂 1 秒就定稿
     timeline.advance(SEC);
     timeline.note_audio();
-    timeline.commit(); // → 这句 [0, 1s)，下一句从 1s 开始
+    // 这句 [0, 1s)，下一句从 1s 开始。
+    timeline.commit_at(timeline.recorded);
     // 接着丢了 4 秒 —— 这句还没吃到音频 → 洞在它**前面**
     timeline.advance_dropped(4 * SEC);
     timeline.note_audio();
-    let (start, end) = timeline.commit();
+    let (start, end) = timeline.commit_at(timeline.recorded);
 
     assert_eq!(start, 5 * SEC, "这句的起点应落在洞之后（= 洞的终点）");
     assert_eq!(end, 5 * SEC);
@@ -42,12 +43,13 @@ fn a_hole_inside_the_sentence_keeps_its_start() {
     let mut timeline = Timeline::default();
     timeline.advance(SEC);
     timeline.note_audio();
-    timeline.commit(); // → 这句 [0, 1s)，下一句从 1s 开始
+    // 这句 [0, 1s)，下一句从 1s 开始。
+    timeline.commit_at(timeline.recorded);
     // 第二句先吃到 1 秒音频，然后中间丢了 4 秒
     timeline.advance(SEC);
     timeline.note_audio();
     timeline.advance_dropped(4 * SEC);
-    let (start, end) = timeline.commit();
+    let (start, end) = timeline.commit_at(timeline.recorded);
 
     assert_eq!(start, SEC, "洞在句子里面时起点不动");
     assert_eq!(end, 6 * SEC, "终点要把丢掉的音频算进去");
@@ -59,10 +61,10 @@ fn without_holes_the_start_is_the_last_commit() {
     let mut timeline = Timeline::default();
     timeline.advance(SEC);
     timeline.note_audio();
-    timeline.commit();
+    timeline.commit_at(timeline.recorded);
     timeline.advance(SEC);
     timeline.note_audio();
-    let (start, end) = timeline.commit();
+    let (start, end) = timeline.commit_at(timeline.recorded);
 
     assert_eq!(start, SEC, "这句从上一句定稿的时刻开始");
     assert_eq!(end, 2 * SEC);
@@ -74,11 +76,8 @@ fn commit_resets_the_has_audio_flag() {
     let mut timeline = Timeline::default();
     timeline.note_audio();
     assert!(timeline.segment_has_audio);
-    timeline.commit();
-    assert!(
-        !timeline.segment_has_audio,
-        "定稿后下一句还没吃到音频"
-    );
+    timeline.commit_at(timeline.recorded);
+    assert!(!timeline.segment_has_audio, "定稿后下一句还没吃到音频");
 }
 
 /// 连续两个洞：起点落在**最后一个**洞之后。
@@ -88,7 +87,7 @@ fn consecutive_holes_leave_the_start_after_the_last_one() {
     timeline.advance_dropped(SEC);
     timeline.advance_dropped(2 * SEC);
     timeline.note_audio();
-    let (start, _) = timeline.commit();
+    let (start, _) = timeline.commit_at(timeline.recorded);
 
     assert_eq!(start, 3 * SEC);
 }

@@ -6,10 +6,11 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**75 条**不变量、10 组（A–J），分 3 档 —— ✅ 72 条有自动守卫 / ⚠️ 2 条守卫薄弱 /
-❌ 1 条无守卫。**3 条（⚠️+❌）就是下一轮的作业面**（2026-11-03 补完四条门禁后从 21 条降下来，
+**当前规模**：**75 条**不变量、10 组（A–J），分 3 档 —— ✅ 69 条有自动守卫 / ⚠️ 5 条守卫薄弱 /
+❌ 1 条无守卫。**6 条（⚠️+❌）就是下一轮的作业面**（2026-11-03 补完四条门禁后从 21 条降下来，
 同日再补四条 UI 断言后降到 17 条，补完原生层与打包后降到 9 条，补完质量门禁后降到 3 条；
-2026-11-04 新增 J 组 3 条并发不变量，守卫齐全，作业面不变）。
+2026-11-04 新增 J 组 3 条并发不变量，守卫齐全；2026-11-13 复核发现 RC-B4 / RC-B6 / RC-B7
+的守卫全是「没环境变量就静默跳过」的真模型用例，从 ✅ 降为 ⚠️，作业面 3 → 6）。
 
 （历史口径：5 份旧 review plan 一共提出 **26** 个 focus 项 —— 那是「轮次」的粒度；
 本文档把它们展开成 **75** 条可逐条核对的条目。两个数各指什么，不要混用。）
@@ -80,10 +81,10 @@
 | RC-B1 | 缺口占位符形状前后端一致（`[[gap:<数字>]]`），占位符前后不加空格 | `scripts/check-join.mjs` + `check-join.test.mjs`；`asr/gap_tests.rs` gap_placeholder_joins_without_spaces | ✅ |
 | RC-B2 | 缺口标记落在**缺口终点**（丢掉的音频之后才开始识别），两种模式同一条规则 | `record/tests.rs` gap_segment_marks_the_given_moment；`asr/gap_tests.rs` inserts_gap_in_time_order | ✅ |
 | RC-B3 | 同一时刻，缺口排在句子**前面**（否则读起来像句子之后才丢的音频） | `asr/gap_tests.rs` gap_precedes_a_segment_at_the_same_moment；`record/tests.rs` streaming_gap_marker_precedes_the_following_sentence | ✅ |
-| RC-B4 | 丢掉的音频占真实录音时间（时长不能少算） | `record/tests.rs` dropped_audio_counts_towards_recorded_time / streaming_dropped_audio_advances_recording_clock | ✅ |
+| RC-B4 | 丢掉的音频占真实录音时间（时长不能少算） | `record/tests.rs` dropped_audio_counts_towards_recorded_time（纯函数，只覆盖整段的算术）/ streaming_dropped_audio_advances_recording_clock（**需真模型**，无环境变量时静默跳过） | ⚠️ 2026-11-13：流式侧只有真模型用例 |
 | RC-B5 | 时间轴换算在**秒域**比较，区间语义 `[start, end)`：起点压缺口要移、终点压缺口不移 | `record/tests.rs` offline_timeline_shifts_by_dropped_audio / offline_timeline_boundary_is_half_open / offline_timeline_is_unchanged_without_drops；`asr/timeline_tests.rs` 全 6 条 | ✅ |
-| RC-B6 | 实时事件流与最终结果必须同一套时间刻度（不能混两套） | `record/tests.rs` streaming_duration_includes_leading_silence / streaming_duration_includes_audio_arriving_after_stop | ✅ |
-| RC-B7 | 缺口必须同时进最终文本**和** `segments` | `record/tests.rs` streaming_gap_marker_reaches_transcript / offline_gap_marker_reaches_transcript | ✅ |
+| RC-B6 | 实时事件流与最终结果必须同一套时间刻度（不能混两套）；同批多个 endpoint 按各分片位置定时，后续句子不能因共用批末时钟变成零时长 | `asr/stream_input_tests.rs`：7 条无模型回归，覆盖同批多 endpoint、跨批余量、endpoint 后 pending 归属、缺口、预录、尾包、空输入；`tests/streaming_endpoint_time.rs`：2 条显式真模型端到端用例，单批多 endpoint 的事件/最终 segments/200ms 对照一致；`record/tests.rs` streaming_duration_includes_leading_silence / streaming_duration_includes_audio_arriving_after_stop（**两条仍需真模型**） | ⚠️ 2026-11-13：分片计时有 CI 守卫；整条管线仍需真模型 |
+| RC-B7 | 缺口必须同时进最终文本**和** `segments` | `record/tests.rs` streaming_gap_marker_reaches_transcript（需流式真模型）/ offline_gap_marker_reaches_transcript（需 `VOICE_NOTES_MODEL_DIR`） | ⚠️ 2026-11-13：两条都静默跳过，CI 上零覆盖 |
 | RC-B8 | 流式尾部补的静音不计入时长 | `asr/streaming_time_tests.rs` duration_counts_only_advanced_audio（**需真模型**，无环境变量时静默跳过） | ⚠️ 依赖真模型 |
 | RC-B9 | 停止时识别期间采到的尾巴必须被消费（否则句尾丢字） | `record/tests.rs` offline_stop_keeps_the_tail | ✅ |
 | RC-B10 | 实时事件流不能重复推进时钟 | `asr/streaming_time_tests.rs` externally_advanced_audio_is_not_counted_again | ⚠️ 依赖真模型 |
@@ -194,8 +195,9 @@
 
 ## 下一轮该审什么
 
-⚠️ + ❌ 共 **3 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条，同日补四条 UI 断言后降到 13 条，
-再补完原生层与打包后降到 9 条，补完质量门禁后降到 3 条），按「补起来最划算」排序：
+⚠️ + ❌ 共 **6 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条，同日补四条 UI 断言后降到 13 条，
+再补完原生层与打包后降到 9 条，补完质量门禁后降到 3 条；2026-11-13 复核降级三条，回到 6 条），
+按「补起来最划算」排序：
 
 ### 已完成（2026-11-04 · 并发三件）
 
@@ -233,11 +235,16 @@ async 路径上不再有第二把引擎锁。
 用户自己点的取消，界面却说失败。已修：`runDownload` 按错误码区分取消与失败
 （`core.js` 新增 `errorCode()`，跟 `fmtError` 共用同一处切分），取消时进度行写「下载已取消」。
 
-### 剩下的 3 条
+### 剩下的 6 条
 
 - `RC-I2`（流式路径进 CI）：**决定不做** —— CI 要下 ~500 MB 模型 + 生成语料，单次 10-15 分钟，
   macOS runner 计费 10×。代价：CI 对「识别变差」依然零反应，质量门禁靠手动跑
   （见 `docs/HOW_TO_VERIFY.md` 的「质量门禁」一节）。
+- `RC-B4` / `RC-B6` / `RC-B7`：**2026-11-13 降级**。同一条 `cargo test --lib` 在设与不设
+  `VOICE_NOTES_*_MODEL_DIR` 时都是绿色，但不设时用例在 0.00s 内 return —— 守卫在 CI 上等于不存在。
+  本地补跑（真模型）8 条流式用例全部通过，所以当前**行为**没问题，问题是**回归不会被发现**。
+- 建议的补法（尚未实施）：把 `run_streaming_core` 的识别侧抽成一个 trait（真实实现 +
+  测试用空实现），让时钟推进、VAD 门控、缺口插入这三段能在无模型下断言。
 - `RC-B8` / `RC-B10`（需真模型环境变量，CI 上静默跳过）：守卫本身在（`asr/streaming_time_tests.rs`），
   只是 CI 不跑真模型用例；要跑得先解决 RC-I2 的模型下载问题。
 
@@ -256,6 +263,9 @@ async 路径上不再有第二把引擎锁。
 | 2026-11-02 | （录音中编辑、含占位符的历史、键盘焦点、预热假成功、新增语言注册） | 13 | 同上 |
 | 2026-11-03 | RC-H7 / RC-C2 / RC-H6 / RC-D5（补四条门禁）+ 后端裸字符串错误 + mock 载荷字段 + RC-A2 / RC-A6 / RC-C3 / RC-F11（补四条 UI 断言）+ RC-G1 / RC-G3 / RC-G4 / RC-G5（原生层与打包）+ RC-I1 / RC-I3 / RC-I4 / RC-D7 / RC-D10 / RC-F9（质量门禁与文案守卫） | 4 条门禁 + 4 条 UI 断言 + 1 条打包门禁 + 1 条质量门禁 + 1 条内存门禁 | **清单成文**（72 条）；补四条门禁 —— 缺口 21 → 17；再补四条 UI 断言（撞出并修掉「下载取消却说失败」）—— 17 → 13；再补原生层与打包 —— 13 → 9；再补质量门禁与文案守卫 —— 9 → 3（RC-I2 是明确决定不做的取舍） |
 | 2026-11-04 | RC-J1 / RC-J2 / RC-J3（并发与原子性：两槽登记、引擎快照与清空、async 阻塞锁） | 1 条并发门禁 + 10 条 Rust 单测 | 清单 72 → **75 条**（10 组）；⚠️+❌ 仍是 3 条 —— 这轮补的是**已有作业面之外**的新不变量（J 组），作业面没变大 |
+| 2026-11-13 | RC-B4 / RC-B6 / RC-B7 / RC-B8 / RC-B10（流式时钟与缺口）+ `install_engine` 的配置读取 | 0（本轮只做核实） | 复现口径：`cargo test --lib` 不设环境变量时，B4/B6/B7 的用例 0.00s 静默返回却仍算 passed → 三条从 ✅ 降为 ⚠️；作业面 3 → **6 条**。真模型补跑：`streaming_` 前缀 8 条 + `streaming_time` 2 条全绿；`npm run check`（120 条单测）与 `npm run check:ui`（140/140）全绿 |
+| 2026-11-13 | RC-B6（同批多个 endpoint 的分片计时） | 1 条代码修复 + 7 条无模型回归（未 commit） | 分片携带真实采样终点，endpoint 不再共用批末时钟；保留 endpoint 后 pending 的句子归属，不让下一轮 `advance_dropped(0)` 跳过其时间；跨批余量、缺口、预录、尾包与空输入都有断言；新用例先 RED 后 GREEN，`npm run check` 汇总 127 passed；真模型端到端未执行 |
+| 2026-11-13 | RC-B6（真模型端到端补验） | 0（新增 2 条真模型测试，未改生产代码） | 本机现有 Zipformer + VAD，25.776s 音频单批触发 3 个 endpoint；StreamingSession 与 run_streaming_core 的实时事件/最终 segments 均为 `[0,7)`、`[9.6,15.6)`、`[18.2,24.2)`，与 200ms 喂法逐项一致；显式执行 `2 passed; 0 failed; 0 ignored`，clippy all-targets 通过；不含 Tauri WebView 传输验证，不改变 CI 取舍 |
 
 「当天 fix 数」一列是 `git log` 实测值（`git log --since=<date> --until=<date>` 统计以 `fix` 开头的提交），
 不是估算 —— 它同时也是「这轮复审的产出」的度量。

@@ -799,11 +799,56 @@ impl Timeline {
 
     /// 一句定稿：返回它在真实录音时间轴上的 `[起点, 终点)`（采样数），
     /// 并把下一句的起点挪到现在。
-    fn commit(&mut self) -> (usize, usize) {
-        let span = (self.segment_start, self.recorded);
-        self.segment_start = self.recorded;
+    fn commit_at(&mut self, end: usize) -> (usize, usize) {
+        // 预录可能包含上句已定稿的静音，不能把时间倒退到上句里面。
+        let end = end.max(self.segment_start).min(self.recorded);
+        let span = (self.segment_start, end);
+        self.segment_start = end;
         self.segment_has_audio = false;
         span
+    }
+}
+
+/// 流式输入分片及其在真实录音时间轴上的终点。
+///
+/// 分片逻辑不依赖模型，时钟回归可以在普通单测中覆盖。
+#[derive(Default)]
+struct StreamInput {
+    pending: Vec<f32>,
+    end: usize,
+}
+
+impl StreamInput {
+    fn push(&mut self, samples: &[f32], end: usize) {
+        if samples.is_empty() {
+            return;
+        }
+        self.pending.extend_from_slice(samples);
+        self.end = end;
+    }
+
+    fn next_chunk(&mut self, timeline: &mut Timeline) -> Option<(Vec<f32>, usize)> {
+        if self.pending.len() < STREAM_CHUNK {
+            if !self.pending.is_empty() {
+                // endpoint 会清掉句子状态，但本批余量已经属于下一句。
+                // 下一轮 advance_dropped(0) 也不能把它的起点挪到批末。
+                timeline.note_audio();
+            }
+            return None;
+        }
+        let chunk = self.pending.drain(..STREAM_CHUNK).collect();
+        // 当前分片结束后还没喂入的样本属于本批尾部，要从批末位置扣掉。
+        // 跨批余量不足一个分片，因此本次分片的终点总在最新输入里；
+        // 即使两批之间有缺口，也仍落在真实录音时间轴上。
+        let end = self.end.saturating_sub(self.pending.len());
+        Some((chunk, end))
+    }
+
+    fn finish(&mut self) -> Option<(Vec<f32>, usize)> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        Some((std::mem::take(&mut self.pending), self.end))
     }
 }
 
@@ -814,7 +859,7 @@ pub struct StreamingSession {
     stream: OnlineStream,
     partial: String,
     segments: Vec<Segment>,
-    pending: Vec<f32>,
+    input: StreamInput,
     timeline: Timeline,
     started: Instant,
 }
@@ -835,7 +880,7 @@ impl StreamingSession {
             stream,
             partial: String::new(),
             segments: Vec::new(),
-            pending: Vec::new(),
+            input: StreamInput::default(),
             timeline: Timeline::default(),
             started: Instant::now(),
         }
@@ -847,9 +892,10 @@ impl StreamingSession {
     /// 调用方喂进去的可能只是「说话中」的那部分，其余（预录、门控掉的、
     /// 采集丢掉的）同样占录音时间。
     ///
-    /// `samples` 是 16 kHz 采样数；调用方负责换算。
-    pub fn advance_samples(&mut self, samples: usize) {
+    /// `samples` 是 16 kHz 采样数；调用方负责换算，返回推进后的采样位置。
+    pub fn advance_samples(&mut self, samples: usize) -> usize {
         self.timeline.advance(samples);
+        self.timeline.recorded
     }
 
     /// 丢掉了一段音频（识别跟不上）：时钟前进，但这段时间**没有**喂给识别器。
@@ -866,16 +912,16 @@ impl StreamingSession {
     }
 
     /// 按 200ms 一块送入（与官方示例的 chunk_size=3200 对齐），避免过小分片。
-    fn accept(&mut self, chunk: &[f32], events: &mut Vec<StreamEvent>) {
+    fn accept(&mut self, chunk: &[f32], end: usize, events: &mut Vec<StreamEvent>) {
         // 识别器吃到音频了 —— 后面再掉音频的话，洞就在**这句里面**。
         // 放在 pump 之前：pump 里可能定稿，定稿会把这个标记复位（下一句是新的）。
         self.timeline.note_audio();
         self.stream.accept_waveform(SAMPLE_RATE, chunk);
-        self.pump(events);
+        self.pump(events, end);
     }
 
     /// 只在 ready 时 decode，否则 sherpa-onnx 的特征缓冲会越界。
-    fn pump(&mut self, events: &mut Vec<StreamEvent>) {
+    fn pump(&mut self, events: &mut Vec<StreamEvent>, end: usize) {
         while self.recognizer.recognizer.is_ready(&self.stream) {
             self.recognizer.recognizer.decode(&self.stream);
             if let Some(result) = self.recognizer.recognizer.get_result(&self.stream) {
@@ -889,14 +935,14 @@ impl StreamingSession {
                 }
             }
             if self.recognizer.recognizer.is_endpoint(&self.stream) {
-                self.commit(events);
+                self.commit(events, end);
                 self.recognizer.recognizer.reset(&self.stream);
             }
         }
     }
 
-    fn commit(&mut self, events: &mut Vec<StreamEvent>) {
-        let (start, end) = self.timeline.commit();
+    fn commit(&mut self, events: &mut Vec<StreamEvent>, end: usize) {
+        let (start, end) = self.timeline.commit_at(end);
         if self.partial.is_empty() {
             return;
         }
@@ -916,16 +962,15 @@ impl StreamingSession {
 
     /// 喂入 16 kHz 单声道样本，返回需要推给 UI 的事件。
     pub fn push(&mut self, samples: &[f32]) -> Vec<StreamEvent> {
+        self.push_at(samples, self.timeline.recorded)
+    }
+
+    /// 重放预录时使用它原来的终点，不把当前批次的时钟套到旧音频上。
+    pub(crate) fn push_at(&mut self, samples: &[f32], end: usize) -> Vec<StreamEvent> {
         let mut events = Vec::new();
-        if !samples.is_empty() {
-            // 音频已经交给会话了 —— 后面再掉音频的话，洞就在**这句里面**。
-            // （`accept` 里也标一次：一次 push 可能定稿，定稿会复位这个标记。）
-            self.timeline.note_audio();
-        }
-        self.pending.extend_from_slice(samples);
-        while self.pending.len() >= STREAM_CHUNK {
-            let chunk: Vec<f32> = self.pending.drain(..STREAM_CHUNK).collect();
-            self.accept(&chunk, &mut events);
+        self.input.push(samples, end);
+        while let Some((chunk, end)) = self.input.next_chunk(&mut self.timeline) {
+            self.accept(&chunk, end, &mut events);
         }
         events
     }
@@ -933,7 +978,7 @@ impl StreamingSession {
     /// 检测到静音时主动收尾：提交当前句子并重置解码器。
     pub fn force_end(&mut self) -> Vec<StreamEvent> {
         let mut events = Vec::new();
-        self.commit(&mut events);
+        self.commit(&mut events, self.timeline.recorded);
         self.recognizer.recognizer.reset(&self.stream);
         self.partial.clear();
         events
@@ -942,20 +987,20 @@ impl StreamingSession {
     /// 结束输入，冲刷最后一段。
     pub fn finish(&mut self) -> Vec<StreamEvent> {
         let mut events = Vec::new();
-        if !self.pending.is_empty() {
-            let chunk = std::mem::take(&mut self.pending);
-            self.accept(&chunk, &mut events);
+        if let Some((chunk, end)) = self.input.finish() {
+            self.accept(&chunk, end, &mut events);
         }
         // 结尾补一小段静音：解码器需要一点尾部上下文才会吐出最后一个字，
         // 否则句尾会被丢掉（“产品评审会” → “产品评审”）。
         // 补的静音不算录音时长 —— 时钟只由调用方推进，这里不碰。
+        let end = self.input.end;
         let silence = vec![0.0f32; TAIL_SILENCE_SAMPLES];
         for chunk in silence.chunks(STREAM_CHUNK) {
-            self.accept(chunk, &mut events);
+            self.accept(chunk, end, &mut events);
         }
         self.stream.input_finished();
-        self.pump(&mut events);
-        self.commit(&mut events);
+        self.pump(&mut events, end);
+        self.commit(&mut events, end);
         events
     }
 
@@ -972,6 +1017,9 @@ impl StreamingSession {
         }
     }
 }
+
+#[cfg(test)]
+mod stream_input_tests;
 
 #[cfg(test)]
 mod streaming_time_tests;

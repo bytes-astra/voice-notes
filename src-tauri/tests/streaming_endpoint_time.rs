@@ -1,0 +1,199 @@
+//! 真模型端到端：同批多个 endpoint 的实时事件与最终 segments 使用相同且非零的时间区间。
+//! VOICE_NOTES_STREAMING_MODEL_DIR=... cargo test --test streaming_endpoint_time -- --ignored --nocapture
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use voice_notes_lib::asr::{Segment, StreamEvent, StreamingSession, Transcript};
+use voice_notes_lib::audio::SampleQueue;
+use voice_notes_lib::engine::StreamingEngine;
+use voice_notes_lib::models::StreamingPaths;
+use voice_notes_lib::record::run_streaming_core;
+
+const RATE: usize = 16_000;
+const REPEATS: usize = 3;
+const SILENCE: usize = 3 * RATE;
+
+fn engine() -> Arc<StreamingEngine> {
+    let dir = PathBuf::from(
+        std::env::var("VOICE_NOTES_STREAMING_MODEL_DIR")
+            .expect("必须设置 VOICE_NOTES_STREAMING_MODEL_DIR，不能静默跳过"),
+    );
+    let paths = StreamingPaths {
+        dir: dir.display().to_string(),
+        encoder: dir.join("encoder.int8.onnx").display().to_string(),
+        decoder: dir.join("decoder.onnx").display().to_string(),
+        joiner: dir.join("joiner.int8.onnx").display().to_string(),
+        tokens: dir.join("tokens.txt").display().to_string(),
+        vad: Some(dir.join("silero_vad.onnx").display().to_string()),
+    };
+    for file in [
+        &paths.encoder,
+        &paths.decoder,
+        &paths.joiner,
+        &paths.tokens,
+        paths.vad.as_ref().unwrap(),
+    ] {
+        assert!(std::path::Path::new(file).is_file(), "缺少模型文件：{file}");
+    }
+    Arc::new(StreamingEngine::new(&paths, &[]).expect("加载真实 Zipformer 与 VAD"))
+}
+
+fn batch() -> (Vec<f32>, usize) {
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取已有中文 fixture");
+    let period = wave.samples().len() + SILENCE;
+    let mut samples = Vec::with_capacity(REPEATS * period);
+    for _ in 0..REPEATS {
+        samples.extend_from_slice(wave.samples());
+        samples.resize(samples.len() + SILENCE, 0.0);
+    }
+    (samples, period)
+}
+
+fn collect(events: Vec<StreamEvent>, segments: &mut Vec<Segment>) {
+    for event in events {
+        if let StreamEvent::Segment(segment) = event {
+            segments.push(segment);
+        }
+    }
+}
+
+fn chunked_reference(samples: &[f32]) -> Transcript {
+    let mut session = StreamingSession::new(engine(), None);
+    for chunk in samples.chunks(3_200) {
+        session.advance_samples(chunk.len());
+        session.push(chunk);
+    }
+    session.finish();
+    session.transcript()
+}
+
+fn assert_matches_chunked(label: &str, actual: &Transcript, expected: &Transcript) {
+    assert_eq!(actual.segments.len(), expected.segments.len());
+    for (index, (actual, expected)) in actual.segments.iter().zip(&expected.segments).enumerate() {
+        println!(
+            "{label} comparison {}: batch=[{:.4}, {:.4}), chunked=[{:.4}, {:.4})",
+            index + 1,
+            actual.start,
+            actual.end,
+            expected.start,
+            expected.end
+        );
+        assert_eq!(actual.text, expected.text);
+        assert_eq!(actual.start, expected.start, "整批与正常分片的起点必须一致");
+        assert_eq!(actual.end, expected.end, "整批与正常分片的终点必须一致");
+    }
+}
+
+fn assert_segments(
+    label: &str,
+    events: &[Segment],
+    transcript: &Transcript,
+    period: usize,
+    total_samples: usize,
+) {
+    assert_eq!(events.len(), REPEATS, "{label} 应识别三句：{events:?}");
+    assert_eq!(events.len(), transcript.segments.len());
+    let duration = total_samples as f32 / RATE as f32;
+    assert!((transcript.duration_seconds - duration).abs() < 1e-4);
+    let mut previous_end = 0.0;
+    for (index, (event, final_segment)) in events.iter().zip(&transcript.segments).enumerate() {
+        assert!(!event.text.trim().is_empty());
+        assert_eq!(
+            event.text, events[0].text,
+            "同一 fixture 的三次转写内容应一致"
+        );
+        assert!(event.start.is_finite() && event.end.is_finite());
+        assert!(event.start >= 0.0 && event.end <= duration + 1e-4);
+        assert!(
+            event.start < event.end,
+            "{label} 第 {} 句为零时长：{event:?}",
+            index + 1
+        );
+        assert!(
+            event.start >= previous_end,
+            "{label} 句子时间不能重叠或倒退"
+        );
+        // 每句归属独立的音频周期，不能全部挤到批末；不假定起点等于声学起音。
+        let period_start = (index * period) as f32 / RATE as f32;
+        let period_end = ((index + 1) * period) as f32 / RATE as f32;
+        assert!(
+            event.start >= period_start && event.start < period_end,
+            "{label} 第 {} 句不在对应音频周期：{event:?}",
+            index + 1
+        );
+        assert!(event.end > period_start && event.end <= period_end);
+        assert_eq!(event.text, final_segment.text);
+        assert_eq!(event.start, final_segment.start);
+        assert_eq!(event.end, final_segment.end);
+        println!(
+            "{label} segment {}: event=[{:.4}, {:.4}), final=[{:.4}, {:.4}), chars={}",
+            index + 1,
+            event.start,
+            event.end,
+            final_segment.start,
+            final_segment.end,
+            event.text.chars().count()
+        );
+        previous_end = event.end;
+    }
+    println!(
+        "{label}: duration={duration:.4}s, realtime_segments={}, final_segments={}",
+        events.len(),
+        transcript.segments.len()
+    );
+}
+
+#[test]
+#[ignore = "requires VOICE_NOTES_STREAMING_MODEL_DIR; run explicitly with --ignored"]
+fn one_batch_multiple_endpoints_match_realtime_and_final_segments() {
+    let (samples, period) = batch();
+    let mut session = StreamingSession::new(engine(), None);
+    session.advance_samples(samples.len());
+    let mut segments = Vec::new();
+    // 只调用一次 push；收尾前的 Segment 只能来自模型 endpoint，不能靠 finish 凑数。
+    collect(session.push(&samples), &mut segments);
+    assert_eq!(
+        segments.len(),
+        REPEATS,
+        "单次 push 必须实际触发三个 endpoint"
+    );
+    collect(session.finish(), &mut segments);
+    let transcript = session.transcript();
+    assert_segments("session", &segments, &transcript, period, samples.len());
+    assert_matches_chunked("session", &transcript, &chunked_reference(&samples));
+}
+
+#[test]
+#[ignore = "requires VOICE_NOTES_STREAMING_MODEL_DIR; run explicitly with --ignored"]
+fn one_capture_batch_matches_realtime_and_final_segments() {
+    let (samples, period) = batch();
+    let queue = SampleQueue::new(RATE as u32);
+    queue.push(&samples);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopper = stop.clone();
+    let mut segments = Vec::new();
+    let mut first_batch_segments = None;
+    let transcript = run_streaming_core(
+        engine(),
+        None,
+        queue,
+        RATE as u32,
+        stop,
+        Arc::new(AtomicBool::new(false)),
+        |events| {
+            collect(events, &mut segments);
+            first_batch_segments.get_or_insert(segments.len());
+            // 一批音频已完整处理后结束循环；没触发足够 endpoint 时断言失败而不是挂起。
+            stopper.store(true, Ordering::SeqCst);
+        },
+    );
+    assert_eq!(
+        first_batch_segments,
+        Some(REPEATS),
+        "生产首批回调必须已有三个 endpoint"
+    );
+    assert_segments("record", &segments, &transcript, period, samples.len());
+    assert_matches_chunked("record", &transcript, &chunked_reference(&samples));
+}
