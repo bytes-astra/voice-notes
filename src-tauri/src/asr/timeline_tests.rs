@@ -22,13 +22,13 @@ fn a_hole_before_the_sentence_moves_its_start_past_the_hole() {
     let mut timeline = Timeline::default();
     // 第一句：喂 1 秒就定稿
     timeline.advance(SEC);
-    timeline.note_audio();
+    timeline.note_audio(0);
     // 这句 [0, 1s)，下一句从 1s 开始。
-    timeline.commit_at(timeline.recorded, timeline.recorded);
+    timeline.commit_at(timeline.recorded);
     // 接着丢了 4 秒 —— 这句还没吃到音频 → 洞在它**前面**
     timeline.advance_dropped(4 * SEC);
-    timeline.note_audio();
-    let (start, end) = timeline.commit_at(timeline.recorded, timeline.recorded);
+    timeline.note_audio(5 * SEC);
+    let (start, end) = timeline.commit_at(timeline.recorded);
 
     assert_eq!(start, 5 * SEC, "这句的起点应落在洞之后（= 洞的终点）");
     assert_eq!(end, 5 * SEC);
@@ -42,14 +42,14 @@ fn a_hole_before_the_sentence_moves_its_start_past_the_hole() {
 fn a_hole_inside_the_sentence_keeps_its_start() {
     let mut timeline = Timeline::default();
     timeline.advance(SEC);
-    timeline.note_audio();
+    timeline.note_audio(0);
     // 这句 [0, 1s)，下一句从 1s 开始。
-    timeline.commit_at(timeline.recorded, timeline.recorded);
+    timeline.commit_at(timeline.recorded);
     // 第二句先吃到 1 秒音频，然后中间丢了 4 秒
     timeline.advance(SEC);
-    timeline.note_audio();
+    timeline.note_audio(SEC);
     timeline.advance_dropped(4 * SEC);
-    let (start, end) = timeline.commit_at(timeline.recorded, timeline.recorded);
+    let (start, end) = timeline.commit_at(timeline.recorded);
 
     assert_eq!(start, SEC, "洞在句子里面时起点不动");
     assert_eq!(end, 6 * SEC, "终点要把丢掉的音频算进去");
@@ -60,11 +60,11 @@ fn a_hole_inside_the_sentence_keeps_its_start() {
 fn without_holes_the_start_is_the_last_commit() {
     let mut timeline = Timeline::default();
     timeline.advance(SEC);
-    timeline.note_audio();
-    timeline.commit_at(timeline.recorded, timeline.recorded);
+    timeline.note_audio(0);
+    timeline.commit_at(timeline.recorded);
     timeline.advance(SEC);
-    timeline.note_audio();
-    let (start, end) = timeline.commit_at(timeline.recorded, timeline.recorded);
+    timeline.note_audio(SEC);
+    let (start, end) = timeline.commit_at(timeline.recorded);
 
     assert_eq!(start, SEC, "这句从上一句定稿的时刻开始");
     assert_eq!(end, 2 * SEC);
@@ -74,9 +74,9 @@ fn without_holes_the_start_is_the_last_commit() {
 #[test]
 fn commit_resets_the_has_audio_flag() {
     let mut timeline = Timeline::default();
-    timeline.note_audio();
+    timeline.note_audio(0);
     assert!(timeline.segment_has_audio);
-    timeline.commit_at(timeline.recorded, timeline.recorded);
+    timeline.commit_at(timeline.recorded);
     assert!(!timeline.segment_has_audio, "定稿后下一句还没吃到音频");
 }
 
@@ -86,8 +86,8 @@ fn consecutive_holes_leave_the_start_after_the_last_one() {
     let mut timeline = Timeline::default();
     timeline.advance_dropped(SEC);
     timeline.advance_dropped(2 * SEC);
-    timeline.note_audio();
-    let (start, _) = timeline.commit_at(timeline.recorded, timeline.recorded);
+    timeline.note_audio(3 * SEC);
+    let (start, _) = timeline.commit_at(timeline.recorded);
 
     assert_eq!(start, 3 * SEC);
 }
@@ -109,10 +109,31 @@ fn a_chunk_ending_before_the_segment_start_keeps_its_own_span() {
     timeline.advance(10_000);
     // 静音期：下一句的起点跟着时钟走到 10_000。
     timeline.advance_dropped(0);
-    timeline.note_audio();
     // 重放的分片实际停在 6_800（起点 3_600），整段早于 10_000。
-    let (start, end) = timeline.commit_at(6_800, 3_600);
+    timeline.note_audio(3_600);
+    let (start, end) = timeline.commit_at(6_800);
     assert_eq!((start, end), (3_600, 6_800));
+}
+
+/// 句子横跨多个重放分片：起点取**第一个**分片的起点，不是定稿那一片的。
+///
+/// 回归测试：之前把「触发定稿的那片」的起点当句子起点，句子前半段的音频
+/// 就落到了区间外面 —— 界面上这句话的时长会短一截。
+#[test]
+fn a_sentence_over_two_replayed_chunks_starts_at_the_first_one() {
+    let mut timeline = Timeline::default();
+    timeline.advance(10_000);
+    timeline.advance_dropped(0);
+    // 第一个重放分片：3_600..6_800；第二个：6_800..10_000。
+    timeline.note_audio(3_600);
+    // 第二个分片喂进来时，句子的音频起点仍然是第一个分片。
+    timeline.note_audio(6_800);
+    let (start, end) = timeline.commit_at(10_000);
+    assert_eq!(
+        (start, end),
+        (3_600, 10_000),
+        "句子的起点应落在最早那片音频上"
+    );
 }
 
 /// 同样的重放也不能退进上一句的区间：退无可退时宁可保持零时长。
@@ -120,9 +141,35 @@ fn a_chunk_ending_before_the_segment_start_keeps_its_own_span() {
 fn a_replayed_chunk_never_reaches_back_into_the_previous_sentence() {
     let mut timeline = Timeline::default();
     timeline.advance(10_000);
-    timeline.note_audio();
-    timeline.commit_at(10_000, 10_000);
+    timeline.note_audio(0);
+    timeline.commit_at(10_000);
     timeline.advance_dropped(0);
-    let (start, end) = timeline.commit_at(9_000, 8_000);
+    timeline.note_audio(8_000);
+    let (start, end) = timeline.commit_at(9_000);
     assert_eq!((start, end), (10_000, 10_000), "不能退到上一句里面");
+}
+
+/// 重放的分片定稿后，句起点不能被拉回过去 —— 下一句的音频在更靠后的位置。
+///
+/// 回归测试：之前重放分片定稿时把句起点改成那片分片的终点（比当前句起点
+/// 更早），下一句就会从那一片开始 —— 下一句的区间里混进了根本不属于它的
+/// 音频，句子之间也可能重叠。
+#[test]
+fn the_segment_start_never_moves_backwards() {
+    let mut timeline = Timeline::default();
+    timeline.advance(10_000);
+    timeline.advance_dropped(0);
+    // 重放的分片整段早于句起点（10_000）。
+    timeline.note_audio(3_600);
+    timeline.commit_at(6_800);
+    assert_eq!(
+        timeline.segment_start, 10_000,
+        "句起点不能被重放的分片拉回过去"
+    );
+
+    // 下一句是正常喂进来的实时音频，起点应落在句起点（10_000）。
+    timeline.advance(3_200);
+    timeline.note_audio(10_000);
+    let (start, end) = timeline.commit_at(13_200);
+    assert_eq!((start, end), (10_000, 13_200));
 }
