@@ -139,6 +139,7 @@ fn probe_memory_does_not_grow_with_duration() {
         let samples = speech_of(TOTAL_SECONDS);
         let mut checkpoint = 0i64;
         for (index, chunk) in samples.chunks(3200).enumerate() {
+            session.advance_samples(chunk.len());
             session.push(chunk);
             let seconds = (index * 3200) as f32 / 16000.0;
             if checkpoint == 0 && seconds >= CHECKPOINT_SECONDS {

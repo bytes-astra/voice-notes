@@ -132,6 +132,8 @@ fn measure_streaming(engine: &Arc<StreamingEngine>, file: &Path) -> Result<Measu
         .ok_or_else(|| format!("读不了音频：{}", file.display()))?;
     let samples = wave.samples();
     let mut session = StreamingSession::new(engine.clone(), None);
+    // 时钟只认调用方推进的采样：不先 advance，句子的时间戳会全是 0。
+    session.advance_samples(samples.len());
     session.push(samples);
     session.finish();
     let transcript = session.transcript();
