@@ -59,8 +59,8 @@ fn collect(events: Vec<StreamEvent>, segments: &mut Vec<Segment>) {
     }
 }
 
-fn chunked_reference(samples: &[f32]) -> Transcript {
-    let mut session = StreamingSession::new(engine(), None);
+fn chunked_reference(engine: Arc<StreamingEngine>, samples: &[f32]) -> Transcript {
+    let mut session = StreamingSession::new(engine, None);
     for chunk in samples.chunks(3_200) {
         session.advance_samples(chunk.len());
         session.push(chunk);
@@ -149,7 +149,8 @@ fn assert_segments(
 #[ignore = "requires VOICE_NOTES_STREAMING_MODEL_DIR; run explicitly with --ignored"]
 fn one_batch_multiple_endpoints_match_realtime_and_final_segments() {
     let (samples, period) = batch();
-    let mut session = StreamingSession::new(engine(), None);
+    let engine = engine();
+    let mut session = StreamingSession::new(engine.clone(), None);
     session.advance_samples(samples.len());
     let mut segments = Vec::new();
     // 只调用一次 push；收尾前的 Segment 只能来自模型 endpoint，不能靠 finish 凑数。
@@ -162,21 +163,29 @@ fn one_batch_multiple_endpoints_match_realtime_and_final_segments() {
     collect(session.finish(), &mut segments);
     let transcript = session.transcript();
     assert_segments("session", &segments, &transcript, period, samples.len());
-    assert_matches_chunked("session", &transcript, &chunked_reference(&samples));
+    assert_matches_chunked("session", &transcript, &chunked_reference(engine, &samples));
 }
 
 #[test]
 #[ignore = "requires VOICE_NOTES_STREAMING_MODEL_DIR; run explicitly with --ignored"]
 fn one_capture_batch_matches_realtime_and_final_segments() {
     let (samples, period) = batch();
+    let engine = engine();
     let queue = SampleQueue::new(RATE as u32);
     queue.push(&samples);
     let stop = Arc::new(AtomicBool::new(false));
     let stopper = stop.clone();
+    // 兜底：首批音频若始终没被判为语音就不会 emit，循环在队列取空后会一直空转。
+    // 超时主动置 stop，让下面的断言失败，而不是把测试挂死。
+    let watchdog = stop.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(120));
+        watchdog.store(true, Ordering::SeqCst);
+    });
     let mut segments = Vec::new();
     let mut first_batch_segments = None;
     let transcript = run_streaming_core(
-        engine(),
+        engine.clone(),
         None,
         queue,
         RATE as u32,
@@ -195,5 +204,5 @@ fn one_capture_batch_matches_realtime_and_final_segments() {
         "生产首批回调必须已有三个 endpoint"
     );
     assert_segments("record", &segments, &transcript, period, samples.len());
-    assert_matches_chunked("record", &transcript, &chunked_reference(&samples));
+    assert_matches_chunked("record", &transcript, &chunked_reference(engine, &samples));
 }
