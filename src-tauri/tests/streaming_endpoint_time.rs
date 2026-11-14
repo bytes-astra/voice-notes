@@ -166,6 +166,72 @@ fn one_batch_multiple_endpoints_match_realtime_and_final_segments() {
     assert_matches_chunked("session", &transcript, &chunked_reference(engine, &samples));
 }
 
+/// 门控关闭后立即停止：旧的 pending 不能被 reset 后的识别器识别成零时长的新句。
+#[test]
+#[ignore = "requires VOICE_NOTES_STREAMING_MODEL_DIR; run explicitly with --ignored"]
+fn gated_stop_keeps_pending_in_the_previous_sentence() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let engine = engine();
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取中文 fixture");
+    let queue = SampleQueue::new(RATE as u32);
+    // 1 个样本留在 pending；接下来一批也在宽限内送入识别器。
+    queue.push(&wave.samples()[..48_001]);
+    let producer_queue = queue.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let producer_stop = stop.clone();
+    let (tx, rx) = mpsc::channel::<()>();
+    let producer = std::thread::spawn(move || {
+        let mut completed = false;
+        if rx.recv_timeout(Duration::from_secs(30)).is_ok() {
+            std::thread::sleep(Duration::from_millis(100));
+            producer_queue.push(&vec![0.0; 6_400]);
+            if rx.recv_timeout(Duration::from_secs(30)).is_ok() {
+                std::thread::sleep(Duration::from_millis(900));
+                producer_queue.push(&vec![0.0; 6_400]);
+                completed = rx.recv_timeout(Duration::from_secs(30)).is_ok();
+            }
+        }
+        producer_stop.store(true, Ordering::SeqCst);
+        completed
+    });
+    let mut segments = Vec::new();
+    let transcript = run_streaming_core(
+        engine,
+        None,
+        queue,
+        RATE as u32,
+        stop,
+        Arc::new(AtomicBool::new(false)),
+        |events| {
+            collect(events, &mut segments);
+            let _ = tx.send(());
+        },
+    );
+    assert!(
+        producer.join().expect("采样线程应正常退出"),
+        "必须处理三批采样"
+    );
+    assert!(!segments.is_empty(), "真实语音必须产生定稿");
+    assert_eq!(segments.len(), transcript.segments.len());
+    let mut previous_end = 0.0;
+    for (event, final_segment) in segments.iter().zip(&transcript.segments) {
+        assert!(event.start < event.end, "句子不能被压成零时长：{event:?}");
+        assert!(event.start >= previous_end, "句子不能重叠：{event:?}");
+        assert!(
+            event.end <= 54_401.0 / RATE as f32,
+            "不能把门控静音当作识别音频"
+        );
+        assert_eq!(
+            (event.start, event.end),
+            (final_segment.start, final_segment.end)
+        );
+        assert_eq!(event.text, final_segment.text);
+        previous_end = event.end;
+    }
+}
+
 #[test]
 #[ignore = "requires VOICE_NOTES_STREAMING_MODEL_DIR; run explicitly with --ignored"]
 fn one_capture_batch_matches_realtime_and_final_segments() {

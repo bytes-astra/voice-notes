@@ -115,6 +115,136 @@ fn flushes_trailing_words_on_finish() {
     }
 }
 
+/// 门控收尾也要冲出句尾，不能把最后的字留在被重置的识别器里。
+#[test]
+fn force_end_flushes_trailing_words() {
+    let Some(paths) = model_paths() else {
+        eprintln!("跳过：找不到流式模型（VOICE_NOTES_STREAMING_MODEL_DIR）");
+        return;
+    };
+    for (fixture, tail) in [
+        ("tests/fixtures/zh-tail.wav", "评审会"),
+        ("tests/fixtures/zh-tail2.wav", "确认一下"),
+    ] {
+        let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
+        let wave = sherpa_onnx::Wave::read(fixture).expect("读取测试音频");
+        let mut session = StreamingSession::new(engine, None);
+        for chunk in wave.samples().chunks(1_600) {
+            session.advance_samples(chunk.len());
+            session.push(chunk);
+        }
+        session.force_end();
+        let transcript = session.transcript();
+        assert!(
+            transcript.text.contains(tail),
+            "{fixture} → {}",
+            transcript.text
+        );
+    }
+}
+
+/// 一次门控收尾后，重置的识别器仍要能识别下一句。
+#[test]
+fn streaming_continues_after_force_end() {
+    let Some(paths) = model_paths() else {
+        eprintln!("跳过：找不到流式模型（VOICE_NOTES_STREAMING_MODEL_DIR）");
+        return;
+    };
+    let engine = Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型"));
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    let mut session = StreamingSession::new(engine, None);
+    let mut events = Vec::new();
+    // 包含一次不足 200ms 的零长语音收尾，再重复两次真实语音。
+    session.advance_samples(1_600);
+    events.extend(session.push(&vec![0.0; 1_600]));
+    events.extend(session.force_end());
+    for _ in 0..2 {
+        for chunk in wave.samples().chunks(1_600) {
+            session.advance_samples(chunk.len());
+            events.extend(session.push(chunk));
+        }
+        session.advance_samples(1_600);
+        events.extend(session.force_end());
+    }
+    let transcript = session.transcript();
+    let segments: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::Segment(segment) => Some(segment),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(segments.len(), 2, "两轮都应识别出一句");
+    assert!(segments.iter().all(|segment| !segment.text.is_empty()));
+    assert!(segments[0].end <= segments[1].start);
+    assert!(segments.iter().all(|segment| segment.start < segment.end));
+    assert_eq!(segments.len(), transcript.segments.len());
+    for (event, final_segment) in segments.iter().zip(&transcript.segments) {
+        assert_eq!(
+            (event.start, event.end),
+            (final_segment.start, final_segment.end)
+        );
+    }
+}
+
+/// 门控收尾后的流应与新会话独立，greedy 和热词两种配置都要验证。
+#[test]
+fn force_end_starts_a_fresh_stream_with_or_without_hotwords() {
+    let Some(paths) = model_paths() else {
+        eprintln!("跳过：找不到流式模型（VOICE_NOTES_STREAMING_MODEL_DIR）");
+        return;
+    };
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    let words = vec!["产品评审会".to_string()];
+    for hotwords in [&[][..], words.as_slice()] {
+        let engine = Arc::new(StreamingEngine::new(&paths, hotwords).expect("加载流式模型"));
+        let mut session = StreamingSession::new(engine.clone(), None);
+        let mut previous_count = 0;
+        for chunk in wave.samples().chunks(1_600) {
+            session.advance_samples(chunk.len());
+            previous_count += session
+                .push(chunk)
+                .iter()
+                .filter(|event| matches!(event, StreamEvent::Segment(_)))
+                .count();
+        }
+        previous_count += session
+            .force_end()
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::Segment(_)))
+            .count();
+        for chunk in wave.samples().chunks(1_600) {
+            session.advance_samples(chunk.len());
+            session.push(chunk);
+        }
+        session.force_end();
+        let actual = session.transcript();
+        let mut fresh = StreamingSession::new(engine, None);
+        for chunk in wave.samples().chunks(1_600) {
+            fresh.advance_samples(chunk.len());
+            fresh.push(chunk);
+        }
+        fresh.force_end();
+        let expected = fresh.transcript();
+        assert!(
+            previous_count > 0 && !expected.text.is_empty(),
+            "两轮均应识别出文本"
+        );
+        assert!(
+            actual.segments.len() > previous_count,
+            "收尾后应再次识别出文本"
+        );
+        let actual_text = actual.segments[previous_count..]
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<String>();
+        assert_eq!(
+            actual_text, expected.text,
+            "门控收尾后的识别结果必须与新流一致，hotwords={hotwords:?}"
+        );
+    }
+}
+
 /// 词表外的字（番、茄、腩、苹、莓、酪）不能变成「�」。
 ///
 /// 这个流式模型的词表只有 1426 个汉字，表外的字只能拆成字节 token
@@ -141,10 +271,7 @@ fn keeps_out_of_vocab_chars_intact() {
         for event in session.push(chunk) {
             match event {
                 StreamEvent::Partial(text) => {
-                    assert!(
-                        !text.contains('\u{FFFD}'),
-                        "中间结果里出现了乱码：{text}"
-                    );
+                    assert!(!text.contains('\u{FFFD}'), "中间结果里出现了乱码：{text}");
                     all.push_str(&text);
                 }
                 StreamEvent::Segment(segment) => {

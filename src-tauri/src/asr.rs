@@ -768,6 +768,8 @@ struct Timeline {
     /// 上一句定稿的终点。重放的分片整段落在句起点之前时，这句的时间
     /// 只能退到这里 —— 不能退进上一句的区间。
     last_end: usize,
+    /// 最近一个在句子开始之前的缺口终点：之后的句子起点也不能退过它。
+    segment_floor: usize,
     /// 当前这句已经吃到音频了吗（吃到 = 这个洞在这句**里面**）。
     ///
     /// 判定口径与整段模式一致：洞的「喂入位置」落在这句的喂入起点**之前**
@@ -799,6 +801,9 @@ impl Timeline {
         self.recorded += samples;
         if !self.segment_has_audio {
             self.segment_start = self.recorded;
+            if samples > 0 {
+                self.segment_floor = self.recorded;
+            }
         }
     }
 
@@ -828,25 +833,25 @@ impl Timeline {
     /// 并把下一句的起点挪到现在。
     ///
     /// 静音期时钟一直在走（`advance_dropped(0)` 把句起点跟到批末），
-    /// 随后重放的预录 / 端点后余量可能整段早于 `segment_start` ——
-    /// 这时退回这句自己的音频起点，而不是把区间压成零时长；
-    /// 退不到上一句里面（`last_end` 兜底）。
-    fn commit_at(&mut self, end: usize) -> (usize, usize) {
+    /// 随后重放的预录 / 端点后余量可能早于 `segment_start`。
+    /// 不论句子何时结束，都要包含已喂入的预录，且不能退进上一句或前置缺口。
+    fn commit_at(&mut self, end: usize, has_text: bool) -> (usize, usize) {
         let end = end.min(self.recorded);
-        let start = if end <= self.segment_start {
-            self.sentence_audio_start
-                .unwrap_or(self.segment_start)
-                .max(self.last_end)
-                .min(self.segment_start)
-        } else {
-            self.segment_start
-        };
+        let start = self
+            .sentence_audio_start
+            .unwrap_or(self.segment_start)
+            .min(self.segment_start)
+            .max(self.last_end)
+            .max(self.segment_floor);
         // 退无可退时保持原来的钳制：终点抬到起点，宁可零时长也不倒退。
         let end = end.max(start);
         // 句起点只前进不后退：重放的分片早于当前句起点时，不能把下一句的起点
         // 拉回过去 —— 下一句的音频在更靠后的位置。
         self.segment_start = self.segment_start.max(end);
-        self.last_end = end;
+        // 无文本的 endpoint 只重置解码器，不是已经发出的句子。
+        if has_text {
+            self.last_end = end;
+        }
         self.segment_has_audio = false;
         self.sentence_audio_start = None;
         (start, end)
@@ -987,7 +992,7 @@ impl StreamingSession {
     }
 
     fn commit(&mut self, events: &mut Vec<StreamEvent>, end: usize) {
-        let (start, end) = self.timeline.commit_at(end);
+        let (start, end) = self.timeline.commit_at(end, !self.partial.is_empty());
         if self.partial.is_empty() {
             return;
         }
@@ -1020,32 +1025,38 @@ impl StreamingSession {
         events
     }
 
-    /// 检测到静音时主动收尾：提交当前句子并重置解码器。
+    /// 检测到静音时主动收尾：提交当前句子并创建新的流。
     pub fn force_end(&mut self) -> Vec<StreamEvent> {
         let mut events = Vec::new();
-        self.commit(&mut events, self.timeline.recorded);
-        self.recognizer.recognizer.reset(&self.stream);
+        self.flush_input(&mut events);
+        // input_finished() 结束了特征输入；reset 只重置识别状态，不能复用该流。
+        self.stream = self.recognizer.new_stream();
         self.partial.clear();
         events
+    }
+
+    /// 冲刷真实余量和尾部上下文；补的静音不占录音时长。
+    fn flush_input(&mut self, events: &mut Vec<StreamEvent>) {
+        // 不足一个分片的余量仍属于这一句，必须在重置之前喂入。
+        if let Some((chunk, end)) = self.input.finish() {
+            self.accept(&chunk, end, events);
+        }
+        // 门控静音已推进录音时钟，但并未喂给识别器；不能将句子定稿到批末。
+        let end = self.input.end;
+        // 与最终收尾一样补尾部上下文，避免 reset 前丢掉句尾的字。
+        let silence = vec![0.0f32; TAIL_SILENCE_SAMPLES];
+        for chunk in silence.chunks(STREAM_CHUNK) {
+            self.accept(chunk, end, events);
+        }
+        self.stream.input_finished();
+        self.pump(events, end);
+        self.commit(events, end);
     }
 
     /// 结束输入，冲刷最后一段。
     pub fn finish(&mut self) -> Vec<StreamEvent> {
         let mut events = Vec::new();
-        if let Some((chunk, end)) = self.input.finish() {
-            self.accept(&chunk, end, &mut events);
-        }
-        // 结尾补一小段静音：解码器需要一点尾部上下文才会吐出最后一个字，
-        // 否则句尾会被丢掉（“产品评审会” → “产品评审”）。
-        // 补的静音不算录音时长 —— 时钟只由调用方推进，这里不碰。
-        let end = self.input.end;
-        let silence = vec![0.0f32; TAIL_SILENCE_SAMPLES];
-        for chunk in silence.chunks(STREAM_CHUNK) {
-            self.accept(chunk, end, &mut events);
-        }
-        self.stream.input_finished();
-        self.pump(&mut events, end);
-        self.commit(&mut events, end);
+        self.flush_input(&mut events);
         events
     }
 
