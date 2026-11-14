@@ -731,6 +731,32 @@ textarea::placeholder { color: var(--muted); opacity: 0.7; }
 }
 .switch-row input { width: 16px; height: 16px; accent-color: var(--accent); }
 
+/* 云端配置表单：标签在上、输入框在下 */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 13.5px;
+}
+.field-label { color: var(--muted); }
+.field input {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-2);
+  color: var(--ink);
+  padding: 9px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.field input::placeholder { color: var(--muted); opacity: 0.7; }
+
 .settings-foot {
   justify-content: space-between;
   border-top: 1px solid var(--line);

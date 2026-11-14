@@ -2,7 +2,7 @@
 
 export const { invoke } = window.__TAURI__.core
 export const { listen } = window.__TAURI__.event
-export const { open: openDialog } = window.__TAURI__.dialog
+export const { open: openDialog, confirm: confirmDialog } = window.__TAURI__.dialog
 export const { writeText } = window.__TAURI__.clipboardManager
 export const { getCurrentWindow } = window.__TAURI__.window
 export const { getCurrentWebview } = window.__TAURI__.webview

@@ -8,9 +8,9 @@ import { getCurrentWindow, getCurrentWebview, invoke, logEvent } from './tauri.j
 import { renderHistory, saveHistory, setHistoryLoadHandler } from './history.js'
 import { clearResult, relocalizeResult, renderResultActions, showTranscript } from './result.js'
 import {
-  downloadModel, downloadStreamingModel, loadDevices,
+  clearCloudKey, downloadModel, downloadStreamingModel, loadDevices,
   localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
-  setMode, setSelects, warmUp,
+  saveCloudConfig, setMode, setSelects, warmUp,
 } from './status.js'
 import {
   buildWave, cancelRecording, renderHint, renderMicLabel, startRecording, stopRecording,
@@ -212,6 +212,9 @@ export function bindUI() {
       toast(fmtError(error), 'error')
     }
   })
+
+  els.cloudSave.addEventListener('click', () => void saveCloudConfig())
+  els.cloudClearKey.addEventListener('click', () => void clearCloudKey())
 
   els.hotwordsSave.addEventListener('click', async () => {
     const hotwords = els.hotwordsInput.value

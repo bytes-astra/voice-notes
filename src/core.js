@@ -9,6 +9,8 @@ export const LANGS = ['auto', 'zh', 'en', 'yue', 'ja', 'ko']
 export const HISTORY_KEY = 'voicenotes.history.v1'
 export const THEME_KEY = 'voicenotes.theme'
 export const LOCALE_KEY = 'voicenotes.locale'
+/// 云端上传提示的确认标记：确认过一次就不再问（仍然可以随时在设置里换服务）。
+export const CLOUD_OPT_IN_KEY = 'voicenotes.cloudOptIn'
 export const BARS = 48
 // 空闲时的静态波形剪影，避免整片区空着
 export const IDLE_WAVE = [4, 6, 9, 13, 18, 24, 19, 14, 10, 7, 5, 8, 12, 17, 23, 28, 22, 16, 11, 7, 5, 6, 10, 15, 21, 26, 20, 15, 10, 7, 6, 9, 14, 19, 24, 18, 13, 9, 6, 5, 7, 11, 16, 21, 17, 12, 8, 5]
@@ -113,6 +115,12 @@ export const els = {
   hotwordsInput: $('hotwords-input'),
   hotwordsSave: $('hotwords-save'),
   hotwordsExample: $('hotwords-example'),
+  cloudStatus: $('cloud-status'),
+  cloudBaseUrl: $('cloud-base-url'),
+  cloudApiKey: $('cloud-api-key'),
+  cloudModel: $('cloud-model'),
+  cloudSave: $('cloud-save'),
+  cloudClearKey: $('cloud-clear-key'),
   toast: $('toast'),
   dropOverlay: $('drop-overlay'),
   pickFileBtn: $('pick-file-btn'),

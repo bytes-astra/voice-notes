@@ -89,12 +89,18 @@ let startTask = null
 
 export async function startRecording() {
   const streaming = state.status?.mode === 'streaming'
+  const cloud = state.status?.mode === 'cloud'
   if (streaming && !state.status.streamingReady) {
     toast(t('model.streamingMissing'), 'error')
     els.streamSetup.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     return
   }
-  if (!streaming && !state.status?.modelReady) {
+  // 云端模式不装本地模型：能不能用只看有没有填凭据。
+  if (cloud && !state.status?.cloudConfigured) {
+    toast(t('cloud.notConfigured'), 'error')
+    return
+  }
+  if (!streaming && !cloud && !state.status?.modelReady) {
     toast(t('model.offlineMissing'), 'error')
     els.setup.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     return
@@ -102,7 +108,7 @@ export async function startRecording() {
   if (state.phase !== 'idle' || startTask) return
   setPhase('requesting')
   const requestId = ++state.requestId
-  startTask = runStart(requestId, streaming)
+  startTask = runStart(requestId, streaming, cloud)
   try {
     await startTask
   } catch (error) {
@@ -117,7 +123,7 @@ export async function startRecording() {
 }
 
 /// 真正启动一次录音。requestId 变了说明这次请求已经被取消（Esc）。
-async function runStart(requestId, streaming) {
+async function runStart(requestId, streaming, cloud) {
   try {
     // 先单独触发一次麦克风权限（macOS 在第一次打开输入流时才弹框），
     // 用户同意后再开始录音；不同意就停在这里。
@@ -135,7 +141,14 @@ async function runStart(requestId, streaming) {
     const sessionId = await invoke('reserve_session')
     if (requestId !== state.requestId) return
     state.recordingSessionId = sessionId
-    await invoke(streaming ? 'start_streaming_recording' : 'start_offline_recording', { sessionId })
+    await invoke(
+      cloud
+        ? 'start_cloud_recording'
+        : streaming
+          ? 'start_streaming_recording'
+          : 'start_offline_recording',
+      { sessionId },
+    )
     // 启动后端会话的过程中被取消：把已经起来的会话也停掉，别留下一个看不见的录音。
     if (requestId !== state.requestId) {
       await invoke('cancel_recording').catch(() => {})

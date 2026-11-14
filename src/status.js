@@ -1,7 +1,7 @@
 /* 模型状态、识别模式、语言、输入设备、模型下载、设置项 */
 
-import { $, LANGS, STREAM_LANGS, els, errorCode, errorText, fmtBytes, fmtError, idleHint, state, t, toast } from './core.js'
-import { invoke, logEvent, openDialog } from './tauri.js'
+import { $, CLOUD_OPT_IN_KEY, LANGS, STREAM_LANGS, els, errorCode, errorText, fmtBytes, fmtError, idleHint, state, t, toast } from './core.js'
+import { confirmDialog, invoke, logEvent, openDialog } from './tauri.js'
 
 /* 下拉框实例由入口创建后交给这里（status 不该认识 applyLocale，否则会和入口互相依赖） */
 let deviceSelect = null
@@ -14,7 +14,12 @@ export function setSelects(device, locale) {
 
 /// 模型徽标文案：流式与整段用同一套说法，避免两处提示对不上。
 export function modelBadgeText(phase) {
-  const name = state.status?.mode === 'streaming' ? t('model.label.streaming') : t('model.label.offline')
+  const mode = state.status?.mode
+  const name = mode === 'streaming'
+    ? t('model.label.streaming')
+    : mode === 'cloud'
+      ? t('model.label.cloud')
+      : t('model.label.offline')
   if (phase === 'error') return t('model.badge.error', { name })
   if (phase === 'loading') return t('model.badge.loading', { name })
   return t('model.badge.ready', { name })
@@ -45,8 +50,10 @@ export function renderStatus() {
   const status = state.status
   if (!status) return
   const streamingMode = status.mode === 'streaming'
-  const ready = streamingMode ? status.streamingReady : status.modelReady
-  els.setup.classList.toggle('hidden', streamingMode || status.modelReady)
+  const cloudMode = status.mode === 'cloud'
+  // 云端模式不装本地模型：能不能用只看有没有填凭据。
+  const ready = cloudMode ? !!status.cloudConfigured : streamingMode ? status.streamingReady : status.modelReady
+  els.setup.classList.toggle('hidden', streamingMode || cloudMode || status.modelReady)
 
   if (streamingMode) {
     if (!ready) {
@@ -57,6 +64,11 @@ export function renderStatus() {
     } else {
       applyEngineState(state.engine)
     }
+  } else if (cloudMode) {
+    // 云端没有本地引擎：徽标只说配没配凭据，不装作「模型已就绪」。
+    els.badge.className = ready ? 'badge' : 'badge warn'
+    els.badge.textContent = ready ? t('model.badge.cloudReady') : t('model.badge.cloudMissing')
+    els.dot.dataset.state = 'idle'
   } else if (!ready) {
     els.badge.textContent = t('model.badge.offlineMissing')
     els.badge.className = 'badge warn'
@@ -72,7 +84,7 @@ export function renderStatus() {
   }
 
   els.mic.classList.toggle('disabled', !ready)
-  els.mic.title = ready ? '' : streamingMode ? t('model.needStreaming') : t('model.needOffline')
+  els.mic.title = ready ? '' : streamingMode ? t('model.needStreaming') : cloudMode ? t('model.needCloud') : t('model.needOffline')
 
   els.settingsClearModel.classList.toggle('hidden', !status.modelDirCustom)
   // 设置页这块只讲整段模型：流式模式下不能用 streamingReady 冒充它已就绪。
@@ -93,7 +105,12 @@ export function renderStatus() {
   if (document.activeElement !== els.hotwordsInput) {
     els.hotwordsInput.value = (status.hotwords || []).join('\n')
   }
-  els.modelMode.textContent = streamingMode ? t('model.name.streaming') : t('model.name.offline')
+  els.modelMode.textContent = streamingMode
+    ? t('model.name.streaming')
+    : cloudMode
+      ? t('model.name.cloud')
+      : t('model.name.offline')
+  renderCloudConfig()
 
   for (const button of els.langRow.children) {
     button.setAttribute('aria-pressed', String(button.dataset.lang === status.language))
@@ -101,8 +118,80 @@ export function renderStatus() {
   renderMode()
 }
 
-export function renderMode() {
-  const mode = state.status?.mode || 'offline'
+/// 云端配置表单：回填服务地址与模型名。
+///
+/// 凭据不会回传前端 —— 密钥输入框留空，配没配用一行状态字说明。
+function renderCloudConfig() {
+  const status = state.status
+  if (!status) return
+  els.cloudStatus.textContent = status.cloudConfigured
+    ? t('settings.cloudConfigured')
+    : t('settings.cloudNotConfigured')
+  // 用户正在编辑时不要覆盖输入
+  if (document.activeElement !== els.cloudBaseUrl) {
+    els.cloudBaseUrl.value = status.cloudBaseUrl || ''
+  }
+  if (document.activeElement !== els.cloudModel) {
+    els.cloudModel.value = status.cloudModel || ''
+  }
+}
+
+/// 云端模式会把录音上传出去：第一次必须用户明确同意。
+///
+/// 同意过一次就记住，不再反复问（换服务随时可以在设置里改）。
+async function confirmCloudUpload() {
+  if (localStorage.getItem(CLOUD_OPT_IN_KEY) === '1') return true
+  try {
+    const ok = await confirmDialog(t('cloud.privacyMessage'), {
+      title: t('cloud.privacyTitle'),
+      kind: 'warning',
+    })
+    if (!ok) return false
+    localStorage.setItem(CLOUD_OPT_IN_KEY, '1')
+    logEvent('INFO', '用户已确认云端上传提示')
+    return true
+  } catch (error) {
+    logEvent('ERROR', `云端上传提示失败: ${errorText(error)}`)
+    return false
+  }
+}
+
+/// 保存云端配置。
+///
+/// 凭据不会回传前端，所以密钥框留空 = 不改；要清空走「清除凭据」。
+export async function saveCloudConfig() {
+  const typed = els.cloudApiKey.value.trim()
+  try {
+    state.status = await invoke('set_cloud_config', {
+      baseUrl: els.cloudBaseUrl.value.trim(),
+      apiKey: typed ? typed : undefined,
+      model: els.cloudModel.value.trim(),
+    })
+    renderStatus()
+    els.cloudApiKey.value = ''
+    toast(t('settings.cloudSaved'))
+  } catch (error) {
+    toast(fmtError(error), 'error')
+  }
+}
+
+/// 清除已保存的凭据：显式传空串（保存时空串表示「清空」）。
+export async function clearCloudKey() {
+  try {
+    state.status = await invoke('set_cloud_config', {
+      baseUrl: els.cloudBaseUrl.value.trim(),
+      apiKey: '',
+      model: els.cloudModel.value.trim(),
+    })
+    renderStatus()
+    els.cloudApiKey.value = ''
+    toast(t('settings.cloudKeyCleared'))
+  } catch (error) {
+    toast(fmtError(error), 'error')
+  }
+}
+
+export function renderMode() {  const mode = state.status?.mode || 'offline'
   els.itnToggle.disabled = state.phase !== 'idle'
   for (const chip of els.modeRow.children) {
     chip.setAttribute('aria-pressed', String(chip.dataset.mode === mode))
@@ -128,6 +217,8 @@ export function renderMode() {
 
 export async function setMode(mode) {
   if (state.phase !== 'idle' || state.status?.mode === mode) return
+  // 云端模式会把录音上传出去：没得到用户同意就不切。
+  if (mode === 'cloud' && !(await confirmCloudUpload())) return
   try {
     state.status = await invoke('set_mode', { mode })
     state.engine = 'idle'
@@ -143,6 +234,9 @@ export async function setMode(mode) {
       } else {
         void invoke('warm_up_streaming').catch(() => {})
       }
+    } else if (mode === 'cloud') {
+      // 云端不装本地模型：没有凭据就提示去哪里填，别装作能用。
+      if (!state.status.cloudConfigured) toast(t('mode.cloudNeedConfig'))
     } else if (state.status.modelReady) {
       // 切回整段前先把 239 MB 引擎加载好（后端切模式时已经释放了另一份）。
       void warmUp().catch(() => {})

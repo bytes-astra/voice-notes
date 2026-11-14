@@ -61,6 +61,10 @@ const installMock = () => {
     punctBytes: 294_372_519,
     punctTotalBytes: 294_372_519,
     appVersion: '0.1.1',
+    // 云端：只回传布尔值与地址/模型名，凭据明文不回来（真后端也是这个结构）。
+    cloudConfigured: false,
+    cloudBaseUrl: '',
+    cloudModel: '',
   }
   window.__mockCalls = []
   window.__mockTranscript = ''
@@ -104,6 +108,18 @@ const installMock = () => {
               hotwordsIgnored: window.__mockHotwordsIgnored,
             }
             return clone(window.__mockStatus)
+          case 'set_cloud_config':
+            window.__mockStatus = {
+              ...window.__mockStatus,
+              cloudBaseUrl: args.baseUrl ?? '',
+              cloudModel: args.model ?? '',
+              // 凭据只记「有没有」，明文不留（跟真后端一个口径）。
+              cloudConfigured:
+                args.apiKey === undefined
+                  ? window.__mockStatus.cloudConfigured
+                  : !!args.apiKey,
+            }
+            return clone(window.__mockStatus)
           case 'default_hotwords':
             return ['产品评审会', '玄戒芯片', '张三']
           case 'reserve_session':
@@ -119,6 +135,7 @@ const installMock = () => {
             return undefined
           case 'start_offline_recording':
           case 'start_streaming_recording':
+          case 'start_cloud_recording':
             if (window.__mockStartGate) await window.__mockStartGate
             window.__mockTranscript = ''
             return args.sessionId
@@ -178,7 +195,15 @@ const installMock = () => {
         return () => {}
       },
     },
-    dialog: { open: async () => null },
+    dialog: {
+      open: async () => null,
+      // 隐私确认框：记下参数（断言提示确实出现过），返回值由 __mockConfirmAnswer 控制。
+      confirm: async (message, options) => {
+        window.__mockConfirmCalls = window.__mockConfirmCalls || []
+        window.__mockConfirmCalls.push({ message, options })
+        return window.__mockConfirmAnswer !== false
+      },
+    },
     clipboardManager: { writeText: async () => {} },
     // 窗口 API 要跟真后端对得上：少了 setTheme / setTitle，
     // 窗口外观（NSWindow.appearance）和窗口标题在 harness 里就静默变成 no-op ——
@@ -1134,6 +1159,75 @@ await page.evaluate(() => {
   window.__mockWarmError = null
   window.__mockWarmUpError = null
 })
+
+// ── 云端模式：第三档芯片 + 隐私确认 + 配置表单 ──
+await page.locator('.nav-item[data-view="transcribe"]').click()
+await page.waitForTimeout(200)
+await page.evaluate(() => {
+  localStorage.removeItem('voicenotes.cloudOptIn')
+  window.__mockConfirmCalls = []
+  window.__mockConfirmAnswer = false
+})
+check('模式芯片有三个', (await page.locator('#mode-row .mode-chip').count()) === 3)
+await page.locator('#mode-row .mode-chip[data-mode="cloud"]').click()
+await page.waitForTimeout(300)
+const confirmCalls = await page.evaluate(() => window.__mockConfirmCalls || [])
+check(
+  '切云端前弹出上传提示',
+  confirmCalls.length === 1 && confirmCalls[0].message.includes('上传'),
+  confirmCalls[0]?.message || '(没有确认框)',
+)
+check(
+  '拒绝确认就不切模式',
+  (await page.evaluate(() => window.__mockStatus.mode)) === 'offline',
+  await page.evaluate(() => window.__mockStatus.mode),
+)
+await page.evaluate(() => {
+  window.__mockConfirmAnswer = true
+})
+await page.locator('#mode-row .mode-chip[data-mode="cloud"]').click()
+await page.waitForTimeout(300)
+check(
+  '确认后切到云端模式',
+  (await page.evaluate(() => window.__mockStatus.mode)) === 'cloud',
+  await page.evaluate(() => window.__mockStatus.mode),
+)
+
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.waitForTimeout(200)
+check(
+  '云端配置表单可见',
+  (await page.locator('#cloud-base-url').count()) === 1 &&
+    (await page.locator('#cloud-api-key').count()) === 1 &&
+    (await page.locator('#cloud-model').count()) === 1,
+)
+await page.locator('#cloud-base-url').fill('https://example.invalid/v1')
+await page.locator('#cloud-api-key').fill('mock-key')
+await page.locator('#cloud-model').fill('mock-model')
+await page.locator('#cloud-save').click()
+await page.waitForTimeout(300)
+check(
+  '云端配置已保存',
+  (await page.evaluate(() => window.__mockStatus.cloudConfigured)) === true,
+)
+check('密钥不回显', (await page.locator('#cloud-api-key').inputValue()) === '')
+check(
+  '配置状态提示已配置',
+  (await page.locator('#cloud-status').innerText()).includes('已配置'),
+  await page.locator('#cloud-status').innerText(),
+)
+await page.locator('.nav-item[data-view="transcribe"]').click()
+await page.waitForTimeout(150)
+// 云端模式录音：走的是云端自己的启动命令。
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(300)
+check(
+  '云端模式调用云端启动命令',
+  (await page.evaluate(() => window.__mockCalls.some(([cmd]) => cmd === 'start_cloud_recording'))),
+  await page.evaluate(() => window.__mockCalls.map(([cmd]) => cmd).join(',')),
+)
+await page.locator('#mic-btn').click()
+await page.waitForTimeout(300)
 
 // ── Windows 场景：侧栏顶部的红绿灯占位不能套到 Windows 上 ──
 // macOS 的标题栏是覆盖式的，侧栏顶部要留 78px 给红绿灯；

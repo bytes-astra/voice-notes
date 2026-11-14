@@ -130,6 +130,10 @@
                 <span class="mode-name" data-i18n="mode.streaming">流式</span>
                 <span class="mode-desc" data-i18n="mode.streamingDesc">实时出字 · 仅中文</span>
               </button>
+              <button type="button" class="mode-chip" data-mode="cloud" aria-pressed="false">
+                <span class="mode-name" data-i18n="mode.cloud">云端</span>
+                <span class="mode-desc" data-i18n="mode.cloudDesc">实时出字 · 上传到云端</span>
+              </button>
             </div>
             <div class="lang-row" id="lang-row" role="group" data-i18n-aria="lang.group"></div>
             <div class="device-row">
@@ -205,6 +209,27 @@
                   <input type="checkbox" id="punct-toggle" />
                   <span data-i18n="settings.punctToggle">流式结果自动加标点</span>
                 </label>
+              </div>
+            </section>
+            <section>
+              <h3 data-i18n="settings.cloud">云端服务</h3>
+              <p class="muted small" data-i18n="settings.cloudHint">可选。填好后可以在转写页选「云端」模式；不填就只在本机处理。</p>
+              <p class="muted small" id="cloud-status"></p>
+              <label class="field">
+                <span class="field-label" data-i18n="settings.cloudBaseUrl">服务地址</span>
+                <input type="text" id="cloud-base-url" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudBaseUrlPlaceholder" />
+              </label>
+              <label class="field">
+                <span class="field-label" data-i18n="settings.cloudApiKey">API 密钥</span>
+                <input type="password" id="cloud-api-key" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudApiKeyPlaceholder" />
+              </label>
+              <label class="field">
+                <span class="field-label" data-i18n="settings.cloudModel">模型</span>
+                <input type="text" id="cloud-model" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudModelPlaceholder" />
+              </label>
+              <div class="row">
+                <button type="button" class="btn small primary" id="cloud-save" data-i18n="settings.cloudSave">保存云端配置</button>
+                <button type="button" class="btn small ghost" id="cloud-clear-key" data-i18n="settings.cloudClearKey">清除凭据</button>
               </div>
             </section>
             <section>
