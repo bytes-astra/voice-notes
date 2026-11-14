@@ -208,12 +208,25 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   `shared_engine`）也会被抓住，而只在 `spawn_blocking` 里调的 `install_engine` 不会。
   门禁自己有测试（`scripts/check-async.test.mjs`，含「把旧的 `shared_engine` 加回真源码会被抓住」）。
 
+## ☁️ 云端模式的验证手段
+
+云端模式（第三种引擎，见 README「云端模式」）的验证**全部离线**：协议那头用假 provider 顶上，不需要真服务、不需要 API key、也不下载模型。
+
+- **会话层单测**（`src-tauri/src/asr/cloud/tests.rs`）：时间轴按 16 kHz 采样数推进（丢掉的音频同样占录音时间）、f32→i16 的 clamp、final→`Segment` 映射、**provider 给的时间戳不覆盖本地轴**、provider 要 24 kHz 时上传前升采样、**空 final 不抢下一句的区间**（时间戳不错位）、断连保留已定稿句子。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib`。
+- **协议编解码单测**（`src-tauri/src/asr/cloud/realtime/protocol_tests.rs`）：拿官方的示例帧当输入 —— `conversation.item.input_audio_transcription.delta`（字段 `delta`）与 `.completed`（字段 `transcript`）解成 Partial / Final、`input_audio_buffer.commit` 的回执带 `item_id`（用来给 final 按提交顺序排序）、`session.update` 的编码（`audio/pcm` + 24000、`turn_detection` 为 `null` 时由客户端断句、语言参数是 `languages` 复数）。另有**收尾记账**两组：客户端断句（提交后结果没回来就还在等）、服务端断句（迟到的旧 final 不能抹掉新音频的等待），以及**迟到的 `committed` 回执不再排队**（否则队列永远不空，收尾会一直等）。
+- **集成测试**（`src-tauri/src/record/tests.rs` 的 `cloud_core_keeps_finalized_sentences_when_disconnected`）：走 `run_cloud_streaming_core` 的完整编排，中途断连后已定稿句子仍在。
+- **凭据不外泄**：`Status` 序列化里没有 key 明文（`engine` 的单测）、错误详情里的 key 会被抹成 `***`（`sanitize()`，协议单测）、界面检查断言「密钥不回显」。
+- **界面检查**（`npm run check:ui`）覆盖云端：配置保存、状态徽标（已配置 / 未配置）、上传确认框、云端模式发的是 `start_cloud_recording`。
+
+> [!NOTE]
+> 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。
+
 ## 🖥️ 界面检查
 
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 140 项检查
+npm run check:ui     # 149 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 

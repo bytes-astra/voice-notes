@@ -4,6 +4,10 @@
 
 规范之外还有两份文档：验证手段与基线在 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md)，复审作业面在 [`docs/REVIEW-CHECKLIST.md`](docs/REVIEW-CHECKLIST.md) —— **改任何模型 / 参数 / 热词之前，先跑探针做前后对比，别凭感觉。**
 
+## 📋 OpenSpec 规划
+
+本项目的 OpenSpec 规划在独立 store（不在仓库里，仓库没有 `openspec/` 目录），id `voice-notes`。跑任何 `openspec` 命令都要带 `--store voice-notes`，例如 `openspec validate <change> --store voice-notes`。本机未注册该 store 时先 `openspec store setup voice-notes --path <path>`。
+
 ## 🎯 核心架构与原则
 
 - **源文件驱动**：前端逻辑在 `src/`（原生 JS + ES Modules，浏览器直接跑，没有打包器），后端逻辑在 `src-tauri/src/`（Rust）。
@@ -77,7 +81,7 @@
   - **不能加 `async`** —— async 脚本脱离文档顺序，可能晚于 `app.js` 跑，那时 `window.I18N` 还不存在 → 界面直接挂（等 `.chip` 超时）。
   - **不能写成 `type="module"`** —— 改成 module 后「位置」变成决定性的：挪到 `app.js` 之后界面就挂（实测过）。
   - **不能被 `import`** —— 被 import 会执行两遍（实测 `i18n.js` 执行 2 次、`window.I18N` 被换成第二个实例）。当前代码恰好没因此坏掉（哪个实例生效取决于模块求值顺序），但这种依赖求值顺序的隐患不值得留。
-  - 顺带说明：**经典脚本排在 `app.js` 之前本身不会坏**（经典脚本在解析期执行，`app.js` 是 module、deferred，所以经典脚本永远先跑）—— 实测把 `i18n.js` 挪到 `app.js` 之后仍然 124/124 通过。位置这条约束是为了跟上面「不能是 module」配套：一旦它变成 module，位置就决定成败了。
+  - 顺带说明：经典脚本排在 `app.js` 之前本身不会坏（实测挪后仍 124/124 通过）；位置这条约束只是「不能是 module」的配套 —— 一旦变成 module，位置才决定成败。
 - **字典文案在渲染时取**：存 key，渲染时 `t(key)`。模块顶层取 `t()` 会在切语言时不更新（语言芯片、阶段提示、视图标题都踩过）。视图标题是 `VIEW_KEYS` + `viewTitle()`。
 - **随状态变的标签**（麦克风「开始录音 / 结束录音」）用单独的渲染函数（如 `renderMicLabel()`），并在 `applyLocale()` 里重调一次 —— `I18N.apply()` 只认 HTML 上的静态 `data-i18n-aria`。
 - **同一个控件的文案不按模式变**：麦克风下方的空闲提示两种模式统一写「点击麦克风开始录音」，模式差异由「整段 / 流式」芯片的副标题说明。
