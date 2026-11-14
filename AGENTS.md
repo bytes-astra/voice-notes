@@ -26,7 +26,7 @@
    npm run build        # → src-tauri/target/release/bundle/
    ```
 
-2. 门禁与检查（逐条说明）：
+2. 门禁与检查（逐条说明；每条「守什么坑」的详细版见 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md)「单元测试」）：
 
    - `npm run check`：门禁 —— i18n → 前端依赖图 → 拼句规则 → 前后端契约 → 打包与原生层配置 → clippy（`-D warnings`）→ `cargo test --lib`。
    - `npm run check:i18n`：各语言 key 对齐 + HTML/JS 引用的 key 存在 + 后端错误码必须在字典里 + 后端不许返回裸字符串错误 + `i18n.js`/`select.js` 必须是经典脚本（改文案后必跑）。
@@ -291,20 +291,7 @@ ad-hoc 签名的 designated requirement **就是代码签名哈希本身**（`co
 - `no_segment_warning()`：**有能量、VAD 也没在攒这一句**、且超过 10 秒没切出句子 → 记一条 WARN。判别条件里的「VAD 正在攒」（`detector.detected()`）是关键 —— 连续说话时 VAD 要等到句尾才切段，那段时间没有句子是正常的，别误报。
 - `recognize_and_emit()`：识别结果为空时记一条 WARN（原来直接 `return`，音频白丢）。
 
-**排查手法**（别凭感觉，先跑探针）：
-
-```bash
-VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test vad_long_probe -- --nocapture   # VAD 吞了多少
-VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test gain_probe   -- --nocapture   # 电平多低还认得出
-VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test noise_probe  -- --nocapture   # 噪声/背景人声
-VOICE_NOTES_MIC_FILE=/tmp/x-16k.wav cargo test --manifest-path src-tauri/Cargo.toml --test mic_probe -- --nocapture   # 离线分析一段真实音频
-VOICE_NOTES_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test quiet_pipeline_probe -- --nocapture   # 低电平录音走真实管线还能不能出字
-VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... cargo test --manifest-path src-tauri/Cargo.toml --test quality_gate -- --nocapture --test-threads=1   # 质量门禁：CER / RTF 退化就红
-```
-
-**改模型 / 换参数 / 加热词之后要跑 `quality_gate`**：它量的是**生产路径**（`OfflineSession` / `StreamingSession`），
-阈值是整段 CER ≤ 25%、流式 CER ≤ 55%、RTF ≤ 1.0（可用环境变量覆盖）。语料要先
-`bash scripts/gen-tts-corpus.sh` 生成（不入库）。基线见 `docs/HOW_TO_VERIFY.md`。
+**排查手法**（别凭感觉，先跑探针）：探针命令、质量门禁的阈值与基线见 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md) —— 改模型 / 换参数 / 加热词之后先跑 `quality_gate`。
 
 `quiet_pipeline_probe` 走**生产的 `record::run_offline` 管线**，对照「不经 AGC」与「经 AGC」两条路：干净人声衰减到 ×0.001 时，不经 AGC 是 **0 字**，经管线是 **113 字**。它守住的是「AGC 还接在 `record.rs` 里」—— 单测只测 `Agc` 自己，有人把它从管线里摘掉，单测照样绿。
 

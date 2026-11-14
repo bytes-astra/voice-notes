@@ -115,17 +115,7 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
 
 ### 缺口与时间轴
 
-丢音频时的三个口径都在单测里（不需要真模型；过滤器也会匹配到需要真模型的用例 —— 那几条没设环境变量时静默跳过，见下面「单元测试」一节的警告）：
-
-- **录音时长含被丢掉的音频**：`record.rs` 的 `recorded_seconds()` = 喂进识别器的采样 + 被丢掉的采样。
-  否则识别跟不上时界面上的时长会短一截。
-- **句子时间在真实录音时间轴上**：整段模式的 VAD 只见过喂进去的音频，句子时间是「喂进去的时间轴」。
-  `record.rs` 的 `to_real_time()` 按缺口位置换算，缺口标记落在**缺口终点**。
-  换算在**秒域**比较（不绕道「秒 → 采样下标」—— f32 往返在长录音上会差 ±1 个采样）。
-- **同一时刻缺口排在句子前面**：缺口终点与它后面第一句的起点相同，`asr.rs` 的 `insert_gaps()`
-  显式让缺口优先（稳定排序会把后 extend 的缺口排到句子后面，文本变成「句子[[gap:3]]」）。
-- **两种模式同一条规则**：流式会话的句子起点也要按丢掉的时间后移（`asr.rs` 的 `Timeline`），
-  否则流式会排出「句子[[gap:4]]」而整段是「[[gap:4]]句子」。
+丢音频的四个口径（时长含被丢掉的音频、句子时间在真实录音时间轴、缺口排句子前、两种模式同规则）写在哪、为什么，见 [`../AGENTS.md`](../AGENTS.md)「缺口标记」——这里只留验证命令。
 
 带真模型跑一遍端到端（整段与流式各一条）：
 
@@ -134,7 +124,7 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
   cargo test --manifest-path src-tauri/Cargo.toml --lib -- gap_marker_reaches_transcript streaming_gap_marker_precedes --nocapture
 ```
 
-缺 `VOICE_NOTES_STREAMING_MODEL_DIR` 时流式那半会静默跳过（见上面的警告）—— 那是「没验」，不是「过了」。
+缺 `VOICE_NOTES_STREAMING_MODEL_DIR` 时流式那半会静默跳过（见「单元测试」一节的警告）—— 那是「没验」，不是「过了」。
 
 ### 同批多个 endpoint 的真模型验证
 
