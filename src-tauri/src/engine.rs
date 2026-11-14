@@ -41,6 +41,8 @@ pub struct AppState {
     pub punct_engine: Arc<Mutex<Option<Arc<PunctuationEngine>>>>,
     pub stream: Mutex<Option<RecordingRun>>,
     pub offline_session: Mutex<Option<RecordingRun>>,
+    /// 云端模式的会话槽：云端录音也要登记，停止 / 取消才停得下来。
+    pub cloud_session: Mutex<Option<RecordingRun>>,
     pub cancel_download: Arc<AtomicBool>,
     pub downloading: Arc<AtomicBool>,
     /// 流式模型下载有自己的一套标志：整段在下载时不该把流式也挡住
@@ -89,6 +91,7 @@ impl AppState {
             punct_engine: Arc::new(Mutex::new(None)),
             stream: Mutex::new(None),
             offline_session: Mutex::new(None),
+            cloud_session: Mutex::new(None),
             cancel_download: Arc::new(AtomicBool::new(false)),
             downloading: Arc::new(AtomicBool::new(false)),
             cancel_download_streaming: Arc::new(AtomicBool::new(false)),
@@ -138,6 +141,20 @@ pub struct Status {
     pub punct_bytes: u64,
     pub punct_total_bytes: u64,
     pub app_version: String,
+    /// 云端是否已配置（API key 非空即 true）。只回传布尔值，key 本身不进状态。
+    pub cloud_configured: bool,
+    /// 云端服务地址（空 = 用 provider 默认端点）。不是凭据，可以回传。
+    pub cloud_base_url: String,
+    /// 云端模型名（空 = 用 provider 默认模型）。不是凭据，可以回传。
+    pub cloud_model: String,
+}
+
+/// 云端是否已配置：API key 非空即认为已配置。
+///
+/// 抽成纯函数是为了能脱开 `AppHandle` 单测，同时把「key 非空 → true」这条
+/// 判定固定下来 —— 状态里只许有布尔值，key 明文绝不能出现在 Status 序列化里。
+fn cloud_configured(settings: &Settings) -> bool {
+    !settings.cloud_api_key.is_empty()
 }
 
 pub fn output_dir(app: &AppHandle, settings: &Settings) -> PathBuf {
@@ -213,6 +230,9 @@ pub fn status_of(app: &AppHandle, state: &AppState) -> Status {
             .unwrap_or(0),
         punct_total_bytes: models::PUNCT.bytes,
         app_version: app.package_info().version.to_string(),
+        cloud_configured: cloud_configured(&settings),
+        cloud_base_url: settings.cloud_base_url.clone(),
+        cloud_model: settings.cloud_model.clone(),
     }
 }
 
@@ -510,6 +530,14 @@ fn vad_config(model: Option<String>, max_speech_duration: f32) -> VadModelConfig
         debug: false,
         ..Default::default()
     }
+}
+
+/// 云端模式的门控 VAD：参数与流式门控完全一致（同一个 `vad_config`）。
+///
+/// 云端模式不装整份流式模型，只要那份 2.3 MB 的 VAD —— 但参数不能另起一套：
+/// 同一段音频在两种模式里切出的句子边界必须一样（见 `vad_config`）。
+pub fn cloud_vad_config(model: String) -> VadModelConfig {
+    vad_config(Some(model), STREAM_MAX_SPEECH_SECONDS)
 }
 
 pub struct Engine {

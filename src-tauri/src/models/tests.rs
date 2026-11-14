@@ -292,3 +292,42 @@ fn assets_are_consistent() {
         assert!(asset.path.starts_with('/'));
     }
 }
+
+/// 云端模式只需要 VAD：没有 161 MB 的流式模型也算就绪。
+///
+/// 守的是「云端模式不该被整份流式模型卡住」——`resolve_streaming` 的全量门
+/// （encoder/decoder/joiner/tokens/VAD 全在才算）不能拿来判云端的就绪。
+#[test]
+fn cloud_vad_needs_no_streaming_model() {
+    let dir = std::env::temp_dir().join(format!("vn-cloud-vad-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("streaming")).unwrap();
+    let streaming_vad = dir.join("streaming").join(VAD_FILE);
+    fs::write(&streaming_vad, vec![0; VAD.bytes as usize]).unwrap();
+    let candidates = vec![
+        (streaming_vad.clone(), VAD.bytes),
+        (dir.join(VAD_FILE), VAD.bytes),
+    ];
+    assert!(
+        resolve_cloud_vad_in(&candidates).is_some(),
+        "只有 VAD 没有流式模型也要就绪"
+    );
+
+    // 两个位置都没有 → 未就绪。
+    let missing = vec![
+        (dir.join("streaming").join("encoder.int8.onnx"), VAD.bytes),
+        (dir.join("nope.onnx"), VAD.bytes),
+    ];
+    assert!(
+        resolve_cloud_vad_in(&missing).is_none(),
+        "VAD 缺失时不能报就绪"
+    );
+
+    // 截断的 VAD 不算就绪。
+    fs::write(&streaming_vad, b"truncated").unwrap();
+    assert!(
+        resolve_cloud_vad_in(&candidates).is_none(),
+        "截断的 VAD 不能报就绪"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

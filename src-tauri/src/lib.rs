@@ -32,8 +32,8 @@ use log::on_off;
 use menu::install_menu;
 use output::{sanitize_name, write_text_file, Saved};
 use record::{
-    ensure_transcript_usable, finish_recording, log_transcript, run_offline, run_streaming_core,
-    FinishedRecording, RecordingRun, SlotError, STOP_FAILED,
+    ensure_transcript_usable, finish_recording, log_transcript, run_cloud_streaming_core,
+    run_offline, run_streaming_core, FinishedRecording, RecordingRun, SlotError, STOP_FAILED,
 };
 
 /// 错误码：后端只返回字典 key（前端 i18n 翻译），不返回展示文案。
@@ -345,6 +345,32 @@ async fn set_mode(
     Ok(status_of(&app, &state))
 }
 
+/// 保存云端配置（服务地址 / 凭据 / 模型名）。
+///
+/// API key 是凭据：**不写日志、不回传前端**。前端只拿到 `cloud_configured` 布尔值。
+/// `api_key` 传 `None` 表示「不改」（key 不会回传前端，前端无从知道当前值，
+/// 所以清空要显式传空串）。
+#[tauri::command]
+fn set_cloud_config(
+    app: AppHandle,
+    state: State<AppState>,
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+) -> Result<Status, String> {
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| code("error.settingsState"))?;
+        settings::apply_cloud_config(&mut guard, base_url, api_key, model);
+    }
+    persist(&app, &state)?;
+    // 凭据不进日志：这里只记「配置已保存」，不打印任何 key 内容。
+    log::info("设置变更：云端配置已保存");
+    Ok(status_of(&app, &state))
+}
+
 /// 保存流式术语表。
 ///
 /// 解码方式（greedy / beam）是在创建识别器时定死的，词表变了必须把流式引擎清掉，
@@ -500,16 +526,14 @@ async fn download_streaming_model(
 ///
 /// 流式的会话槽是 `stream`（`error.streamState`），整段的是 `offline_session`
 /// （`error.recordState`）—— 两条路径的错误码本来就不一样。
-fn slot_error_code(error: SlotError, streaming: bool) -> String {
+fn slot_error_code(error: SlotError, mode: &str) -> String {
     match error {
         SlotError::RecorderLocked => code("error.recordState"),
-        SlotError::SessionLocked => {
-            if streaming {
-                code("error.streamState")
-            } else {
-                code("error.recordState")
-            }
-        }
+        SlotError::SessionLocked => match mode {
+            "streaming" => code("error.streamState"),
+            "cloud" => code("error.cloudState"),
+            _ => code("error.recordState"),
+        },
         SlotError::AlreadyRecording => code("record.alreadyRecording"),
     }
 }
@@ -599,7 +623,7 @@ async fn start_streaming_recording(
         // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
         stop.store(true, Ordering::SeqCst);
         discard.store(true, Ordering::SeqCst);
-        return Err(slot_error_code(error, true));
+        return Err(slot_error_code(error, "streaming"));
     }
     starting.release();
     Ok(session_id)
@@ -698,7 +722,108 @@ async fn start_offline_recording(
         // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
         stop.store(true, Ordering::SeqCst);
         discard.store(true, Ordering::SeqCst);
-        return Err(slot_error_code(error, false));
+        return Err(slot_error_code(error, "offline"));
+    }
+    starting.release();
+    Ok(session_id)
+}
+
+/// 云端模式：起采集 + 云端识别线程（音频实时上传，服务端出字）。
+#[tauri::command]
+async fn start_cloud_recording(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: u64,
+) -> Result<u64, String> {
+    if state.recording_starting.swap(true, Ordering::SeqCst) {
+        return Err(code("record.alreadyRecording"));
+    }
+    let starting = RecordingStartGuard(&state.recording_starting);
+    {
+        let slot = state
+            .recorder
+            .lock()
+            .map_err(|_| code("error.recordState"))?;
+        if slot.is_some() {
+            return Err(code("record.alreadyRecording"));
+        }
+    }
+    let settings = state.settings();
+    let device_label = settings
+        .input_device
+        .clone()
+        .unwrap_or_else(|| "默认".into());
+    // 凭据：没填就不能用云端。凭据本身不进日志，也不回传。
+    if settings.cloud_api_key.trim().is_empty() {
+        return Err(code("cloud.notConfigured"));
+    }
+    // 门控 VAD：云端模式只要那份 2.3 MB 的 VAD，不要求整份流式模型。
+    // 没有它也能用：那时由服务端断句（本机不做门控，静音也会上传）。
+    let vad_path = models::resolve_cloud_vad(&app);
+    let vad_config = vad_path.as_ref().map(|path| engine::cloud_vad_config(path.clone()));
+    let provider = asr::cloud::create_provider(&settings, vad_path.is_some())?;
+    // 建连是网络操作：放阻塞线程，别堵住 async 执行器。
+    // 连接失败要在**开始录音时**就报错，不能等录完才让用户撞上「停止超时」。
+    let session = asr::cloud::CloudStreamingSession::new(provider);
+    let (session, connected) = tauri::async_runtime::spawn_blocking(move || {
+        let mut session = session;
+        let result = session.connect();
+        (session, result)
+    })
+    .await
+    .map_err(|e| code_detail("cloud.connectFailed", e))?;
+    connected?;
+    let recorder = {
+        let audio_app = app.clone();
+        let device = settings.input_device.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            audio::start(audio_app, device.as_deref(), session_id)
+        })
+        .await
+        .map_err(|e| code_detail("record.micOpenFailed", e))??
+    };
+    let queue = recorder.queue();
+    let rate = recorder.sample_rate();
+    log::info(format!(
+        "开始录音：模式 cloud，设备 {device_label}，采样率 {rate} Hz"
+    ));
+    let stop = Arc::new(AtomicBool::new(false));
+    let discard = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread_app = app.clone();
+    let thread_stop = stop.clone();
+    let thread_discard = discard.clone();
+    std::thread::Builder::new()
+        .name("cloud-asr".into())
+        .spawn(move || {
+            let mut emitter = StreamEmitter {
+                app: thread_app,
+                session_id,
+                discard: thread_discard.clone(),
+            };
+            let transcript = run_cloud_streaming_core(
+                session,
+                vad_config,
+                queue,
+                rate,
+                thread_stop,
+                thread_discard,
+                |events| emitter.apply(events),
+            );
+            let _ = tx.send(transcript);
+        })
+        .map_err(|e| code_detail("error.cloudThreadFailed", e))?;
+    // 采集器和会话一起登记：只写采集器不写会话，识别线程就永远收不到 stop。
+    let run = RecordingRun {
+        stop: stop.clone(),
+        discard: discard.clone(),
+        rx,
+    };
+    if let Err(error) = record::register_slots(&state.recorder, &state.cloud_session, recorder, run) {
+        // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
+        stop.store(true, Ordering::SeqCst);
+        discard.store(true, Ordering::SeqCst);
+        return Err(slot_error_code(error, "cloud"));
     }
     starting.release();
     Ok(session_id)
@@ -741,6 +866,42 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
             transcript.warning = Some(code("record.micError"));
         }
         log_transcript("流式", &transcript);
+        return Ok(transcript);
+    }
+
+    // 云端模式：识别线程一直在跑，这里停采集，尾巴由它收尾时取走。
+    // 中途断连时已定稿的句子要留着（原因放在 warning 里）。
+    let cloud = state
+        .cloud_session
+        .lock()
+        .map_err(|_| code("error.cloudState"))?
+        .take();
+    if let Some(cloud) = cloud {
+        let finished = tauri::async_runtime::spawn_blocking(move || {
+            finish_recording(recorder, cloud, 20).map_err(|error| {
+                if record::is_stop_failed(&error) {
+                    code("record.streamTimeout")
+                } else {
+                    error
+                }
+            })
+        })
+        .await
+        .map_err(|e| code_detail(STOP_FAILED, e))??;
+        if finished.transcript.text.trim().is_empty() {
+            if let Some(warning) = finished.transcript.warning.clone() {
+                return Err(warning);
+            }
+        }
+        ensure_transcript_usable(
+            &finished.transcript.text,
+            finished.transcript.duration_seconds,
+        )?;
+        let mut transcript = finished.transcript;
+        if finished.capture_error.is_some() && transcript.warning.is_none() {
+            transcript.warning = Some(code("record.micError"));
+        }
+        log_transcript("云端", &transcript);
         return Ok(transcript);
     }
 
@@ -878,6 +1039,16 @@ fn cancel_recording_impl(state: &AppState) -> Result<(), String> {
     {
         offline.discard.store(true, Ordering::SeqCst);
         offline.stop.store(true, Ordering::SeqCst);
+    }
+    // 云端模式同理：不停的话上传线程会一直开着连接。
+    if let Some(cloud) = state
+        .cloud_session
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+    {
+        cloud.discard.store(true, Ordering::SeqCst);
+        cloud.stop.store(true, Ordering::SeqCst);
     }
     if let Some(recorder) = recorder {
         recorder.cancel();
@@ -1046,12 +1217,14 @@ pub fn run() {
             set_mode,
             set_punct,
             set_hotwords,
+            set_cloud_config,
             default_hotwords,
             list_input_devices,
             warm_up_mic,
             set_input_device,
             start_streaming_recording,
             start_offline_recording,
+            start_cloud_recording,
             stop_recording,
             cancel_recording,
             transcribe_file,

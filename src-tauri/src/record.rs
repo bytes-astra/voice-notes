@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::asr;
-use crate::asr::{OfflineEvent, StreamEvent, StreamingSession, Transcript};
+use crate::asr::{AsrSession, OfflineEvent, StreamEvent, StreamingSession, Transcript};
 use crate::engine::{PunctuationEngine, StreamingEngine};
 use sherpa_onnx::LinearResampler;
 
@@ -560,6 +560,166 @@ where
     }
     let events = session.finish();
     log_stream_events("流式收尾识别出一句", &events);
+    emit(events);
+    let mut transcript = session.transcript();
+    asr::insert_gaps(&mut transcript, gaps);
+    transcript
+}
+
+/// 云端模式：边录音边把音频送到云端服务，provider 那边出字。
+///
+/// 与 `run_streaming_core` 同构：VAD 门控 / 预录 / 电平 / 缺口 / 时间轴
+/// 走同一套规则，识别那一步换成 `CloudStreamingSession`。
+///
+/// **为什么不是同一个函数**：本地流式的会话是 `StreamingSession`，
+/// 云端的是 `CloudStreamingSession`；两者只共享 `AsrSession` 那层接口。
+/// 合成一个泛型函数会把本地路径也拖进改动范围 —— 本地路径零行为改动
+/// 是硬要求（`streaming_smoke` 守着），所以这里各写各的，
+/// 共用的部分（VAD 参数、电平、缺口）是同一条规则的两个入口。
+pub fn run_cloud_streaming_core<F>(
+    session: asr::cloud::CloudStreamingSession,
+    vad_config: Option<sherpa_onnx::VadModelConfig>,
+    queue: audio::SampleQueue,
+    rate: u32,
+    stop: Arc<AtomicBool>,
+    discard: Arc<AtomicBool>,
+    mut emit: F,
+) -> Transcript
+where
+    F: FnMut(Vec<StreamEvent>),
+{
+    let mut session = session;
+    let resampler = if rate as i32 == asr::SAMPLE_RATE {
+        None
+    } else {
+        LinearResampler::create(rate as i32, asr::SAMPLE_RATE)
+    };
+    let vad = vad_config
+        .as_ref()
+        .and_then(|config| sherpa_onnx::VoiceActivityDetector::create(config, 60.0));
+    // 电平自动增益：偏小的录音会被 VAD 整段当非语音丢掉（见 audio::Agc）。
+    let mut agc = audio::Agc::new();
+    // 说话起点前留 0.4s，避免 VAD 起音延迟把字头切掉
+    let preroll_limit = (asr::SAMPLE_RATE as usize) / 5 * 2;
+    let mut preroll: Vec<f32> = Vec::new();
+    let mut preroll_end = 0usize;
+    let mut active = false;
+    // 采集跟不上时丢掉的音频，在结果里留个可见的缺口
+    let mut gaps: Vec<asr::Segment> = Vec::new();
+    let mut last_voice = std::time::Instant::now();
+    while !stop.load(Ordering::Relaxed) && !discard.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(60));
+        let new_audio = queue.take_new();
+        // 丢掉的输入同样占真实录音时间：缺口结束后才是后续音频的位置。
+        session.advance_dropped(audio::resampled_len(new_audio.dropped, rate));
+        let at = session.elapsed_seconds();
+        if new_audio.dropped > 0 {
+            // 采集跟不上：丢掉了一段音频，要在结果里留下可见的缺口。
+            let segment = gap_segment(new_audio.dropped, rate, at, "云端发送跟不上，");
+            gaps.push(segment.clone());
+            if !discard.load(Ordering::Relaxed) {
+                emit(vec![StreamEvent::Segment(segment)]);
+            }
+        }
+        let chunk = new_audio.samples;
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut samples = match &resampler {
+            Some(resampler) => resampler.resample(&chunk, false),
+            None => chunk,
+        };
+        if samples.is_empty() {
+            continue;
+        }
+        // 提电平要在 VAD 之前 —— 门控 VAD 判的就是这段音频，
+        // 偏小的电平会让它整段判成非语音（见 audio::Agc）。
+        agc.process(&mut samples);
+        let sample_end = session.advance_samples(samples.len());
+
+        let Some(detector) = vad.as_ref() else {
+            if !discard.load(Ordering::Relaxed) {
+                let events = session.push(&samples);
+                log_stream_events("云端识别出一句", &events);
+                emit(events);
+            }
+            continue;
+        };
+
+        let detected = vad_is_speech(detector, &samples);
+        if detected {
+            last_voice = std::time::Instant::now();
+        }
+        let speaking = detected || last_voice.elapsed() < Duration::from_millis(700);
+
+        if speaking {
+            if !active {
+                active = true;
+                if !preroll.is_empty() && !discard.load(Ordering::Relaxed) {
+                    let events = session.push_at(&std::mem::take(&mut preroll), preroll_end);
+                    log_stream_events("云端识别出一句", &events);
+                    emit(events);
+                }
+            }
+            if !discard.load(Ordering::Relaxed) {
+                let events = session.push(&samples);
+                log_stream_events("云端识别出一句", &events);
+                emit(events);
+            }
+        } else {
+            if active {
+                active = false;
+                // 静音开始：立刻收尾当前句子（客户端提交，服务端回一条结果）。
+                if !discard.load(Ordering::Relaxed) {
+                    let events = session.force_end();
+                    log_stream_events("云端识别出一句", &events);
+                    emit(events);
+                }
+            }
+            preroll.extend_from_slice(&samples);
+            preroll_end = sample_end;
+            let excess = preroll.len().saturating_sub(preroll_limit);
+            if excess > 0 {
+                preroll.drain(..excess);
+            }
+        }
+    }
+
+    // 取消录音：不冲尾巴、不出字。
+    if discard.load(Ordering::Relaxed) {
+        return Transcript {
+            text: String::new(),
+            segments: Vec::new(),
+            duration_seconds: 0.0,
+            elapsed_ms: 0,
+            language: "zh-en".into(),
+            warning: None,
+        };
+    }
+
+    // 收尾：把剩余采样和重采样器内部缓冲一起冲出去
+    let last = queue.take_new();
+    session.advance_dropped(audio::resampled_len(last.dropped, rate));
+    if last.dropped > 0 {
+        let at = session.elapsed_seconds();
+        let segment = gap_segment(last.dropped, rate, at, "云端收尾");
+        gaps.push(segment.clone());
+        emit(vec![StreamEvent::Segment(segment)]);
+    }
+    let chunk = last.samples;
+    let tail = match &resampler {
+        Some(resampler) => resampler.resample(&chunk, true),
+        None => chunk,
+    };
+    if !tail.is_empty() {
+        // 循环退出后才采到的尾包也占真实录音时长。
+        session.advance_samples(tail.len());
+        let events = session.push(&tail);
+        log_stream_events("云端收尾识别出一句", &events);
+        emit(events);
+    }
+    let events = session.finish();
+    log_stream_events("云端收尾识别出一句", &events);
     emit(events);
     let mut transcript = session.transcript();
     asr::insert_gaps(&mut transcript, gaps);

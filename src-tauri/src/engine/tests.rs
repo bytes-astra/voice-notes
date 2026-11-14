@@ -343,3 +343,59 @@ fn 两模式_vad_参数一致() {
     assert_eq!(offline.provider, streaming.provider, "VAD provider 分叉了");
     assert_eq!(offline.debug, streaming.debug, "VAD debug 分叉了");
 }
+
+/// 云端配置状态：只回传布尔值，API key 明文绝不能进 Status 序列化。
+///
+/// Status 只有 `cloud_configured: bool`，key 本身不在字段里 —— 这条守的是
+/// 将来有人往 Status 加 `cloud_api_key` 字段时，序列化断言会直接红。
+#[test]
+fn 云端配置只回布尔值_key不进状态() {
+    /// 假 key：测试里出现的绝不能是真凭证。
+    const DUMMY_KEY: &str = "vn-test-dummy-key";
+
+    assert!(!cloud_configured(&Settings::default()), "key 空 = 未配置");
+
+    let with_key = Settings {
+        cloud_api_key: DUMMY_KEY.into(),
+        ..Settings::default()
+    };
+    assert!(cloud_configured(&with_key), "key 非空 = 已配置");
+
+    let status = Status {
+        model_ready: false,
+        model_source: None,
+        model_dir: None,
+        model_dir_custom: false,
+        vad_ready: false,
+        output_dir: String::new(),
+        language: "zh".into(),
+        mode: "cloud".into(),
+        itn: false,
+        downloading: false,
+        downloading_streaming: false,
+        installed_bytes: 0,
+        total_bytes: 0,
+        streaming_ready: false,
+        streaming_dir: None,
+        streaming_bytes: 0,
+        streaming_total_bytes: 0,
+        punct: false,
+        punct_ready: false,
+        hotwords: vec![],
+        hotwords_ignored: 0,
+        input_device: None,
+        punct_bytes: 0,
+        punct_total_bytes: 0,
+        app_version: "1.0.0".into(),
+        cloud_configured: true,
+        cloud_base_url: "https://example.invalid/v1".into(),
+        cloud_model: "mock-model".into(),
+    };
+    let json = serde_json::to_string(&status).unwrap();
+    assert!(json.contains("\"cloudConfigured\":true"), "序列化该有布尔值：{json}");
+    assert!(!json.contains("cloudApiKey"), "Status 序列化不该有 key 字段：{json}");
+    assert!(!json.contains(DUMMY_KEY), "Status 序列化不该有 key 明文：{json}");
+    // 地址与模型名不是凭据，可以回传（设置页要回填这两个框）。
+    assert!(json.contains("\"cloudBaseUrl\":\"https://example.invalid/v1\""), "地址该回传：{json}");
+    assert!(json.contains("\"cloudModel\":\"mock-model\""), "模型名该回传：{json}");
+}

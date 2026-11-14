@@ -729,3 +729,45 @@ fn 会话槽占着时登记要报占用() {
     assert_eq!(peek(&session_slot), Some(7), "已有的会话不能被顶掉");
 }
 
+/// 云端链路：采集 → 上传 → provider 回结果 → 句子。
+///
+/// 中途断连时**已定稿的句子要留着**：连接断了不能把整段录音作废，
+/// 用户至少还能拿到断开之前识别出来的内容。
+#[test]
+fn cloud_core_keeps_finalized_sentences_when_disconnected() {
+    use crate::asr::cloud::mock::MockProvider;
+    use crate::asr::cloud::{CloudStreamingSession, EndpointKind};
+
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16_000);
+    // provider 收到第一批音频就回一条定稿。
+    state.lock().unwrap().reply = Some("第一句".into());
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    // 之后断连。
+    state.lock().unwrap().fail = true;
+
+    let queue = audio::SampleQueue::new(16_000);
+    queue.push(&vec![0.1f32; 16_000]);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopper = stop.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        stopper.store(true, Ordering::SeqCst);
+    });
+    let transcript = run_cloud_streaming_core(
+        session,
+        None,
+        queue,
+        16_000,
+        stop,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    );
+    assert_eq!(transcript.text, "第一句", "断连不能把已定稿的句子弄丢");
+    assert_eq!(transcript.segments.len(), 1);
+    assert!(
+        transcript.warning.is_some(),
+        "断连要留下原因：{:?}",
+        transcript.warning
+    );
+}

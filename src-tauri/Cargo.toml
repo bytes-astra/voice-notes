@@ -29,7 +29,18 @@ sha2 = "0.10"
 hex = "0.4"
 # 日志时间戳用本地时间（chrono 已经在 tauri 的依赖树里，不增加编译成本）
 chrono = "0.4"
-tokio = { version = "1", features = ["sync", "time", "rt"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+# 云端实时识别的 WebSocket 客户端。
+# 0.28 的 MSRV 是 1.63（0.30 要 1.85，会破本项目的 1.78）；
+# 它带的 tungstenite 用 rustls 0.23 + webpki-roots 0.26 —— 与仓库里
+# reqwest 那套 rustls 是同一条线，不会出现两套 TLS 栈。
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = [
+  "connect",
+  "handshake",
+  "rustls-tls-webpki-roots",
+] }
+# PCM 音频要 base64 上传（Realtime 的 input_audio_buffer.append）
+base64 = "0.22"
 
 [profile.release]
 codegen-units = 1

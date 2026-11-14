@@ -920,6 +920,33 @@ pub enum StreamEvent {
     Segment(Segment),
 }
 
+/// 会话 trait：本地流式与云端流式共用同一套编排。
+///
+/// 只描述「喂音频 → 出事件 → 出结果」，不碰任何识别细节：
+/// 本地路径的 `StreamingSession` 与云端路径的 `CloudStreamingSession`
+/// 都实现它，编排层（VAD 门控 / 预录 / 电平 / 缺口）因此是同一套。
+///
+/// 时间轴统一是 16 kHz 采样数：provider 要别的采样率是**上传格式**的事，
+/// 不改这条轴（见 `cloud` 子模块）。
+pub(crate) trait AsrSession {
+    /// 推进真实录音时钟，返回推进后的位置（16 kHz 采样数）。
+    fn advance_samples(&mut self, samples: usize) -> usize;
+    /// 丢掉了一段音频：时钟前进，但这段没有喂给识别器。
+    fn advance_dropped(&mut self, samples: usize);
+    /// 当前真实录音时间（秒）。
+    fn elapsed_seconds(&self) -> f32;
+    /// 喂入 16 kHz 样本，返回要推给界面的事件。
+    fn push(&mut self, samples: &[f32]) -> Vec<StreamEvent>;
+    /// 重放预录时使用它原来的终点（不把当前批次的时钟套到旧音频上）。
+    fn push_at(&mut self, samples: &[f32], end: usize) -> Vec<StreamEvent>;
+    /// 检测到静音时主动收尾：提交当前句子。
+    fn force_end(&mut self) -> Vec<StreamEvent>;
+    /// 结束输入，冲刷最后一段。
+    fn finish(&mut self) -> Vec<StreamEvent>;
+    /// 汇总为最终结果。
+    fn transcript(self) -> Transcript;
+}
+
 impl StreamingSession {
     pub fn new(engine: Arc<StreamingEngine>, punctuator: Option<Arc<PunctuationEngine>>) -> Self {
         let stream = engine.new_stream();
@@ -1074,9 +1101,49 @@ impl StreamingSession {
     }
 }
 
+/// `StreamingSession` 的纯转发实现：零行为改动。
+///
+/// **转发必须写全限定名**（`StreamingSession::advance_samples(self, …)`）：
+/// 写成 `self.advance_samples(…)` 会解析到 trait 里的同名方法自己身上，
+/// 直接死循环 —— 这条坑写在这里，免得下次有人「简化」掉。
+impl AsrSession for StreamingSession {
+    fn advance_samples(&mut self, samples: usize) -> usize {
+        StreamingSession::advance_samples(self, samples)
+    }
+
+    fn advance_dropped(&mut self, samples: usize) {
+        StreamingSession::advance_dropped(self, samples);
+    }
+
+    fn elapsed_seconds(&self) -> f32 {
+        StreamingSession::elapsed_seconds(self)
+    }
+
+    fn push(&mut self, samples: &[f32]) -> Vec<StreamEvent> {
+        StreamingSession::push(self, samples)
+    }
+
+    fn push_at(&mut self, samples: &[f32], end: usize) -> Vec<StreamEvent> {
+        StreamingSession::push_at(self, samples, end)
+    }
+
+    fn force_end(&mut self) -> Vec<StreamEvent> {
+        StreamingSession::force_end(self)
+    }
+
+    fn finish(&mut self) -> Vec<StreamEvent> {
+        StreamingSession::finish(self)
+    }
+
+    fn transcript(self) -> Transcript {
+        StreamingSession::transcript(self)
+    }
+}
+
+pub(crate) mod cloud;
+
 #[cfg(test)]
 mod stream_input_tests;
-
 #[cfg(test)]
 mod streaming_time_tests;
 

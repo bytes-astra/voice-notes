@@ -197,6 +197,35 @@ fn resolve_streaming_in(dir: &Path) -> Option<StreamingPaths> {
     })
 }
 
+/// 云端模式只需要 VAD（2.3 MB）：**不该**要求下载 161 MB 的流式模型。
+///
+/// VAD 有两份可能的位置：流式模型目录（下载流式模型时一起下的那份）
+/// 与整段模型目录（整段模型里也带一份）。找到哪份算哪份。
+pub fn resolve_cloud_vad(app: &AppHandle) -> Option<String> {
+    let data = app.path().app_data_dir().ok()?;
+    let candidates = vec![
+        (
+            data.join("models").join(STREAM_DIR).join(VAD_FILE),
+            VAD.bytes,
+        ),
+        (data.join("models").join(VAD_FILE), VAD.bytes),
+    ];
+    resolve_cloud_vad_in(&candidates)
+}
+
+/// 在候选路径里找一份就绪的 VAD（按字节数判定，截断的文件不算）。
+fn resolve_cloud_vad_in(candidates: &[(PathBuf, u64)]) -> Option<String> {
+    for (path, bytes) in candidates {
+        let ready = fs::metadata(path)
+            .map(|meta| meta.is_file() && meta.len() == *bytes)
+            .unwrap_or(false);
+        if ready {
+            return Some(path.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 pub fn streaming_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()

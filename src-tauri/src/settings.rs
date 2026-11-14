@@ -12,7 +12,9 @@ pub const LANGUAGES: [&str; 6] = ["auto", "zh", "en", "yue", "ja", "ko"];
 /// 术语表上限：条数太多会明显增加热词误插与解码耗时。
 pub const MAX_HOTWORDS: usize = 100;
 pub const MAX_HOTWORD_CHARS: usize = 32;
-pub const MODES: [&str; 2] = ["offline", "streaming"];
+pub const MODES: [&str; 3] = ["offline", "streaming", "cloud"];
+/// 云端 provider 取值（`cloud_provider`）。默认 `realtime`（Realtime JSON 族）。
+pub const CLOUD_PROVIDERS: [&str; 1] = ["realtime"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -31,6 +33,14 @@ pub struct Settings {
     pub hotwords: Vec<String>,
     pub output_dir: Option<String>,
     pub model_dir: Option<String>,
+    /// 云端 base URL（空 = 用 provider 默认端点）
+    pub cloud_base_url: String,
+    /// 云端 API key（不回传明文、不写日志）
+    pub cloud_api_key: String,
+    /// 云端模型名（provider 相关）
+    pub cloud_model: String,
+    /// 云端 provider：`realtime`（Realtime JSON 族）
+    pub cloud_provider: String,
 }
 
 impl Default for Settings {
@@ -44,6 +54,10 @@ impl Default for Settings {
             hotwords: Vec::new(),
             output_dir: None,
             model_dir: None,
+            cloud_base_url: String::new(),
+            cloud_api_key: String::new(),
+            cloud_model: String::new(),
+            cloud_provider: "realtime".into(),
         }
     }
 }
@@ -55,6 +69,9 @@ impl Settings {
         }
         if !MODES.contains(&self.mode.as_str()) {
             self.mode = "offline".into();
+        }
+        if !CLOUD_PROVIDERS.contains(&self.cloud_provider.as_str()) {
+            self.cloud_provider = "realtime".into();
         }
         self.hotwords = clean_hotwords(self.hotwords);
         self
@@ -154,5 +171,25 @@ pub fn clean_hotwords(hotwords: Vec<String>) -> Vec<String> {
     out
 }
 
+/// 写入云端配置（服务地址 / 凭据 / 模型名）。
+///
+/// 凭据的处理只有一条规矩：`api_key` 为 `None` 表示「不改」。
+/// 前端拿不到当前的值（凭据不回传），所以「清空」必须显式传空串 ——
+/// 把空串当成「不改」的话，用户就没法删掉已经存进去的凭据。
+pub fn apply_cloud_config(
+    settings: &mut Settings,
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+) {
+    settings.cloud_base_url = base_url.trim().to_string();
+    settings.cloud_model = model.trim().to_string();
+    if let Some(key) = api_key {
+        settings.cloud_api_key = key.trim().to_string();
+    }
+}
+
 #[cfg(test)]
 mod hotword_tests;
+#[cfg(test)]
+mod cloud_tests;
