@@ -6,14 +6,8 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**75 条**不变量、10 组（A–J），分 3 档 —— ✅ 73 条有自动守卫 / ⚠️ 1 条守卫薄弱 /
-❌ 0 条无守卫。**1 条（⚠️）就是下一轮的作业面**（2026-11-03 补完四条门禁后从 21 条降下来，
-同日再补四条 UI 断言后降到 17 条，补完原生层与打包后降到 9 条，补完质量门禁后降到 3 条；
-2026-11-04 新增 J 组 3 条并发不变量，守卫齐全；2026-11-13 复核发现 RC-B4 / RC-B6 / RC-B7
-的守卫全是「没环境变量就静默跳过」的真模型用例，从 ✅ 降为 ⚠️，作业面 3 → 6；
-**2026-11-14 改口径**：真模型守卫**本地跑就是绿的**，CI 不在本项目的验收范围内 ——
-按实际状态把 RC-B4 / RC-B7 / RC-B8 / RC-B10 改回 ✅，RC-I2 撤下（其真正关切由 RC-I1 覆盖），
-作业面 6 → 1（只剩 RC-B6 的「退无可退」子情形，是真缺陷不是覆盖问题））。
+**当前规模**：**75 条**不变量、10 组（A–J）—— ✅ 75 条有守卫，⚠️ / ❌ 各 0 条。
+2026-11-14 修复 RC-B6 的门控收尾与预录时间轴问题，作业面 1 → 0；真模型守卫在本地运行。
 
 （历史口径：5 份旧 review plan 一共提出 **26** 个 focus 项 —— 那是「轮次」的粒度；
 本文档把它们展开成 **75** 条可逐条核对的条目。两个数各指什么，不要混用。）
@@ -86,7 +80,7 @@
 | RC-B3 | 同一时刻，缺口排在句子**前面**（否则读起来像句子之后才丢的音频） | `asr/gap_tests.rs` gap_precedes_a_segment_at_the_same_moment；`record/tests.rs` streaming_gap_marker_precedes_the_following_sentence | ✅ |
 | RC-B4 | 丢掉的音频占真实录音时间（时长不能少算） | `record/tests.rs` dropped_audio_counts_towards_recorded_time（纯函数，只覆盖整段的算术）/ streaming_dropped_audio_advances_recording_clock（**需真模型**） | ✅ 2026-11-14：两侧都有守卫，本地设 `VOICE_NOTES_*_MODEL_DIR` 跑是绿的（CI 不在本项目验收范围内） |
 | RC-B5 | 时间轴换算在**秒域**比较，区间语义 `[start, end)`：起点压缺口要移、终点压缺口不移 | `record/tests.rs` offline_timeline_shifts_by_dropped_audio / offline_timeline_boundary_is_half_open / offline_timeline_is_unchanged_without_drops；`asr/timeline_tests.rs` 全 6 条 | ✅ |
-| RC-B6 | 实时事件流与最终结果必须同一套时间刻度（不能混两套）；同批多个 endpoint 按各分片位置定时，后续句子不能因共用批末时钟变成零时长 | `asr/stream_input_tests.rs`：9 条无模型回归，覆盖同批多 endpoint、跨批余量、endpoint 后 pending 归属、缺口、预录、尾包、空输入、跨两片的重放句；`asr/timeline_tests.rs`：10 条（句起点只前进不后退、句子起点取最早那片）；`tests/streaming_endpoint_time.rs`：2 条真模型端到端用例，单批多 endpoint 的事件/最终 segments/200ms 对照一致；`record/tests.rs` streaming_duration_includes_leading_silence / streaming_duration_includes_audio_arriving_after_stop（**两条需真模型**） | ⚠️ **唯一剩下的作业面**：重放分片整段早于句起点时的零时长已兜底 —— 起点取**这句最早那片音频**（`Timeline::sentence_audio_start`），句起点只前进不后退（`9456bc4` / `afea455`）；**仍余的子情形**：重放分片早于上一句终点时「退无可退」，仍是零时长。补法：把识别侧抽成 trait，让这个子情形能在无模型下断言 —— 见「剩下的 1 条」 |
+| RC-B6 | 实时事件流与最终结果必须同一套时间刻度（不能混两套）；同批多个 endpoint 按各分片位置定时，后续句子不能因共用批末时钟变成零时长 | `asr/stream_input_tests.rs`、`asr/timeline_tests.rs`：同批 endpoint、余量、预录和缺口的无模型断言；`asr/streaming_time_tests.rs`：门控收尾与缺口边界的真模型断言；`tests/streaming_endpoint_time.rs`：单批多 endpoint 和门控后立即停止的生产路径回归；`tests/streaming_smoke.rs`：收尾句尾及新流识别 | ✅ 2026-11-14：门控收尾先消费 pending、补尾静音并按实际输入终点定稿，再创建新的 stream；空结果不推进上一句终点；预录起点不能退过上一句或前置缺口。真实模型生产路径的零时长用例在修复前失败、修复后通过；人为传入早于上一句终点的旧音频仍钳制为零时长，不能伪造音频区间 |
 | RC-B7 | 缺口必须同时进最终文本**和** `segments` | `record/tests.rs` streaming_gap_marker_reaches_transcript（需流式真模型）/ offline_gap_marker_reaches_transcript（需 `VOICE_NOTES_MODEL_DIR`） | ✅ 2026-11-14：两条守卫都在，本地设模型目录跑是绿的 |
 | RC-B8 | 流式尾部补的静音不计入时长 | `asr/streaming_time_tests.rs` duration_counts_only_advanced_audio（**需真模型**） | ✅ 2026-11-14：本地设模型目录跑是绿的 |
 | RC-B9 | 停止时识别期间采到的尾巴必须被消费（否则句尾丢字） | `record/tests.rs` offline_stop_keeps_the_tail | ✅ |
@@ -238,12 +232,15 @@ async 路径上不再有第二把引擎锁。
 用户自己点的取消，界面却说失败。已修：`runDownload` 按错误码区分取消与失败
 （`core.js` 新增 `errorCode()`，跟 `fmtError` 共用同一处切分），取消时进度行写「下载已取消」。
 
-### 剩下的 1 条
+### RC-B6 收尾复核
 
-- `RC-B6`：**唯一剩下的作业面**，且剩下的是**真缺陷**（不是覆盖问题）——
-  重放分片整段早于上一句终点时「退无可退」，这句仍被压成零时长。
-  补法：把 `run_streaming_core` 的识别侧抽成一个 trait（真实实现 + 测试用空实现），
-  让时钟推进、VAD 门控、缺口插入这三段能在无模型下断言；这个子情形才能被钉住。
+门控切到静音时，旧实现先按整批录音时钟定稿，却把不足一个分片的 pending 留给
+重置后的识别器。停止时旧音频可能被识别为一条零时长的新句。
+`streaming_endpoint_time::gated_stop_keeps_pending_in_the_previous_sentence` 用真模型
+覆盖生产路径；修复前实际出现 `3.8s → 3.8s`，修复后使用真实输入终点并保留句尾。
+
+先前将原因概括为「重放分片早于上一句终点」不够准确；trait 是测试手段，不是修复本身。
+当前回归不证明任意不合法的旧音频输入都能产生非零区间：确无可用时间时仍保留钳制。
 
 ### 口径说明（2026-11-14）
 
@@ -277,6 +274,7 @@ async 路径上不再有第二把引擎锁。
 | 2026-11-14 | RC-B6 零时长残边 + 流式探针时钟 + 端到端用例宽限（独立复审 4 条） | 3 条代码修复 + 3 条无模型回归 | ① `Timeline::commit_at` 收 `audio_start`：重放分片整段早于句起点时退到分片音频起点，不退进上一句（`last_end` 兜底）；② `quality_gate` / `memory_probe` 的流式测量补 `advance_samples`，时间戳不再全零；③ `vad_is_speech` 逐窗取「或」，整批含语音时不再被批尾静音门控丢弃 —— **实测口径**：5.59s 语音 + 3s 尾静音喂成一整批时，批末状态是 `false`（整批语音被丢掉），逐窗「或」是 `true`；这个差别只在**批很大**时出现（60ms 粒度下两者相同），而端到端用例那 25.776s 单批是靠 700ms 宽限喂进去的（旧代码同样 3/3 通过）—— 「端到端用例不再依赖宽限」这句成立，但不等于旧代码过不了该用例；同一轮改正「未 commit」注记（该批已随 645c87a 落库） |
 | 2026-11-14 | RC-B6（自查 4 条提交：句子起点语义 + 句起点倒退） | 1 条代码修复 + 4 条无模型回归 | ① 句子起点改用**这句最早那片音频**（`Timeline::sentence_audio_start`）：原来取「触发定稿的那一片」，句子横跨多片时前半段音频落在区间外，界面上这句话短一截；② 句起点只前进不后退：重放分片定稿时原来把 `segment_start` 改成那片分片的终点（比当前句起点更早），下一句会从那一片开始，区间里混进不属于它的音频；③ 余量（跨批 pending）只标记「这句有内容」，不拿它当句子起点 —— 余量可能横跨一个洞，位置不精确；④ `detected()` 是**状态量**实测确认（144 批里 74 批为 true，首个 true 在第 17 批），逐窗取「或」的前提成立。回归覆盖：跨两片的重放句、句起点不倒退（`asr/timeline_tests.rs` / `asr/stream_input_tests.rs`）；`cargo test --lib` 133 passed、真模型端到端 `2 passed`、clippy all-targets 通过、`npm run check` 六道门禁 fail 0 |
 | 2026-11-14 | RC-B4 / RC-B6 / RC-B7 / RC-B8 / RC-B10 / RC-I2（**改口径**：CI 不在验收范围内） | 0（只改清单状态，未动生产代码） | 真模型守卫**本地跑就是绿的**（实测：`cargo test --lib` 6 条真模型守卫全 ok；`quality_gate` 整段 CER 16.39% / 流式 43.28%，最差 RTF 0.036；`memory_probe` 整段 300s→1800s 涨 6.7 MB、流式涨 0.3 MB；`npm run check:ui` 140/140）—— 2026-11-13 那次降级的唯一理由是「守卫在 CI 上等于不存在」，按新口径不成立，故 RC-B4 / RC-B7 / RC-B8 / RC-B10 改回 ✅；RC-I2 从「流式路径进 CI」改为「流式路径的质量门禁可本地复现」，ID 保留。**作业面 6 → 1**，剩下的 RC-B6 是真缺陷（重放分片早于上一句终点时仍为零时长），不是覆盖问题 |
+| 2026-11-14 | RC-B6（门控收尾与真实输入时间） | 代码修复 + 回归测试（未提交） | 真模型生产路径在修复前复现零时长；收尾前消费 pending 并冲尾上下文，按真实输入终点定稿；空结果不占用已提交句子的时间，预录不能跨前置缺口。`npm run check`（140 passed）、`streaming_endpoint_time`（3 passed）、`streaming_smoke`（8 passed，含热词配置）、`streaming_long_probe` 与 `quality_gate` 通过 |
 
 「当天 fix 数」一列是 `git log` 实测值（`git log --since=<date> --until=<date>` 统计以 `fix` 开头的提交），
 不是估算 —— 它同时也是「这轮复审的产出」的度量。
