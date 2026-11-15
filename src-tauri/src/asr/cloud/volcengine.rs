@@ -33,6 +33,9 @@ pub const DEFAULT_BASE_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/b
 pub const DEFAULT_RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 /// 双向流式的热词上限（官方文档：100 tokens）。
 pub const MAX_KEYWORD_TOKENS: usize = 100;
+/// 控制帧排队等待的上限（秒）。
+const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// 发包节奏：官方建议单包 100~200ms，双向流式 200ms 最优。
 /// 16 kHz × 16 bit × 0.2 s = 6400 字节。
 pub const AUDIO_PACKET_BYTES: usize = 6400;
@@ -48,6 +51,10 @@ pub struct VolcengineConfig {
     pub resource_id: String,
     /// 术语表（作为 `corpus.context` 直传）。
     pub keywords: Vec<String>,
+    /// 是否启用数字规范化（ITN）。
+    pub itn: bool,
+    /// 是否启用标点。
+    pub punct: bool,
 }
 
 /// 后台任务收到的命令。
@@ -135,17 +142,23 @@ impl CloudProvider for VolcengineProvider {
         // 攒够 200ms 一包再发（官方建议的发包节奏）。
         self.packet
             .extend(pcm.iter().flat_map(|sample| sample.to_le_bytes()));
+        let mut dropped_samples = 0usize;
         while self.packet.len() >= AUDIO_PACKET_BYTES {
             let rest = self.packet.split_off(AUDIO_PACKET_BYTES);
             let packet = std::mem::replace(&mut self.packet, rest);
-            if commands
-                .try_send(Command::Audio(packet))
-                .is_err()
-            {
-                return Err(crate::code("cloud.disconnected"));
+            match commands.try_send(Command::Audio(packet)) {
+                Ok(()) => {}
+                // 队列满 = 网络背压，不是断连：这一包丢掉，但要**报回去**，
+                // 让会话把它记成缺口（静默丢音频是项目明令禁止的）。
+                Err(tokio_mpsc::error::TrySendError::Full(_)) => {
+                    dropped_samples += AUDIO_PACKET_BYTES / 2;
+                }
+                Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                    return Err(crate::code("cloud.disconnected"));
+                }
             }
         }
-        Ok(0)
+        Ok(dropped_samples)
     }
 
     fn commit(&mut self) -> Result<(), String> {
@@ -166,10 +179,14 @@ impl CloudProvider for VolcengineProvider {
         let Some(commands) = self.commands.as_ref() else {
             return Err(crate::code("cloud.disconnected"));
         };
+        // 收尾前把不足一包的残包发出去：留在缓冲里就等于最后 0~199 ms
+        // 永远不上传 → 句尾少字。控制帧不能丢（丢了等不到最后一句）→ 有界等待。
+        if !self.packet.is_empty() {
+            let packet = std::mem::take(&mut self.packet);
+            send_control(commands, Command::Audio(packet), CONTROL_SEND_TIMEOUT)?;
+        }
         let (done_tx, done_rx) = channel();
-        commands
-            .try_send(Command::Finish(done_tx))
-            .map_err(|_| crate::code("cloud.disconnected"))?;
+        send_control(commands, Command::Finish(done_tx), CONTROL_SEND_TIMEOUT)?;
         match done_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(()) => self.take_background_error().map_or(Ok(()), Err),
             Err(_) => Err(self
@@ -221,8 +238,8 @@ fn encode_full_request(config: &VolcengineConfig) -> Vec<u8> {
         "audio": { "format": "pcm", "rate": 16000, "bits": 16, "channel": 1 },
         "request": {
             "model_name": "bigmodel",
-            "enable_itn": true,
-            "enable_punc": true,
+            "enable_itn": config.itn,
+            "enable_punc": config.punct,
             // 分句信息（含 definite）必须显式开启。
             "show_utterances": true,
             "result_type": "full",
@@ -370,11 +387,7 @@ async fn run(
                     }
                     Ok(ServerFrame::Error { code, message }) => {
                         let message = sanitize(&message, &config.api_key);
-                        let error = match code {
-                            45000002 => crate::code("cloud.noResult"),
-                            45000081 => crate::code("cloud.timeout"),
-                            _ => crate::code_detail("cloud.protocolError", format!("{code}: {message}")),
-                        };
+                        let error = map_error_code(code, &message);
                         let _ = errors.send(error);
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
@@ -463,6 +476,45 @@ fn new_request_id() -> String {
         &hex[16..20],
         &hex[20..32]
     )
+}
+
+/// 服务端错误码 → 字典错误码（纯函数，可单测）。
+///
+/// 官方错误码：`45000001` 参数无效 / `45000002` 空音频 / `45000081` 等包超时 /
+/// `45000151` 音频格式不对 / `55000031` 服务繁忙。
+fn map_error_code(code: u32, message: &str) -> String {
+    match code {
+        45000002 => crate::code("cloud.noResult"),
+        45000081 => crate::code("cloud.timeout"),
+        _ => crate::code_detail("cloud.protocolError", format!("{code}: {message}")),
+    }
+}
+
+/// 控制帧（音频残包 / 收尾命令）的有界等待。
+///
+/// 控制帧不能因为队列满就丢 —— 丢了残包就少一段音频，丢了收尾命令就等不到
+/// 最后一句。但 socket 卡死时也不能无限等：等满上限就报发送失败。
+fn send_control(
+    commands: &tokio_mpsc::Sender<Command>,
+    mut command: Command,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match commands.try_send(command) {
+            Ok(()) => return Ok(()),
+            Err(tokio_mpsc::error::TrySendError::Full(returned)) => {
+                command = returned;
+                if std::time::Instant::now() >= deadline {
+                    return Err(crate::code("cloud.sendFailed"));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                return Err(crate::code("cloud.disconnected"));
+            }
+        }
+    }
 }
 
 /// 把凭据从文本里抹掉。

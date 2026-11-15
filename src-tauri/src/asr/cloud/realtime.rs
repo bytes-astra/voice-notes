@@ -327,6 +327,10 @@ async fn run(
                                 break;
                             }
                             pending.on_commit(client_commit);
+                            // 这次提交也要占一个槽：否则服务端为它回的 final
+                            // 找不到对应槽 —— 最后一句会被丢掉，或被绑到前一句的
+                            // 区间上（文本与时间互换）。
+                            tracker.commit();
                         }
                         finishing = Some(done);
                         deadline = Some(tokio::time::Instant::now() + FINISH_TIMEOUT);

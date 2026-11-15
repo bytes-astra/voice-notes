@@ -847,3 +847,22 @@ fn 门控按能力决定() {
     assert!(!gate(server_endpoint, false).expect("服务端断句不门控"));
     assert!(!gate(server_endpoint, true).expect("有 VAD 也不门控"));
 }
+
+/// 服务端断句族：不本地门控 —— 静音也要上传（服务端靠静音判句尾）。
+///
+/// 现有两个云端集成测试用的就是服务端断句 mock（`vad_config=None`），
+/// 这条把「静音照上传」明确断言出来：门控生效时静音会被丢掉。
+#[test]
+fn 服务端断句族静音照上传() {
+    use crate::asr::cloud::mock::MockProvider;
+    use crate::asr::cloud::{CloudStreamingSession, EndpointKind};
+
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16_000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    // 送一段「语音」（provider 收到的就是全部内容，含静音）。
+    session.advance_samples(16_000);
+    session.push(&[0.2; 16_000]);
+    let sent = state.lock().unwrap().sent.len();
+    assert_eq!(sent, 16_000, "整段音频（含静音）都该送出去，实际 {sent} 个采样");
+}

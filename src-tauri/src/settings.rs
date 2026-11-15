@@ -41,7 +41,7 @@ pub struct Settings {
     pub cloud_model: String,
     /// 云端资源标识（火山的 `X-Api-Resource-Id`；空 = 用该 provider 的默认）。
     pub cloud_resource_id: String,
-    /// 云端 provider：`realtime`（Realtime JSON 族）
+    /// 云端 provider：`realtime`（Realtime JSON 族）/ `volcengine`（火山二进制帧族）
     pub cloud_provider: String,
 }
 

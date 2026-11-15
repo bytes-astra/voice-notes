@@ -154,6 +154,12 @@ function renderCloudConfig() {
   }
   // 配置项按 provider 解释：火山的「模型名」是固定的，资源标识才有意义。
   const provider = status.cloudProvider || 'realtime'
+  // 下拉框必须跟着状态走：启动时 bindUI 先于 refreshStatus，那时还没有
+  // 状态（界面显示 realtime，实际存的是 volcengine）—— 保存一次就把
+  // 服务静默改回去了。
+  if (cloudProviderSelect && cloudProviderSelect.value !== provider) {
+    cloudProviderSelect.setItems(cloudProviderItems(), provider)
+  }
   els.cloudModelField.classList.toggle('hidden', provider !== 'realtime')
   els.cloudResourceField.classList.toggle('hidden', provider !== 'volcengine')
 }

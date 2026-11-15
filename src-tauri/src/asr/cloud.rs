@@ -15,7 +15,8 @@ use sherpa_onnx::LinearResampler;
 
 use super::{AsrSession, Segment, StreamEvent, Timeline, Transcript, SAMPLE_RATE};
 
-// provider 的实现放在 `cloud/realtime.rs`（OpenAI Realtime JSON 族）。
+// provider 的实现：`realtime.rs`（OpenAI Realtime JSON 族）、`volcengine.rs`
+// （火山 / 豆包，自研二进制帧协议）。
 pub mod realtime;
 // 中间结果归一器：把各家的协议形态归一成「当前句的累计串」。
 pub mod partial;
@@ -235,6 +236,8 @@ pub fn create_provider(
                     api_key: settings.cloud_api_key.clone(),
                     resource_id,
                     keywords,
+                    itn: settings.itn,
+                    punct: settings.punct,
                 },
             )))
         }

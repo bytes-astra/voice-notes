@@ -468,3 +468,47 @@ fn 提交失败后收尾区间覆盖到最后() {
         "收尾这条要覆盖 0.0~2.0 秒：{segment:?}"
     );
 }
+
+/// 能力表与 provider 实例自报的值必须一致（两处漂移会让状态与行为分叉）。
+#[test]
+fn 能力表与实例一致() {
+    for id in crate::settings::CLOUD_PROVIDERS {
+        let caps = provider_capabilities(id).unwrap_or_else(|| panic!("{id} 应有能力项"));
+        let provider = create_provider(&crate::settings::Settings {
+            cloud_provider: id.into(),
+            ..Default::default()
+        })
+        .unwrap_or_else(|error| panic!("{id} 应能建出 provider：{error}"));
+        assert_eq!(provider.capabilities(), caps, "{id} 的表项与实例不一致");
+    }
+}
+
+/// 未知 provider：没有能力项，也建不出 provider。
+#[test]
+fn 未知provider建不出来() {
+    assert!(provider_capabilities("不存在的服务").is_none());
+    let settings = crate::settings::Settings {
+        cloud_provider: "不存在的服务".into(),
+        ..Default::default()
+    };
+    assert!(create_provider(&settings).is_err(), "未知 provider 不该建出来");
+}
+
+/// 能力声明不支持术语表时，一个词都不带（系统不得向它发送术语表）。
+#[test]
+fn 能力不支持术语表时不带词() {
+    let settings = crate::settings::Settings {
+        hotwords: vec!["玄戒芯片".into()],
+        ..Default::default()
+    };
+    let caps = Capabilities {
+        endpoint_kind: EndpointKind::ClientCommit,
+        needs_local_vad: true,
+        partial_semantics: PartialSemantics::Delta,
+        supports_keywords: false,
+        target_sample_rate: 16_000,
+    };
+    let (words, ignored) = cloud_keywords(&settings, &caps);
+    assert!(words.is_empty(), "不支持就不该带词：{words:?}");
+    assert_eq!(ignored, 1, "被丢弃的词数要报出来");
+}
