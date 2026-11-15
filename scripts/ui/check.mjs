@@ -487,7 +487,38 @@ check(
   await page.evaluate(() => document.getElementById('copy-btn')?.getAttribute('aria-label') || '(没有 copy-btn)'),
 )
 check('无未翻译 key（英文）', !(await page.evaluate(() => /\b(view|record|result|history|settings|mode|model|setup|progress|duration|drop|theme|nav)\.[a-z]+\b/.test(document.body.innerText))))
+check('英文设置页无横向溢出', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 await page.screenshot({ path: `${SHOTS}/03-en-settings.png` })
+
+// 英文的副标题比中文长（"uploaded to a cloud service"）：模式行放不下时会
+// 撑出卡片 —— 中文看不出来，英文界面直接坏掉。断言它不许越过卡片内边距。
+await page.locator('.nav-item[data-view="transcribe"]').click()
+await page.waitForTimeout(150)
+check(
+  '英文模式行不溢出卡片',
+  await page.evaluate(() => {
+    const row = document.querySelector('.mode-row')
+    const card = row?.closest('.card')
+    if (!row || !card) return false
+    const rect = row.getBoundingClientRect()
+    const box = card.getBoundingClientRect()
+    const style = getComputedStyle(card)
+    const padLeft = parseFloat(style.paddingLeft) || 0
+    const padRight = parseFloat(style.paddingRight) || 0
+    return rect.left >= box.left + padLeft - 1 && rect.right <= box.right - padRight + 1
+  }),
+  await page.evaluate(() => {
+    const row = document.querySelector('.mode-row')
+    const card = row?.closest('.card')
+    if (!row || !card) return '(找不到模式行)'
+    const rect = row.getBoundingClientRect()
+    const box = card.getBoundingClientRect()
+    return `模式行 ${Math.round(rect.left)}~${Math.round(rect.right)} / 卡片 ${Math.round(box.left)}~${Math.round(box.right)}`
+  }),
+)
+check('英文转写页无横向溢出', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.waitForTimeout(100)
 
 // 5. 清空后切回中文：旧内容不复原
 await page.locator('.nav-item[data-view="transcribe"]').click()

@@ -433,6 +433,11 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .mode-row {
   order: 5;
   display: inline-flex;
+  /* 英文副标题更长（"uploaded to a cloud service"）：整行放不下时换行，
+     不能撑出卡片 —— 不加 max-width 的话 inline-flex 会按内容宽度溢出。 */
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
   gap: 4px;
   margin-top: 16px;
   padding: 4px;
@@ -445,6 +450,7 @@ main { display: flex; flex-direction: column; gap: 16px; }
   display: flex;
   flex-direction: column;
   align-items: center;
+  max-width: 100%;
   gap: 1px;
   padding: 6px 18px;
   border: 0;
@@ -456,7 +462,13 @@ main { display: flex; flex-direction: column; gap: 16px; }
   transition: background 0.15s, color 0.15s, box-shadow 0.15s;
 }
 .mode-chip .mode-name { font-size: 13px; font-weight: 600; }
-.mode-chip .mode-desc { font-size: 10.5px; opacity: 0.85; white-space: nowrap; }
+.mode-chip .mode-desc {
+  font-size: 10.5px;
+  opacity: 0.85;
+  /* 单个芯片的副标题也允许换行：整行放不下时由芯片内部折行，不溢出卡片。 */
+  white-space: normal;
+  text-align: center;
+}
 .mode-chip:hover { color: var(--ink); }
 .mode-chip[aria-pressed="true"] {
   background: var(--panel);
