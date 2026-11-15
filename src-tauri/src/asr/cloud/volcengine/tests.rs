@@ -121,3 +121,95 @@ fn 错误码映射到字典码() {
     assert!(other.starts_with("cloud.protocolError"), "实际 {other}");
     assert!(other.contains("45000151"), "细节要带上错误码：{other}");
 }
+
+/// 真服务冒烟：连上火山 → 发一段真实语音 → 收中间结果与定稿 → 末包收尾。
+///
+///   VOICE_NOTES_VOLCENGINE_KEY=... cargo test --manifest-path src-tauri/Cargo.toml \
+///     --lib asr::cloud::volcengine::tests::真服务冒烟 -- --nocapture
+///
+/// **没有环境变量就跳过**（打印一行「跳过：未设置…」，不打印 key）。
+/// key 只从环境变量读 —— 不写进仓库、不进日志、不进断言消息。
+#[test]
+fn 真服务冒烟() {
+    let Ok(key) = std::env::var("VOICE_NOTES_VOLCENGINE_KEY") else {
+        println!("跳过：未设置 VOICE_NOTES_VOLCENGINE_KEY");
+        return;
+    };
+    let resource_id = std::env::var("VOICE_NOTES_VOLCENGINE_RESOURCE_ID")
+        .unwrap_or_else(|_| DEFAULT_RESOURCE_ID.to_string());
+
+    // 真实语音 fixture（16 kHz / 单声道 / 5.6 秒）。
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    let samples: Vec<f32> = wave.samples().to_vec();
+    assert_eq!(wave.sample_rate(), 16_000, "fixture 应该是 16 kHz");
+
+    let config = VolcengineConfig {
+        base_url: String::new(),
+        api_key: key,
+        resource_id,
+        keywords: vec!["玄戒芯片".into()],
+        itn: true,
+        punct: true,
+    };
+    use crate::asr::cloud::{CloudStreamingSession, StreamEvent};
+    use crate::asr::AsrSession;
+    let mut session = CloudStreamingSession::new(Box::new(VolcengineProvider::new(config)));
+    session.connect().expect("应能连上火山");
+
+    // 按 60 ms 一批喂进去（编排层就是这个节奏）。
+    let mut finals: Vec<String> = Vec::new();
+    let mut partials: Vec<String> = Vec::new();
+    let chunk = 16_000 / 50; // 20 ms
+    for part in samples.chunks(chunk) {
+        session.advance_samples(part.len());
+        for event in session.push(part) {
+            match event {
+                StreamEvent::Partial(text) => partials.push(text),
+                StreamEvent::Segment(segment) => finals.push(segment.text),
+            }
+        }
+        // 收一收后台事件（final 可能晚于音频到达）。
+        for event in session.poll() {
+            match event {
+                StreamEvent::Partial(text) => partials.push(text),
+                StreamEvent::Segment(segment) => finals.push(segment.text),
+            }
+        }
+    }
+    // 收尾：force_end 提交这一句，finish 发末包并等最终响应。
+    for event in session.force_end() {
+        match event {
+            StreamEvent::Partial(text) => partials.push(text),
+            StreamEvent::Segment(segment) => finals.push(segment.text),
+        }
+    }
+    for event in session.finish() {
+        match event {
+            StreamEvent::Partial(text) => partials.push(text),
+            StreamEvent::Segment(segment) => finals.push(segment.text),
+        }
+    }
+    // 再等一会儿：最终响应可能还在路上（finish 内部已经等过一轮）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        for event in session.poll() {
+            match event {
+                StreamEvent::Partial(text) => partials.push(text),
+                StreamEvent::Segment(segment) => finals.push(segment.text),
+            }
+        }
+        if !finals.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    println!("中间结果条数：{}", partials.len());
+    println!("定稿句子：{finals:?}");
+    println!("最后一条中间结果：{:?}", partials.last());
+    assert!(!finals.is_empty(), "应该至少收到一句定稿");
+    assert!(
+        finals.iter().any(|text| !text.trim().is_empty()),
+        "定稿不应全是空的：{finals:?}"
+    );
+}
