@@ -56,6 +56,15 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # sherpa-onnx-sys 的预编译静态库解压在 target/ 里，会被 rust-cache 一起
+      # 恢复。换了 Cargo.lock（新增依赖）时，恢复出来的目录可能不完整 ——
+      # build script 看到「目录在」就跳过下载，链接阶段才报
+      # 「could not find native static library `sherpa-onnx-c-api`」。
+      #
+      # 删掉解压出来的目录（保留 .tar.bz2 压缩包），让它从压缩包重新解压。
+      - name: 清理 sherpa 预编译库的不完整缓存
+        run: rm -rf src-tauri/target/sherpa-onnx-prebuilt/*/
+
       # 仓库要求零警告：clippy 带 -D warnings 当门禁
       - name: clippy（零警告）
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

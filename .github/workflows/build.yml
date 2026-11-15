@@ -59,6 +59,14 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib --no-run
 
+      # 与 check.yml 同一条：预编译库目录被缓存恢复成不完整的状态时，
+      # build script 会跳过下载，链接阶段才报「could not find native static
+      # library」。删掉解压出来的目录，让它从压缩包重新解压。
+      - name: 清理 sherpa 预编译库的不完整缓存
+        if: runner.os == 'macOS'
+        shell: bash
+        run: rm -rf src-tauri/target/sherpa-onnx-prebuilt/*/
+
       - name: Build
         run: npm run build
 
