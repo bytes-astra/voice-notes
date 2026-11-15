@@ -606,6 +606,28 @@ impl CloudStreamingSession {
         // 收尾：把还没闭合的丢包段落账（编排在 finish 之后才取缺口）。
         self.close_upload_gap();
         self.drain(&mut events);
+        // **最后一句还没定稿时的兜底**：实时行上已经显示了这段文字，
+        // 停止后却不在最终转写里（用户会看到自己刚看到的字消失）。
+        // 本地流式在 `finish()` 里会把 partial 落地，云端要有对等物。
+        if !self.partial.trim().is_empty() {
+            let text = self.partial.clone();
+            let span = self.pending.pop_front();
+            let (start, end) = match span {
+                Some(span) => span,
+                None => {
+                    let (start, end) = self.timeline.commit_at(self.fed_end, true);
+                    (
+                        start as f32 / SAMPLE_RATE as f32,
+                        end as f32 / SAMPLE_RATE as f32,
+                    )
+                }
+            };
+            self.partial.clear();
+            let segment = Segment { text, start, end };
+            events.push(StreamEvent::Segment(segment.clone()));
+            self.segments.push(segment);
+            crate::log::warn("云端最后一句没有定稿，按实时文本兜底落成句子");
+        }
         events
     }
 }

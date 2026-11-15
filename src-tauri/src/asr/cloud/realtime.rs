@@ -443,6 +443,13 @@ async fn run(
                             "cloud.authFailed"
                         } else { "cloud.protocolError" };
                         let error = crate::code_detail(code, message);
+                        // 报错要把提交槽解开：否则槽永远悬着 → flush 不再往前推进
+                        // → 这一句之后的所有 final 都被扣住（转写里静默少了后文），
+                        // 收尾还要白等 10 秒。
+                        tracker.resolve(None, Outcome::Failed);
+                        for event in tracker.flush() {
+                            on_event(event);
+                        }
                         if let Some(ready) = ready.take() { let _ = ready.send(Err(error.clone())); }
                         let _ = errors.send(error);
                     }

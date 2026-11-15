@@ -260,6 +260,7 @@ window.I18N_LOCALES['en'] = {
   'settings.cloudSave': 'Save cloud settings',
   'settings.cloudSaved': 'Cloud settings saved',
   'settings.cloudNoKeywords': 'This cloud service does not support the term list (its word list can only be preset in the console).',
+  'settings.cloudSwitched': 'Cloud service switched — fill in the address and key again',
   'settings.cloudConfigured': 'Key is set',
   'settings.cloudNotConfigured': 'No key set yet',
   'settings.cloudClearKey': 'Clear key',

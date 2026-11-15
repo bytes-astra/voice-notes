@@ -273,21 +273,24 @@ export function bindUI() {
   localeSelect.setItems(localeItems(), localStorage.getItem(LOCALE_KEY) || 'system')
   cloudProviderSelect = UISelect.create(els.cloudProviderSelect, {
     onChange: async (value) => {
-      // 换服务 = 换一套配置含义：地址 / 模型 / 资源标识不能跨家沿用
-      // （把上一家的地址带给新家会连不上，而且看不出原因）。
-      // 先清掉不属于新服务的字段，再保存。
+      // 换服务 = 换一套配置含义：地址 / 凭据 / 模型 / 资源标识不能跨家沿用
+      // （把上一家的地址带给新家会连不上，旧 key 留着又会让「已配置」变成
+      // 假就绪 —— 点麦克风才发现凭据不对）。所以这里明确清空并提示用户
+      // 重新填写，而不是让两家的配置混在一处。
       els.cloudBaseUrl.value = ''
-      els.cloudModel.value = value === 'realtime' ? els.cloudModel.value : ''
-      els.cloudResourceId.value = value === 'volcengine' ? els.cloudResourceId.value : ''
+      els.cloudApiKey.value = ''
+      els.cloudModel.value = ''
+      els.cloudResourceId.value = ''
       try {
         state.status = await invoke('set_cloud_config', {
-          baseUrl: els.cloudBaseUrl.value.trim(),
-          apiKey: undefined,
-          model: els.cloudModel.value.trim(),
+          baseUrl: '',
+          apiKey: '',
+          model: '',
           provider: value,
-          resourceId: els.cloudResourceId.value.trim(),
+          resourceId: '',
         })
         renderStatus()
+        toast(t('settings.cloudSwitched'))
       } catch (error) {
         toast(fmtError(error), 'error')
       }

@@ -354,3 +354,30 @@ fn clean_cloud_keywords_drops_protocol_illegal_chars() {
     assert_eq!(clean, vec!["正常".to_string()]);
     assert_eq!(ignored, 2);
 }
+
+/// 服务端报错时提交槽必须被解开：不解决它，后面所有 final 都会被扣住
+/// （转写里静默少了后文），收尾还要白等 10 秒。
+#[test]
+fn 报错解开队首的提交槽() {
+    let mut tracker = CommitTracker::default();
+    tracker.commit();
+    tracker.committed(Some("a".into()));
+    // 服务端报错：把队首按「失败」解决掉。
+    tracker.resolve(None, Outcome::Failed);
+    let events = tracker.flush();
+    assert_eq!(events.len(), 1, "失败的槽要放出来");
+    assert!(tracker.is_empty(), "队列不该还悬着");
+    // 后续的提交与结果要能继续流动。
+    tracker.commit();
+    tracker.committed(Some("b".into()));
+    tracker.resolve(Some("b".into()), Outcome::Text("后面这句".into()));
+    let events = tracker.flush();
+    let texts: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            CloudEvent::Final { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, vec!["后面这句".to_string()]);
+}

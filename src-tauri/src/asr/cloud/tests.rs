@@ -590,3 +590,26 @@ fn 投递成功后丢包另起一段() {
     assert_eq!(gaps[0].1, 12_800);
     assert_eq!(gaps[1].1, 12_800);
 }
+
+/// 最后一句没定稿时（超时 / 断连），实时行上已经显示的文字不能凭空消失：
+/// 收尾要按 partial 兜底落成句子。
+#[test]
+fn 收尾把未定的partial落成句子() {
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    session.force_end();
+    // provider 一直没回 final，只有实时文本。
+    emit(&state, CloudEvent::Partial("说了半句".into()));
+    let events = session.finish();
+    let segment = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::Segment(segment) => Some(segment.clone()),
+            _ => None,
+        })
+        .expect("未定的 partial 要落成句子");
+    assert_eq!(segment.text, "说了半句");
+}

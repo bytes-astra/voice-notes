@@ -1281,10 +1281,14 @@ check(
   (await page.evaluate(() => window.__mockStatus.cloudProvider)) === 'volcengine',
   await page.evaluate(() => window.__mockStatus.cloudProvider),
 )
-// 切回默认服务
+// 切回默认服务。切换会清掉地址与凭据（两家的配置不能混用），
+// 后面还有断言要用「已配置」的状态 —— 这里重新填一次。
 await page.locator('#cloud-provider-select .select-button').click()
 await page.waitForTimeout(150)
 await page.locator('.select-popup .select-item', { hasText: 'OpenAI' }).first().click()
+await page.waitForTimeout(300)
+await page.locator('#cloud-api-key').fill('mock-key')
+await page.locator('#cloud-save').click()
 await page.waitForTimeout(300)
 
 // 当前 provider 不支持术语表时，界面要提示 —— 术语表是本地流式与云端
