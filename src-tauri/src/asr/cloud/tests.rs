@@ -42,6 +42,7 @@ fn final_maps_to_segment() {
     emit(
         &state,
         CloudEvent::Final {
+            item_id: None,
             text: "你好".into(),
             start_ms: None,
             end_ms: None,
@@ -68,6 +69,7 @@ fn provider_timestamps_do_not_override_local_timeline() {
     emit(
         &state,
         CloudEvent::Final {
+            item_id: None,
             text: "你好".into(),
             // provider 说是 5 秒到 9 秒：本地只说了 1 秒。
             start_ms: Some(5000),
@@ -125,6 +127,7 @@ fn empty_final_does_not_steal_next_span() {
     emit(
         &state,
         CloudEvent::Final {
+            item_id: None,
             text: "   ".into(),
             start_ms: None,
             end_ms: None,
@@ -137,6 +140,7 @@ fn empty_final_does_not_steal_next_span() {
     emit(
         &state,
         CloudEvent::Final {
+            item_id: None,
             text: "第二句".into(),
             start_ms: None,
             end_ms: None,
@@ -166,6 +170,7 @@ fn disconnect_keeps_finalized_segments() {
     emit(
         &state,
         CloudEvent::Final {
+            item_id: None,
             text: "第一句".into(),
             start_ms: None,
             end_ms: None,
@@ -211,8 +216,8 @@ fn failed_item_does_not_block_later_finals() {
     session.advance_samples(16000);
     session.push(&[0.2; 16000]);
     session.force_end();
-    emit(&state, CloudEvent::Final { text: String::new(), start_ms: None, end_ms: None });
-    emit(&state, CloudEvent::Final { text: "第二句".into(), start_ms: None, end_ms: None });
+    emit(&state, CloudEvent::Final { item_id: None, text: String::new(), start_ms: None, end_ms: None });
+    emit(&state, CloudEvent::Final { item_id: None, text: "第二句".into(), start_ms: None, end_ms: None });
     let events = session.poll();
     let texts: Vec<String> = events.iter().filter_map(|e| match e { StreamEvent::Segment(s) => Some(s.text.clone()), _ => None }).collect();
     assert_eq!(texts, vec!["第二句".to_string()]);
@@ -243,6 +248,7 @@ fn failed_commit_merges_span_into_next_commit() {
     emit(
         &state,
         CloudEvent::Final {
+            item_id: None,
             text: "第一句第二句".into(),
             start_ms: None,
             end_ms: None,
@@ -260,6 +266,7 @@ fn failed_commit_merges_span_into_next_commit() {
     emit(
         &state,
         CloudEvent::Final {
+            item_id: None,
             text: "第三句".into(),
             start_ms: None,
             end_ms: None,
@@ -299,4 +306,155 @@ fn provider_requires_local_vad() {
         Err(error) => assert_eq!(error, "cloud.vadMissing"),
         Ok(_) => panic!("没有 VAD 不应创建 provider"),
     }
+}
+
+
+/// final 乱序到达时：句子时间不能串位，文本顺序也要按本地时间轴。
+///
+/// 区间按 `item_id` 绑定（不是按到达顺序）—— 服务端先回后一轮的 completed
+/// 是协议允许的。
+#[test]
+fn 乱序final不串位() {
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    session.force_end();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    session.force_end();
+    // 回执按提交顺序到，区间依次绑到 a / b。
+    emit(&state, CloudEvent::CommitAck { item_id: Some("a".into()) });
+    emit(&state, CloudEvent::CommitAck { item_id: Some("b".into()) });
+    // 结果乱序到：b 先到。
+    emit(
+        &state,
+        CloudEvent::Final {
+            item_id: Some("b".into()),
+            text: "第二句".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    emit(
+        &state,
+        CloudEvent::Final {
+            item_id: Some("a".into()),
+            text: "第一句".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    session.poll();
+    let transcript = session.transcript();
+    assert_eq!(transcript.text, "第一句第二句", "文本顺序要按本地时间轴");
+    assert_eq!(transcript.segments.len(), 2);
+    assert!(
+        (transcript.segments[0].start - 0.0).abs() < 1e-6
+            && (transcript.segments[0].end - 1.0).abs() < 1e-6,
+        "第一句该是 0.0~1.0：{:?}",
+        transcript.segments[0]
+    );
+    assert!(
+        (transcript.segments[1].start - 1.0).abs() < 1e-6
+            && (transcript.segments[1].end - 2.0).abs() < 1e-6,
+        "第二句该是 1.0~2.0：{:?}",
+        transcript.segments[1]
+    );
+}
+
+/// 失败的 item 没有回执时（回执晚到或没到），后面的句子也不能串位：
+/// 失败事件自带 item_id，回执随后照常补上。
+#[test]
+fn 失败item无回执不串位() {
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    session.force_end();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    session.force_end();
+    // 第一轮失败：provider 先补回执（会话层靠它把区间绑上去），再上空 final。
+    emit(&state, CloudEvent::CommitAck { item_id: Some("a".into()) });
+    emit(
+        &state,
+        CloudEvent::Final {
+            item_id: Some("a".into()),
+            text: String::new(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    emit(&state, CloudEvent::CommitAck { item_id: Some("b".into()) });
+    emit(
+        &state,
+        CloudEvent::Final {
+            item_id: Some("b".into()),
+            text: "第二句".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    session.poll();
+    let transcript = session.transcript();
+    assert_eq!(transcript.text, "第二句");
+    assert_eq!(transcript.segments.len(), 1);
+    assert!(
+        (transcript.segments[0].start - 1.0).abs() < 1e-6,
+        "第二句该是 1.0~2.0（第一句的区间已被失败那一轮弹掉）：{:?}",
+        transcript.segments[0]
+    );
+}
+
+/// 上传丢包要留下缺口标记，并记下它发生在哪一秒。
+#[test]
+fn 上传丢包记下缺口位置() {
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
+    // 第一次发送就丢 1 秒。
+    state.lock().unwrap().dropped_reply = 16_000;
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    let gaps = session.take_upload_gaps();
+    assert_eq!(gaps.len(), 1, "丢包要有缺口：{gaps:?}");
+    assert_eq!(gaps[0].1, 16_000, "丢掉的采样数要对");
+    assert!(gaps[0].0 < 0.01, "缺口起点是这段音频的起点：{gaps:?}");
+}
+
+
+/// 提交失败之后又喂了音频，收尾那条 final 的区间要覆盖到最后 ——
+/// 服务端把两段音频合成一条结果，区间也必须合成一段。
+#[test]
+fn 提交失败后收尾区间覆盖到最后() {
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
+    {
+        let mut guard = state.lock().unwrap();
+        guard.fail_commit = true;
+        guard.reply_on_finish = Some("合并的一句".into());
+    }
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    // 这一句提交失败：区间攒着，等下一次提交（收尾那次）一起登记。
+    session.force_end();
+    // 又喂了 1 秒，没再触发静音收尾。
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    let events = session.finish();
+    let segment = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::Segment(segment) => Some(segment.clone()),
+            _ => None,
+        })
+        .expect("该有一条句子");
+    assert!(
+        (segment.start - 0.0).abs() < 1e-6 && (segment.end - 2.0).abs() < 1e-6,
+        "收尾这条要覆盖 0.0~2.0 秒：{segment:?}"
+    );
 }

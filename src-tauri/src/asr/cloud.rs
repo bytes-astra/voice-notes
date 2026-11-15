@@ -7,7 +7,7 @@
 //!
 //! provider 的实现放在 `cloud/realtime.rs`（OpenAI Realtime JSON 族）。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Instant;
 
@@ -23,10 +23,20 @@ pub mod realtime;
 pub enum CloudEvent {
     /// 中间结果：还在变，同一段文字可能后面被改写。
     Partial(String),
+    /// 服务端确认了一次提交：会话层靠它把句子区间绑到 `item_id` 上。
+    ///
+    /// **必须按提交顺序到达** —— 会话层按顺序把区间绑到 id 上，
+    /// 顺序乱了区间就会绑错。
+    CommitAck {
+        item_id: Option<String>,
+    },
     /// Realtime 的增量 delta；会话层按 item 累积后转成 Partial(String)。
     PartialDelta { item_id: Option<String>, delta: String },
     /// 一句定稿。
     Final {
+        /// 服务端给这一轮的 `item_id`：会话层靠它找到对应的句子区间。
+        /// 没有 id 时退回按提交顺序配对。
+        item_id: Option<String>,
         text: String,
         /// provider 给的起点（毫秒）。**可选增强**：只作参考，
         /// 不覆盖本地轴算出来的 `Segment.start` / `Segment.end`。
@@ -60,15 +70,14 @@ pub trait CloudProvider: Send {
     /// 建连。`on_event` 是事件回调：provider 在自己的线程上调用它。
     fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String>;
     /// 发一段音频（provider 采样率、16bit、单声道）。
-    fn send_audio(&mut self, pcm: &[i16]) -> Result<(), String>;
+    ///
+    /// 返回值是**没送出去**的 16 kHz 采样数（正常是 0）：上传队列满时
+    /// 这段音频会被丢掉，调用方据此在结果里留可见缺口。
+    fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, String>;
     /// 提交当前这一段（`client_commit` 家族用）。
     fn commit(&mut self) -> Result<(), String>;
     /// 收尾：等最后的结果回来。
     fn finish(&mut self) -> Result<(), String>;
-    /// 后台上传时丢掉的 16 kHz 采样数（默认没有这种丢弃）。
-    fn take_dropped(&mut self) -> usize {
-        0
-    }
     /// 后台异步发现的错误（默认只在下一次发送时暴露）。
     fn take_error(&mut self) -> Option<String> {
         None
@@ -183,8 +192,16 @@ pub struct CloudStreamingSession {
     fed_end: usize,
     /// 上一次提交之后有没有喂过音频（没有就别提交空段）。
     fed_since_commit: bool,
-    /// 已提交、还没回来的 final 的时间区间（按提交顺序）。
+    /// 已提交、还没回来的 final 的时间区间。
+    ///
+    /// **按 item_id 绑定，不按到达顺序**：服务端的 final 可能乱序到达，
+    /// 也可能缺一条（识别失败 / 回执没到）。按到达顺序配对会让后面每一句
+    /// 都抢到前一句的区间 —— 时间戳整段错位。
+    ///
+    /// - `pending`：还没绑到 id 的区间，按提交顺序。
+    /// - `by_id`：已绑定的区间，按 id 查。
     pending: VecDeque<(f32, f32)>,
+    by_id: HashMap<String, (f32, f32)>,
     /// 提交失败的区间：服务端没收到这次 commit，那一段音频会并进下一次
     /// 提交、只回一条 final —— 区间先攒着，等下一次提交成功时一起登记。
     uncommitted_span: Option<(f32, f32)>,
@@ -196,6 +213,11 @@ pub struct CloudStreamingSession {
     /// 增量 delta 按 item 累积；前端需要的是累计串，不是最后一个碎片。
     delta_item: Option<String>,
     delta_text: String,
+    /// 上传队列满载时丢掉的音频：(起点秒, 丢掉的 16 kHz 采样数)。
+    ///
+    /// 这些采样**已经喂进会话**（时钟里算过了），所以不能再推进时钟 ——
+    /// 但它们没送到服务端，识别结果里要有可见缺口。
+    upload_gaps: Vec<(f32, usize)>,
     started: Instant,
 }
 
@@ -216,12 +238,14 @@ impl CloudStreamingSession {
             fed_end: 0,
             fed_since_commit: false,
             pending: VecDeque::new(),
+            by_id: HashMap::new(),
             uncommitted_span: None,
             partial: String::new(),
             segments: Vec::new(),
             error: None,
             delta_item: None,
             delta_text: String::new(),
+            upload_gaps: Vec::new(),
             started: Instant::now(),
         }
     }
@@ -259,10 +283,25 @@ impl CloudStreamingSession {
                         }
                     }
                 }
-                CloudEvent::Final { text, .. } => {
+                CloudEvent::CommitAck { item_id } => {
+                    // 回执按提交顺序到达：把最靠前的未绑定区间绑到这个 id。
+                    if let Some(item_id) = item_id {
+                        if let Some(span) = self.pending.pop_front() {
+                            self.by_id.insert(item_id, span);
+                        }
+                    }
+                }
+                CloudEvent::Final { item_id, text, .. } => {
                     // 提交时就把区间定下来（那时本地时钟还没被静音段推走）；
                     // final 回来得晚也不影响：按提交顺序配对。
-                    let (start, end) = match self.pending.pop_front() {
+                    // 先按 id 找区间；找不到（没有 id、或回执还没到）才退回
+                    // 按提交顺序取最靠前的那个。
+                    let span = match &item_id {
+                        Some(item_id) => self.by_id.remove(item_id),
+                        None => None,
+                    }
+                    .or_else(|| self.pending.pop_front());
+                    let (start, end) = match span {
                         Some(span) => span,
                         None => {
                             let (start, end) = self.timeline.commit_at(self.fed_end, true);
@@ -288,9 +327,9 @@ impl CloudStreamingSession {
         }
     }
 
-    /// 取回上传队列满载时丢掉的 16 kHz 采样数。
-    pub fn take_dropped(&mut self) -> usize {
-        self.provider.take_dropped()
+    /// 取回上传丢包的缺口（起点秒, 丢掉的 16 kHz 采样数）。
+    pub fn take_upload_gaps(&mut self) -> Vec<(f32, usize)> {
+        std::mem::take(&mut self.upload_gaps)
     }
 
     /// 只收取后台事件，不喂音频：静音期也要让已返回的 final 出字。
@@ -316,9 +355,17 @@ impl CloudStreamingSession {
         };
         let pcm = to_i16(&resampled);
         match self.provider.send_audio(&pcm) {
-            Ok(()) => {
+            Ok(dropped) => {
                 self.fed_end = end;
                 self.fed_since_commit = true;
+                if dropped > 0 {
+                    // 没送出去：缺口起点就是这段音频的起点（整段都没发出去）。
+                    let start = audio_start as f32 / SAMPLE_RATE as f32;
+                    self.upload_gaps.push((start, dropped));
+                    crate::log::warn(format!(
+                        "云端上传队列满，丢掉 {dropped} 个 16kHz 采样"
+                    ));
+                }
             }
             Err(error) => self.error = Some(error),
         }
@@ -375,8 +422,17 @@ impl CloudStreamingSession {
                 }
             }
         }
-        // 之前提交失败攒下的区间：收尾这次提交会把那段音频一起带上，
-        // 服务端为它回的 final 也要按顺序配到区间。
+        // 收尾这次提交会把**没提交出去的那段音频**一起带上，服务端为它回
+        // 的 final 要有对应的区间。之前提交失败攒下的区间也在这一段里 ——
+        // 服务端会把它们并成一条 final，区间也要并成一段。
+        if self.fed_since_commit {
+            let (start, end) = self.timeline.commit_at(self.fed_end, true);
+            let span = (
+                start as f32 / SAMPLE_RATE as f32,
+                end as f32 / SAMPLE_RATE as f32,
+            );
+            self.uncommitted_span = Some(merge_span(self.uncommitted_span.take(), span));
+        }
         if let Some(span) = self.uncommitted_span.take() {
             self.pending.push_back(span);
         }
@@ -424,9 +480,17 @@ impl AsrSession for CloudStreamingSession {
     }
 
     fn transcript(self) -> Transcript {
+        // 句子按**本地时间轴**排序：服务端的 final 可能乱序到达，
+        // 不排序的话文本顺序会跟着乱（区间已经按 id 配对了，顺序没跟上）。
+        let mut segments = self.segments;
+        segments.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Transcript {
-            text: super::join_segments(self.segments.iter().map(|s| s.text.as_str())),
-            segments: self.segments,
+            text: super::join_segments(segments.iter().map(|s| s.text.as_str())),
+            segments,
             duration_seconds: self.timeline.recorded as f32 / SAMPLE_RATE as f32,
             elapsed_ms: self.started.elapsed().as_millis() as u64,
             language: "zh-en".into(),

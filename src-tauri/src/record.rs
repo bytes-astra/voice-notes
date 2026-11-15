@@ -612,15 +612,15 @@ where
         let new_audio = queue.take_new();
         // 丢掉的输入同样占真实录音时间：缺口结束后才是后续音频的位置。
         session.advance_dropped(audio::resampled_len(new_audio.dropped, rate));
-        // 上传队列满载丢掉的音频**不再**推进时钟：这些采样在喂给会话时
-        // 已经计入 `advance_samples`（用户确实录到了，只是没送到云端），
-        // 再 `advance_dropped` 一次会把录音时长算多一倍、缺口标记也跟着漂。
-        // 与采集丢包不同 —— 那种采样根本没进过会话。
-        let uploaded_dropped = session.take_dropped();
-        if uploaded_dropped > 0 {
-            let at = session.elapsed_seconds();
-            let marker = audio::gap_marker(uploaded_dropped as u32, asr::SAMPLE_RATE as u32);
-            let segment = asr::Segment { text: marker, start: at, end: at };
+        // 上传丢包（队列满，那段音频没送到云端）：**不推进时钟** —— 这些采样
+        // 喂给会话时已经计入 `advance_samples`（用户确实录到了），再推进一次
+        // 录音时长会翻倍。与采集丢包不同：那种采样根本没进过会话。
+        //
+        // 缺口标记打在**丢掉的起点**：这段音频已经算在包含它的那句区间里，
+        // 打在终点会排到句子后面（读起来像句子之后才丢的）。
+        for (start, dropped) in session.take_upload_gaps() {
+            let marker = audio::gap_marker(dropped as u32, asr::SAMPLE_RATE as u32);
+            let segment = asr::Segment { text: marker, start, end: start };
             gaps.push(segment.clone());
             if !discard.load(Ordering::Relaxed) {
                 emit(vec![StreamEvent::Segment(segment)]);
@@ -741,6 +741,13 @@ where
         let events = session.push(&tail);
         log_stream_events("云端收尾识别出一句", &events);
         emit(events);
+    }
+    // 收尾这一批的上传丢包也要报告：不然结尾一段音频静默消失。
+    for (start, dropped) in session.take_upload_gaps() {
+        let marker = audio::gap_marker(dropped as u32, asr::SAMPLE_RATE as u32);
+        let segment = asr::Segment { text: marker, start, end: start };
+        gaps.push(segment.clone());
+        emit(vec![StreamEvent::Segment(segment)]);
     }
     let events = session.finish();
     log_stream_events("云端收尾识别出一句", &events);

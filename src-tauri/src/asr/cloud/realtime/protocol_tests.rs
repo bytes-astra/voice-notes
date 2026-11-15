@@ -117,32 +117,41 @@ fn session_update_omits_empty_languages_and_keywords() {
     assert!(transcription.get("keywords").is_none());
 }
 
-/// final 按提交顺序上抛：后一轮先回来时要等。
+/// 结果按**本地提交顺序**上抛：后一轮先回来时要等前面那轮。
 #[test]
 fn finals_emitted_in_commit_order() {
-    let mut order = FinalOrder::default();
-    assert!(order.committed(Some("a".into())).is_empty());
-    assert!(order.committed(Some("b".into())).is_empty());
+    let mut tracker = CommitTracker::default();
+    tracker.commit();
+    tracker.commit();
+    // 两轮回执到了：先发两条回执（会话层靠它把区间绑到 id 上）。
+    let acks = tracker.committed(Some("a".into()));
+    assert_eq!(acks.len(), 1, "先发第一条回执");
+    assert!(matches!(acks[0], CloudEvent::CommitAck { .. }));
+    tracker.committed(Some("b".into()));
     // 后一轮先回来：先存着。
-    assert!(order.push(Some("b".into()), "第二句".into()).is_empty());
+    tracker.resolve(Some("b".into()), Outcome::Text("第二句".into()));
+    assert!(tracker.flush().is_empty(), "前一轮没回来，不该上抛");
     // 前一轮到了：两句一起发，顺序按提交来。
-    let events = order.push(Some("a".into()), "第一句".into());
+    tracker.resolve(Some("a".into()), Outcome::Text("第一句".into()));
+    let events = tracker.flush();
     let texts: Vec<String> = events
         .iter()
-        .map(|event| match event {
-            CloudEvent::Final { text, .. } => text.clone(),
-            _ => String::new(),
+        .filter_map(|event| match event {
+            CloudEvent::Final { text, .. } => Some(text.clone()),
+            _ => None,
         })
         .collect();
     assert_eq!(texts, vec!["第一句".to_string(), "第二句".to_string()]);
-    assert!(order.is_empty());
+    assert!(tracker.is_empty());
 }
 
 /// 没有 item_id 的 final：没法排序，直接发。
 #[test]
 fn final_without_item_id_is_emitted_directly() {
-    let mut order = FinalOrder::default();
-    let events = order.push(None, "一句".into());
+    let mut tracker = CommitTracker::default();
+    tracker.commit();
+    tracker.resolve(None, Outcome::Text("一句".into()));
+    let events = tracker.flush();
     assert_eq!(events.len(), 1);
 }
 
@@ -182,16 +191,21 @@ fn pending_accounting_server_endpoint() {
     assert!(!pending.outstanding(false, true), "最新结果到了就不该等");
 }
 
-/// 服务端先给 final、后给 committed：那条回执不能再排队等（否则队列永远不空）。
+/// 服务端先给 final、后给 committed：回执仍要发（会话层靠它绑区间），
+/// 但这一轮不再排第二次（否则永远等不到）。
 #[test]
 fn late_committed_receipt_is_not_queued() {
-    let mut order = FinalOrder::default();
-    // final 先到：直接发出去。
-    let events = order.push(Some("item_1".into()), "一句".into());
-    assert_eq!(events.len(), 1, "final 先到就该直接发");
-    // 后到的 committed 回执：不能再排进队。
-    assert!(order.committed(Some("item_1".into())).is_empty());
-    assert!(order.is_empty(), "队列该是空的：否则收尾会一直等");
+    let mut tracker = CommitTracker::default();
+    tracker.commit();
+    // final 先到：回执 + 结果一起上抛（回执在前：会话层先绑区间）。
+    tracker.resolve(Some("item_1".into()), Outcome::Text("一句".into()));
+    let events = tracker.flush();
+    assert_eq!(events.len(), 2, "回执 + 结果");
+    assert!(matches!(events[0], CloudEvent::CommitAck { .. }));
+    // 后到的 committed 回执：这一轮已经出结果了，不该再排队。
+    let events = tracker.committed(Some("item_1".into()));
+    assert!(events.is_empty());
+    assert!(tracker.is_empty(), "该是空的：否则收尾会一直等");
 }
 
 /// 凭据不能出现在错误详情里。
@@ -286,25 +300,29 @@ fn decodes_session_updated_event() {
 }
 
 /// 失败的 item 用空 final 占住提交队列里的位置：它后面那些**先到**的
-/// final 必须按提交顺序跟着放行，不能卡在 `ready` 里等超时。
+/// final 必须按提交顺序跟着放行，不能卡在队列里等超时。
 #[test]
 fn failed_item_releases_later_final_in_commit_order() {
-    let mut order = FinalOrder::default();
-    order.committed(Some("a".into()));
-    order.committed(Some("b".into()));
+    let mut tracker = CommitTracker::default();
+    tracker.commit();
+    tracker.commit();
+    tracker.committed(Some("a".into()));
+    tracker.committed(Some("b".into()));
     // 后一轮的结果先回来：排在 a 后面等着。
-    assert!(order.push(Some("b".into()), "第二句".into()).is_empty());
-    // a 失败：走同一条排序通道，a 的空 final 与 b 一起放行。
-    let events = order.push(Some("a".into()), String::new());
+    tracker.resolve(Some("b".into()), Outcome::Text("第二句".into()));
+    assert!(tracker.flush().is_empty());
+    // a 失败：走同一条通道，a 的空 final 与 b 一起放行。
+    tracker.resolve(Some("a".into()), Outcome::Failed);
+    let events = tracker.flush();
     let texts: Vec<String> = events
         .iter()
-        .map(|event| match event {
-            CloudEvent::Final { text, .. } => text.clone(),
-            _ => String::new(),
+        .filter_map(|event| match event {
+            CloudEvent::Final { text, .. } => Some(text.clone()),
+            _ => None,
         })
         .collect();
     assert_eq!(texts, vec![String::new(), "第二句".to_string()], "顺序必须是 a（空）→ b");
-    assert!(order.is_empty());
+    assert!(tracker.is_empty());
 }
 
 /// 默认模型永远不发 server_vad。

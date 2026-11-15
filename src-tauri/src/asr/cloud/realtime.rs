@@ -14,11 +14,11 @@
 //! - 文本：`conversation.item.input_audio_transcription.delta`（字段 `delta`）
 //!   与 `.completed`（字段 `transcript`），失败是 `.failed`。
 //!
-//! **跨轮的顺序不保证**：服务端可能先回后一轮的 completed。final 按
-//! `item_id` 排好序再上抛（`FinalOrder`），否则句子的先后会乱。
+//! **跨轮的顺序不保证**：服务端可能先回后一轮的 completed。结果按**本地
+//! 提交顺序**上抛（`CommitTracker`），回执先发（会话层靠它把句子区间绑到
+//! `item_id` 上）—— 上抛顺序再怎么乱，句子区间都不会配错。
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
@@ -83,7 +83,6 @@ pub struct RealtimeProvider {
     /// 后台任务报的错（连接断了之类）。
     errors: Receiver<String>,
     error_tx: Sender<String>,
-    dropped: Arc<Mutex<usize>>,
 }
 
 impl RealtimeProvider {
@@ -94,7 +93,6 @@ impl RealtimeProvider {
             commands: None,
             errors,
             error_tx,
-            dropped: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -144,7 +142,7 @@ impl CloudProvider for RealtimeProvider {
         }
     }
 
-    fn send_audio(&mut self, pcm: &[i16]) -> Result<(), String> {
+    fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, String> {
         if let Some(error) = self.take_error() {
             return Err(error);
         }
@@ -153,12 +151,11 @@ impl CloudProvider for RealtimeProvider {
         };
         let bytes: Vec<u8> = pcm.iter().flat_map(|sample| sample.to_le_bytes()).collect();
         match commands.try_send(Command::Audio(BASE64.encode(bytes))) {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(0),
             Err(tokio_mpsc::error::TrySendError::Full(_)) => {
-                if let Ok(mut dropped) = self.dropped.lock() {
-                    *dropped += pcm.len() * 16000 / TARGET_SAMPLE_RATE as usize;
-                }
-                Ok(())
+                // 队列满：这一段整段没送出去。调用方据此在结果里留缺口。
+                let samples = pcm.len() * 16000 / TARGET_SAMPLE_RATE as usize;
+                Ok(samples)
             }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => Err(crate::code("cloud.disconnected")),
         }
@@ -192,10 +189,6 @@ impl CloudProvider for RealtimeProvider {
                 .take_error()
                 .unwrap_or_else(|| crate::code("cloud.timeout"))),
         }
-    }
-
-    fn take_dropped(&mut self) -> usize {
-        self.dropped.lock().map(|mut n| std::mem::take(&mut *n)).unwrap_or(0)
     }
 
     fn take_error(&mut self) -> Option<String> {
@@ -258,7 +251,7 @@ async fn run(
         return;
     }
     let mut ready = Some(ready);
-    let mut order = FinalOrder::default();
+    let mut tracker = CommitTracker::default();
     let mut finishing: Option<Sender<()>> = None;
     // **只有收尾才有超时**：录音本身没有时长上限（本地两条路径也没有）。
     // 之前这里挂着一个「建连 + 1 小时」的会话级 deadline，录满一小时就断连 ——
@@ -302,11 +295,13 @@ async fn run(
                             break;
                         }
                         pending.on_commit(client_commit);
+                        // 本地提交了一次：记一个槽，等服务端的回执 / 结果。
+                        tracker.commit();
                     }
                     Command::Finish(done) => {
                         // 没什么可等的就直接交差：提交一个空缓冲，服务端多半不
                         // 回结果，等下去只是白等 10 秒，还会被误报成 `cloud.timeout`。
-                        if !pending.outstanding(client_commit, order.is_empty()) {
+                        if !pending.outstanding(client_commit, tracker.is_empty()) {
                             let _ = done.send(());
                             break;
                         }
@@ -367,11 +362,12 @@ async fn run(
                         // 顺序反了的话，这条 final 永远算「最新」。
                         pending.on_final(&item_id, client_commit);
                         pending.note_item(&item_id);
-                        for event in order.push(item_id, transcript) {
+                        tracker.resolve(item_id, Outcome::Text(transcript));
+                        for event in tracker.flush() {
                             on_event(event);
                         }
                         // 收尾时最后一条结果到了：可以交差了。
-                        if finishing.is_some() && order.is_empty() {
+                        if finishing.is_some() && tracker.is_empty() {
                             if let Some(done) = finishing.take() {
                                 let _ = done.send(());
                                 break;
@@ -388,18 +384,19 @@ async fn run(
                         } else {
                             crate::log::warn(format!("云端识别失败：item {id}，{reason}"));
                         }
-                        // 失败的 item 也要占住它在**提交队列**里的位置：用一条空
-                        // final 走同一条排序通道。直接上抛会绕过 `FinalOrder` ——
-                        // 失败的不是队首时，会话层按 FIFO 配区间就会配错（后面
-                        // 每个句子的时间戳整体错位），排在它后面的 final 也会
-                        // 因为队首永远等不到而卡在 `ready` 里。
+                        // 失败的一轮不会回 final：用空文本走同一条通道 ——
+                        // 会话层照常弹出这一轮的区间，后续句子才不会错位。
                         pending.on_final(&item_id, client_commit);
                         pending.note_item(&item_id);
-                        for event in order.push(item_id, String::new()) {
+                        tracker.resolve(item_id, Outcome::Failed);
+                        for event in tracker.flush() {
                             on_event(event);
                         }
-                        if finishing.is_some() && order.is_empty() {
-                            if let Some(done) = finishing.take() { let _ = done.send(()); break; }
+                        if finishing.is_some() && tracker.is_empty() {
+                            if let Some(done) = finishing.take() {
+                                let _ = done.send(());
+                                break;
+                            }
                         }
                     }
                     ServerEvent::SessionUpdated => {
@@ -407,7 +404,7 @@ async fn run(
                     }
                     ServerEvent::Committed { item_id } => {
                         pending.note_item(&item_id);
-                        for event in order.committed(item_id) {
+                        for event in tracker.committed(item_id) {
                             on_event(event);
                         }
                     }
@@ -652,78 +649,130 @@ impl Pending {
     }
 }
 
-/// final 的排序：按服务端的提交顺序上抛。
-///
-/// 跨轮顺序不保证：服务端可能先回后一轮的 completed。已提交但还没回来的
-/// `item_id` 排成队，final 到了先存着，等它前面那几个到了再一起发。
-#[derive(Default)]
-struct FinalOrder {
-    /// 已提交、还没回来的 `item_id`（按提交顺序）。
-    queue: VecDeque<String>,
-    /// 已经回来、但还没轮到的事件（按到达顺序）。
-    ready: Vec<(String, CloudEvent)>,
-    /// 已经发出去过的 `item_id`：服务端可能先给 final、后给 committed，
-    /// 这种回执不该再排进队（排进去就永远等不到，队列也就永远不会空）。
-    emitted: Vec<String>,
+/// 一次提交的结果。
+#[derive(Clone)]
+enum Outcome {
+    /// 服务端返回了定稿文本。
+    Text(String),
+    /// 这一轮识别失败（服务端不会为它回 final）。
+    Failed,
 }
 
-impl FinalOrder {
-    /// 服务端确认了这一轮：可能顺带把等着的 final 放出来。
+/// 一次本地提交在服务端那边的状态。
+#[derive(Default)]
+struct CommitSlot {
+    /// 服务端给这一轮分配的 `item_id`（回执或失败事件里带来）。
+    item_id: Option<String>,
+    /// 回执发给会话层了没有（发了就不重复发）。
+    acked: bool,
+    /// 这一轮的结果。
+    outcome: Option<Outcome>,
+}
+
+/// 提交跟踪：把服务端的回执 / 结果绑到**本地提交顺序**上。
+///
+/// **为什么不用「到达顺序」**：服务端的 final 到达顺序不保证（跨轮可能乱序），
+/// 失败的那一轮更是可能永远没有 final。按到达顺序上抛，会话层按 FIFO 配
+/// 区间就会整体错位一格 —— 后面每一句都抢到前一句的区间。
+///
+/// **回执仍按本地提交顺序绑定**（`committed` 绑到最早还没绑定的槽）：服务端
+/// 回执也可能晚到或不到（连接异常），纯 id 配对反而无从下手。
+/// 会话层拿到 id 后按 id 配区间，上抛顺序再怎么乱都不会错位。
+#[derive(Default)]
+struct CommitTracker {
+    slots: VecDeque<CommitSlot>,
+}
+
+impl CommitTracker {
+    /// 本地又提交了一次。
+    fn commit(&mut self) {
+        self.slots.push_back(CommitSlot::default());
+    }
+
+    /// 服务端确认了这一轮：把 `item_id` 绑到最早还没绑定的槽。
+    ///
+    /// 返回按提交顺序可以上抛的事件（回执优先）。
     fn committed(&mut self, item_id: Option<String>) -> Vec<CloudEvent> {
-        if let Some(item_id) = item_id {
-            // 已经发出去过的就别再排队等了。
-            if !self.queue.contains(&item_id) && !self.emitted.contains(&item_id) {
-                self.queue.push_back(item_id);
-            }
+        let Some(item_id) = item_id else { return Vec::new() };
+        if self
+            .slots
+            .iter()
+            .any(|slot| slot.item_id.as_deref() == Some(item_id.as_str()))
+        {
+            return self.flush();
+        }
+        if let Some(slot) = self.slots.iter_mut().find(|slot| slot.item_id.is_none()) {
+            slot.item_id = Some(item_id);
         }
         self.flush()
     }
 
-    /// 一条 final 到了：能发就发，不能发就存着。
-    ///
-    /// 识别失败的 item 用**空文本**走同一条通道（`run` 的 `Failed` 分支）：
-    /// 排序、放行后面的 final、让会话层弹掉对应区间，三件事都由它一次做完。
-    fn push(&mut self, item_id: Option<String>, transcript: String) -> Vec<CloudEvent> {
-        let event = CloudEvent::Final {
-            text: transcript,
-            start_ms: None,
-            end_ms: None,
-        };
-        match item_id {
-            Some(item_id) => {
-                self.ready.push((item_id, event));
-                self.flush()
+    /// 一轮的结果到了：绑到对应的槽（按 id；找不到就绑最早的还没出结果的）。
+    fn resolve(&mut self, item_id: Option<String>, outcome: Outcome) {
+        if let Some(item_id) = &item_id {
+            if let Some(slot) = self
+                .slots
+                .iter_mut()
+                .find(|slot| slot.item_id.as_deref() == Some(item_id.as_str()))
+            {
+                if slot.outcome.is_none() {
+                    slot.outcome = Some(outcome);
+                }
+                return;
             }
-            // 没有 item_id：没法排序，直接发。
-            None => vec![event],
+        }
+        // 没有 id，或 id 对不上：绑到最早的还没出结果的槽。
+        if let Some(slot) = self.slots.iter_mut().find(|slot| slot.outcome.is_none()) {
+            if slot.item_id.is_none() {
+                slot.item_id = item_id;
+            }
+            slot.outcome = Some(outcome);
         }
     }
 
-    /// 队首就绪就发出去。
+    /// 按提交顺序上抛：先发回执（会话层靠它把区间绑到 id 上），再发结果。
     fn flush(&mut self) -> Vec<CloudEvent> {
         let mut out = Vec::new();
-        while let Some(front) = self.queue.front().cloned() {
-            let Some(index) = self.ready.iter().position(|(id, _)| *id == front) else {
+        while !self.slots.is_empty() {
+            // 回执：必须按提交顺序发 —— 会话层按顺序把区间绑到 id 上。
+            let ack = match self.slots.front() {
+                Some(slot) if !slot.acked => slot.item_id.clone(),
+                _ => None,
+            };
+            if let Some(item_id) = ack {
+                if let Some(slot) = self.slots.front_mut() {
+                    slot.acked = true;
+                }
+                out.push(CloudEvent::CommitAck {
+                    item_id: Some(item_id),
+                });
+                continue;
+            }
+            // 结果：这一轮出结果了就上抛（失败走空文本的 final）。
+            let Some(outcome) = self.slots.front().and_then(|slot| slot.outcome.clone()) else {
                 break;
             };
-            let (_, event) = self.ready.remove(index);
-            self.queue.pop_front();
-            self.emitted.push(front);
-            out.push(event);
-        }
-        // 队列空了：剩下的（服务端没给 committed 的）按到达顺序发出去。
-        if self.queue.is_empty() && !self.ready.is_empty() {
-            for (id, event) in self.ready.drain(..) {
-                self.emitted.push(id);
-                out.push(event);
-            }
+            let item_id = self.slots.front().and_then(|slot| slot.item_id.clone());
+            self.slots.pop_front();
+            let text = match outcome {
+                Outcome::Text(text) => text,
+                // 失败也走 final 通道（空文本）：会话层照常弹出这一轮的区间、
+                // 不产句子 —— 后面每一句的区间才不会错位。
+                Outcome::Failed => String::new(),
+            };
+            out.push(CloudEvent::Final {
+                item_id,
+                text,
+                start_ms: None,
+                end_ms: None,
+            });
         }
         out
     }
 
-    /// 还没等着的结果（收尾时用来判断能不能交差）。
+    /// 还没出结果的提交（收尾时用来判断能不能交差）。
     fn is_empty(&self) -> bool {
-        self.queue.is_empty() && self.ready.is_empty()
+        self.slots.is_empty()
     }
 }
 

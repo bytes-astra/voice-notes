@@ -22,6 +22,8 @@ pub struct MockState {
     pub fail_commit: bool,
     /// 第一次收到音频时回一条定稿（模拟 provider 的结果）。
     pub reply: Option<String>,
+    /// 收尾时回一条定稿（模拟 provider 把剩余音频合成一条）。
+    pub reply_on_finish: Option<String>,
     /// 上传队列满载时丢掉的 16 kHz 采样数（模拟有界队列的丢弃）。
     pub dropped_reply: usize,
     /// `connect` 交上来的事件回调。
@@ -67,12 +69,14 @@ impl CloudProvider for MockProvider {
         Ok(())
     }
 
-    fn send_audio(&mut self, pcm: &[i16]) -> Result<(), String> {
+    fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, String> {
         let mut state = self.state.lock().unwrap();
         // 先按约定回一条定稿：这样「provider 的结果」能进入会话。
+        // 回调只往 mpsc 塞消息，不会回头锁 state —— 持锁调用是安全的。
         if let Some(text) = state.reply.take() {
             if let Some(sink) = state.sink.as_ref() {
                 sink(CloudEvent::Final {
+                    item_id: None,
                     text,
                     start_ms: None,
                     end_ms: None,
@@ -83,7 +87,8 @@ impl CloudProvider for MockProvider {
             return Err(code("cloud.sendFailed"));
         }
         state.sent.extend_from_slice(pcm);
-        Ok(())
+        // 模拟上传队列满：这一段没送出去（只发生一次）。
+        Ok(std::mem::take(&mut state.dropped_reply))
     }
 
     fn commit(&mut self) -> Result<(), String> {
@@ -96,14 +101,21 @@ impl CloudProvider for MockProvider {
     }
 
     fn finish(&mut self) -> Result<(), String> {
-        self.state.lock().unwrap().finishes += 1;
+        let mut state = self.state.lock().unwrap();
+        state.finishes += 1;
+        if let Some(text) = state.reply_on_finish.take() {
+            if let Some(sink) = state.sink.as_ref() {
+                sink(CloudEvent::Final {
+                    item_id: None,
+                    text,
+                    start_ms: None,
+                    end_ms: None,
+                });
+            }
+        }
         Ok(())
     }
 
-    fn take_dropped(&mut self) -> usize {
-        let mut state = self.state.lock().unwrap();
-        std::mem::take(&mut state.dropped_reply)
-    }
 }
 
 /// 往假 provider 里塞一个事件。
