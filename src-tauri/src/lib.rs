@@ -757,11 +757,39 @@ async fn start_cloud_recording(
     if settings.cloud_api_key.trim().is_empty() {
         return Err(code("cloud.notConfigured"));
     }
-    // 门控 VAD：云端模式只要那份 2.3 MB 的 VAD，不要求整份流式模型。
-    // 没有它也能用：那时由服务端断句（本机不做门控，静音也会上传）。
-    let vad_path = models::resolve_cloud_vad(&app);
-    let vad_config = vad_path.as_ref().map(|path| engine::cloud_vad_config(path.clone()));
-    let provider = asr::cloud::create_provider(&settings, vad_path.is_some())?;
+    // gpt-live-transcribe 不支持 server_vad：必须有本地 VAD 做客户端断句。
+    // 只下载这份 2.3 MB 的 VAD，不要求整份流式模型；复用流式下载忙碌标志，
+    // 避免与设置页的下载同时写同一个文件。
+    let mut vad_path = models::resolve_cloud_vad(&app);
+    if vad_path.is_none() {
+        if state.downloading_streaming.swap(true, Ordering::SeqCst) {
+            return Err(code("setup.busy"));
+        }
+        let _download = DownloadFlagGuard::new(state.downloading_streaming.clone());
+        state.cancel_download_streaming.store(false, Ordering::SeqCst);
+        let dir = models::streaming_install_dir(&app)?;
+        let sink = EventSink::new(app.clone(), "streaming");
+        models::download_asset(
+            &models::VAD,
+            &dir,
+            state.cancel_download_streaming.clone(),
+            &sink,
+        )
+        .await?;
+        vad_path = models::resolve_cloud_vad(&app);
+    }
+    let Some(vad_path) = vad_path else {
+        return Err(code("cloud.vadMissing"));
+    };
+    let vad_config = engine::cloud_vad_config(vad_path);
+    // 创建 detector 可能因损坏 / 版本不符失败：不能进入无门控、永不 commit 的录音。
+    let vad_config = tauri::async_runtime::spawn_blocking(move || {
+        engine::validate_cloud_vad(&vad_config).map(|_| vad_config)
+    })
+    .await
+    .map_err(|e| code_detail("cloud.vadInvalid", e))??;
+    let vad_config = Some(vad_config);
+    let provider = asr::cloud::create_provider(&settings, true)?;
     // 建连是网络操作：放阻塞线程，别堵住 async 执行器。
     // 连接失败要在**开始录音时**就报错，不能等录完才让用户撞上「停止超时」。
     let session = asr::cloud::CloudStreamingSession::new(provider);
@@ -880,7 +908,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
         let finished = tauri::async_runtime::spawn_blocking(move || {
             finish_recording(recorder, cloud, 20).map_err(|error| {
                 if record::is_stop_failed(&error) {
-                    code("record.streamTimeout")
+                    code("record.cloudTimeout")
                 } else {
                     error
                 }

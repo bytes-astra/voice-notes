@@ -18,6 +18,7 @@
 //! `item_id` 排好序再上抛（`FinalOrder`），否则句子的先后会乱。
 
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
@@ -40,6 +41,7 @@ pub const TARGET_SAMPLE_RATE: u32 = 24000;
 /// 建连与收尾的等待上限（秒）。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const FINISH_TIMEOUT: Duration = Duration::from_secs(10);
+const UPLOAD_QUEUE_CAPACITY: usize = 84;
 
 /// Realtime 会话配置。
 pub struct RealtimeConfig {
@@ -53,8 +55,7 @@ pub struct RealtimeConfig {
     /// 本机有没有那 2.3 MB 的 VAD。
     ///
     /// 有 → 客户端断句（静音时提交，句子边界与本地模式一致）；
-    /// 没有 → 交给服务端断句（`server_vad`），此时本机不做门控，
-    /// 静音也会上传。
+    /// 没有 → 不允许建连：gpt-live-transcribe 不支持 server_vad。
     pub local_vad: bool,
 }
 
@@ -72,10 +73,11 @@ enum Command {
 pub struct RealtimeProvider {
     config: RealtimeConfig,
     /// 发给后台任务的命令。
-    commands: Option<tokio_mpsc::UnboundedSender<Command>>,
+    commands: Option<tokio_mpsc::Sender<Command>>,
     /// 后台任务报的错（连接断了之类）。
     errors: Receiver<String>,
     error_tx: Sender<String>,
+    dropped: Arc<Mutex<usize>>,
 }
 
 impl RealtimeProvider {
@@ -86,6 +88,7 @@ impl RealtimeProvider {
             commands: None,
             errors,
             error_tx,
+            dropped: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -112,7 +115,7 @@ impl CloudProvider for RealtimeProvider {
         &mut self,
         on_event: Box<dyn Fn(CloudEvent) + Send + Sync>,
     ) -> Result<(), String> {
-        let (commands_tx, commands_rx) = tokio_mpsc::unbounded_channel();
+        let (commands_tx, commands_rx) = tokio_mpsc::channel(UPLOAD_QUEUE_CAPACITY);
         let (ready_tx, ready_rx) = channel::<Result<(), String>>();
         let config = RealtimeConfig {
             base_url: self.config.base_url.clone(),
@@ -143,9 +146,16 @@ impl CloudProvider for RealtimeProvider {
             return Err(crate::code("cloud.disconnected"));
         };
         let bytes: Vec<u8> = pcm.iter().flat_map(|sample| sample.to_le_bytes()).collect();
-        commands
-            .send(Command::Audio(BASE64.encode(bytes)))
-            .map_err(|_| crate::code("cloud.disconnected"))
+        match commands.try_send(Command::Audio(BASE64.encode(bytes))) {
+            Ok(()) => Ok(()),
+            Err(tokio_mpsc::error::TrySendError::Full(_)) => {
+                if let Ok(mut dropped) = self.dropped.lock() {
+                    *dropped += pcm.len() * 16000 / TARGET_SAMPLE_RATE as usize;
+                }
+                Ok(())
+            }
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => Err(crate::code("cloud.disconnected")),
+        }
     }
 
     fn commit(&mut self) -> Result<(), String> {
@@ -156,7 +166,7 @@ impl CloudProvider for RealtimeProvider {
             return Err(crate::code("cloud.disconnected"));
         };
         commands
-            .send(Command::Commit)
+            .try_send(Command::Commit)
             .map_err(|_| crate::code("cloud.disconnected"))
     }
 
@@ -169,21 +179,29 @@ impl CloudProvider for RealtimeProvider {
         };
         let (done_tx, done_rx) = channel();
         commands
-            .send(Command::Finish(done_tx))
+            .try_send(Command::Finish(done_tx))
             .map_err(|_| crate::code("cloud.disconnected"))?;
         match done_rx.recv_timeout(FINISH_TIMEOUT) {
-            Ok(()) => Ok(()),
+            Ok(()) => self.take_error().map_or(Ok(()), Err),
             Err(_) => Err(self
                 .take_error()
                 .unwrap_or_else(|| crate::code("cloud.timeout"))),
         }
+    }
+
+    fn take_dropped(&mut self) -> usize {
+        self.dropped.lock().map(|mut n| std::mem::take(&mut *n)).unwrap_or(0)
+    }
+
+    fn take_error(&mut self) -> Option<String> {
+        RealtimeProvider::take_error(self)
     }
 }
 
 /// 后台任务：连上 → 收音频 → 收事件。
 async fn run(
     config: RealtimeConfig,
-    mut commands: tokio_mpsc::UnboundedReceiver<Command>,
+    mut commands: tokio_mpsc::Receiver<Command>,
     on_event: Box<dyn Fn(CloudEvent) + Send + Sync>,
     ready: Sender<Result<(), String>>,
     errors: Sender<String>,
@@ -206,8 +224,7 @@ async fn run(
         let _ = errors.send(error);
         return;
     }
-    let _ = ready.send(Ok(()));
-
+    let mut ready = Some(ready);
     let mut order = FinalOrder::default();
     let mut finishing: Option<Sender<()>> = None;
     // **只有收尾才有超时**：录音本身没有时长上限（本地两条路径也没有）。
@@ -310,7 +327,7 @@ async fn run(
                     ServerEvent::Partial { item_id, delta } => {
                         // 记下最新的 item：服务端断句时靠它判断某条 final 是不是最新的那条。
                         pending.note_item(&item_id);
-                        on_event(CloudEvent::Partial(delta));
+                        on_event(CloudEvent::PartialDelta { item_id, delta });
                     }
                     ServerEvent::Final { item_id, transcript } => {
                         // 先算「还有没有在等的音频」，再更新 latest_item ——
@@ -328,6 +345,17 @@ async fn run(
                             }
                         }
                     }
+                    ServerEvent::Failed { item_id } => {
+                        if let Some(id) = &item_id { order.failed(id); }
+                        pending.on_final(&item_id, client_commit);
+                        on_event(CloudEvent::Final { text: String::new(), start_ms: None, end_ms: None });
+                        if finishing.is_some() && order.is_empty() {
+                            if let Some(done) = finishing.take() { let _ = done.send(()); break; }
+                        }
+                    }
+                    ServerEvent::SessionUpdated => {
+                        if let Some(ready) = ready.take() { let _ = ready.send(Ok(())); }
+                    }
                     ServerEvent::Committed { item_id } => {
                         pending.note_item(&item_id);
                         for event in order.committed(item_id) {
@@ -335,7 +363,14 @@ async fn run(
                         }
                     }
                     ServerEvent::Error { message } => {
-                        let _ = errors.send(crate::code_detail("cloud.protocolError", message));
+                        let message = sanitize(&message, &config.api_key);
+                        let lower = message.to_ascii_lowercase();
+                        let code = if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid api key") {
+                            "cloud.authFailed"
+                        } else { "cloud.protocolError" };
+                        let error = crate::code_detail(code, message);
+                        if let Some(ready) = ready.take() { let _ = ready.send(Err(error.clone())); }
+                        let _ = errors.send(error);
                     }
                     ServerEvent::Other => {}
                 }
@@ -389,13 +424,8 @@ fn encode_session_update(config: &RealtimeConfig) -> String {
     if !config.keywords.is_empty() {
         transcription["keywords"] = json!(config.keywords);
     }
-    // 断句方式：本地有 VAD 就由客户端提交（句子边界与本地模式一致），
-    // 没有就交给服务端的静音检测（这时本机不做门控）。
-    let turn_detection = if config.local_vad {
-        Value::Null
-    } else {
-        json!({ "type": "server_vad" })
-    };
+    // gpt-live-transcribe 不支持 server_vad / semantic_vad：只能客户端 commit。
+    let turn_detection = Value::Null;
     json!({
         "type": "session.update",
         "session": {
@@ -439,6 +469,8 @@ enum ServerEvent {
     Error {
         message: String,
     },
+    Failed { item_id: Option<String> },
+    SessionUpdated,
     Other,
 }
 
@@ -474,6 +506,8 @@ fn decode_event(raw: &str) -> ServerEvent {
                 .to_string(),
         },
         "input_audio_buffer.committed" => ServerEvent::Committed { item_id },
+        "conversation.item.input_audio_transcription.failed" => ServerEvent::Failed { item_id },
+        "session.updated" => ServerEvent::SessionUpdated,
         "error" => ServerEvent::Error {
             message: value
                 .get("error")
@@ -599,6 +633,12 @@ impl FinalOrder {
             // 没有 item_id：没法排序，直接发。
             None => vec![event],
         }
+    }
+
+    fn failed(&mut self, item_id: &str) {
+        self.queue.retain(|id| id != item_id);
+        self.ready.retain(|(id, _)| id != item_id);
+        self.emitted.push(item_id.to_string());
     }
 
     /// 队首就绪就发出去。

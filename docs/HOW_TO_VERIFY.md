@@ -210,7 +210,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 
 ## ☁️ 云端模式的验证手段
 
-云端模式（第三种引擎，见 README「云端模式」）的验证**全部离线**：协议那头用假 provider 顶上，不需要真服务、不需要 API key、也不下载模型。
+云端模式（第三种引擎，见 README「云端模式」）的验证**全部离线**：协议那头用假 provider 顶上，不需要真服务、不需要 API key，也不下载识别模型；真实 `start_cloud_recording` 在缺少 VAD 时会联网下载约 2.3 MB 的 `silero_vad.onnx`。
 
 - **会话层单测**（`src-tauri/src/asr/cloud/tests.rs`）：时间轴按 16 kHz 采样数推进（丢掉的音频同样占录音时间）、f32→i16 的 clamp、final→`Segment` 映射、**provider 给的时间戳不覆盖本地轴**、provider 要 24 kHz 时上传前升采样、**空 final 不抢下一句的区间**（时间戳不错位）、断连保留已定稿句子。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib`。
 - **协议编解码单测**（`src-tauri/src/asr/cloud/realtime/protocol_tests.rs`）：拿官方的示例帧当输入 —— `conversation.item.input_audio_transcription.delta`（字段 `delta`）与 `.completed`（字段 `transcript`）解成 Partial / Final、`input_audio_buffer.commit` 的回执带 `item_id`（用来给 final 按提交顺序排序）、`session.update` 的编码（`audio/pcm` + 24000、`turn_detection` 为 `null` 时由客户端断句、语言参数是 `languages` 复数）。另有**收尾记账**两组：客户端断句（提交后结果没回来就还在等）、服务端断句（迟到的旧 final 不能抹掉新音频的等待），以及**迟到的 `committed` 回执不再排队**（否则队列永远不空，收尾会一直等）。

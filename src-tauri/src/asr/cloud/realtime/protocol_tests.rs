@@ -68,7 +68,7 @@ fn 解码错误事件() {
 #[test]
 fn 认不出来的帧忽略() {
     assert_eq!(decode_event("not json"), ServerEvent::Other);
-    assert_eq!(decode_event(r#"{"type":"session.updated"}"#), ServerEvent::Other);
+    assert_eq!(decode_event(r#"{"type":"session.created"}"#), ServerEvent::Other);
 }
 
 /// 音频帧：`input_audio_buffer.append` + base64。
@@ -200,4 +200,48 @@ fn 错误详情抹掉凭据() {
     let detail = sanitize("failed with key sk-abc123", "sk-abc123");
     assert!(!detail.contains("sk-abc123"), "详情里不该有凭据：{detail}");
     assert!(detail.contains("***"));
+}
+
+/// 失败事件必须解码，不能落到 Other 让 FinalOrder 永久堵死。
+#[test]
+fn 解码失败事件() {
+    let raw = r#"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item_1"}"#;
+    assert_eq!(decode_event(raw), ServerEvent::Failed { item_id: Some("item_1".into()) });
+}
+
+/// 配置确认事件：connect 要等它才能报告成功。
+#[test]
+fn 解码会话确认事件() {
+    assert_eq!(decode_event(r#"{"type":"session.updated"}"#), ServerEvent::SessionUpdated);
+}
+
+/// 失败 item 从队列移除后，后面的 final 能放行。
+#[test]
+fn 失败item释放后续final() {
+    let mut order = FinalOrder::default();
+    order.committed(Some("a".into()));
+    order.committed(Some("b".into()));
+    assert!(order.push(Some("b".into()), "第二句".into()).is_empty());
+    order.failed("a");
+    let events = order.flush();
+    assert_eq!(events.len(), 1);
+    assert!(order.is_empty());
+}
+
+/// 默认模型永远不发 server_vad。
+#[test]
+fn 默认模型不发送server_vad() {
+    let mut cfg = config();
+    cfg.local_vad = false;
+    let value: Value = serde_json::from_str(&encode_session_update(&cfg)).unwrap();
+    assert!(value["session"]["audio"]["input"]["turn_detection"].is_null());
+}
+
+/// 服务端错误里的 key 也必须抹掉。
+#[test]
+fn 服务端错误抹掉凭据() {
+    let message = "401 unauthorized for sk-abc123";
+    let detail = sanitize(message, "sk-abc123");
+    assert!(!detail.contains("sk-abc123"));
+    assert!(detail.contains("401"));
 }

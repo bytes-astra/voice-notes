@@ -612,6 +612,17 @@ where
         let new_audio = queue.take_new();
         // 丢掉的输入同样占真实录音时间：缺口结束后才是后续音频的位置。
         session.advance_dropped(audio::resampled_len(new_audio.dropped, rate));
+        let uploaded_dropped = session.take_dropped();
+        if uploaded_dropped > 0 {
+            session.advance_dropped(uploaded_dropped);
+            let at = session.elapsed_seconds();
+            let marker = audio::gap_marker(uploaded_dropped as u32, asr::SAMPLE_RATE as u32);
+            let segment = asr::Segment { text: marker, start: at, end: at };
+            gaps.push(segment.clone());
+            if !discard.load(Ordering::Relaxed) {
+                emit(vec![StreamEvent::Segment(segment)]);
+            }
+        }
         let at = session.elapsed_seconds();
         if new_audio.dropped > 0 {
             // 采集跟不上：丢掉了一段音频，要在结果里留下可见的缺口。
@@ -623,6 +634,11 @@ where
         }
         let chunk = new_audio.samples;
         if chunk.is_empty() {
+            if !discard.load(Ordering::Relaxed) {
+                let events = session.poll();
+                log_stream_events("云端识别出一句", &events);
+                emit(events);
+            }
             continue;
         }
         let mut samples = match &resampler {
@@ -637,6 +653,11 @@ where
         agc.process(&mut samples);
         let sample_end = session.advance_samples(samples.len());
 
+        if !discard.load(Ordering::Relaxed) {
+            let events = session.poll();
+            log_stream_events("云端识别出一句", &events);
+            emit(events);
+        }
         let Some(detector) = vad.as_ref() else {
             if !discard.load(Ordering::Relaxed) {
                 let events = session.push(&samples);

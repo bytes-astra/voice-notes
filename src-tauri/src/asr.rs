@@ -941,6 +941,9 @@ pub(crate) trait AsrSession {
     fn push_at(&mut self, samples: &[f32], end: usize) -> Vec<StreamEvent>;
     /// 检测到静音时主动收尾：提交当前句子。
     fn force_end(&mut self) -> Vec<StreamEvent>;
+    /// 只收取后台事件（云端静音期也需要出字）。
+    #[allow(dead_code)] // 本地 StreamingSession 没有后台事件，云端实现使用该接口。
+    fn poll(&mut self) -> Vec<StreamEvent>;
     /// 结束输入，冲刷最后一段。
     fn finish(&mut self) -> Vec<StreamEvent>;
     /// 汇总为最终结果。
@@ -1129,6 +1132,10 @@ impl AsrSession for StreamingSession {
 
     fn force_end(&mut self) -> Vec<StreamEvent> {
         StreamingSession::force_end(self)
+    }
+
+    fn poll(&mut self) -> Vec<StreamEvent> {
+        Vec::new()
     }
 
     fn finish(&mut self) -> Vec<StreamEvent> {

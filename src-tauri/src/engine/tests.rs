@@ -354,6 +354,8 @@ fn 云端配置只回布尔值_key不进状态() {
     const DUMMY_KEY: &str = "vn-test-dummy-key";
 
     assert!(!cloud_configured(&Settings::default()), "key 空 = 未配置");
+    let whitespace = Settings { cloud_api_key: "   ".into(), ..Settings::default() };
+    assert!(!cloud_configured(&whitespace), "纯空白 key 不应算已配置");
 
     let with_key = Settings {
         cloud_api_key: DUMMY_KEY.into(),
@@ -398,4 +400,12 @@ fn 云端配置只回布尔值_key不进状态() {
     // 地址与模型名不是凭据，可以回传（设置页要回填这两个框）。
     assert!(json.contains("\"cloudBaseUrl\":\"https://example.invalid/v1\""), "地址该回传：{json}");
     assert!(json.contains("\"cloudModel\":\"mock-model\""), "模型名该回传：{json}");
+}
+
+
+/// VAD 文件存在但无法创建 detector 时，云端启动必须失败，不能进入无门控分支。
+#[test]
+fn 云端vad创建失败拒绝启动() {
+    let config = cloud_vad_config("/definitely/not/a/real/silero_vad.onnx".into());
+    assert_eq!(validate_cloud_vad(&config).unwrap_err(), "cloud.vadInvalid");
 }

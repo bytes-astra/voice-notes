@@ -154,7 +154,7 @@ pub struct Status {
 /// 抽成纯函数是为了能脱开 `AppHandle` 单测，同时把「key 非空 → true」这条
 /// 判定固定下来 —— 状态里只许有布尔值，key 明文绝不能出现在 Status 序列化里。
 fn cloud_configured(settings: &Settings) -> bool {
-    !settings.cloud_api_key.is_empty()
+    !settings.cloud_api_key.trim().is_empty()
 }
 
 pub fn output_dir(app: &AppHandle, settings: &Settings) -> PathBuf {
@@ -538,6 +538,16 @@ fn vad_config(model: Option<String>, max_speech_duration: f32) -> VadModelConfig
 /// 同一段音频在两种模式里切出的句子边界必须一样（见 `vad_config`）。
 pub fn cloud_vad_config(model: String) -> VadModelConfig {
     vad_config(Some(model), STREAM_MAX_SPEECH_SECONDS)
+}
+
+/// 云端启动前验证 VAD：文件大小正确不等于 onnx 可用。
+///
+/// 这一步必须在录音前完成。否则 provider 已经声明客户端 commit，而核心
+/// 循环拿不到 detector，就会退化成整段录音只在停止时提交一次。
+pub fn validate_cloud_vad(config: &VadModelConfig) -> Result<(), String> {
+    sherpa_onnx::VoiceActivityDetector::create(config, 60.0)
+        .map(|_| ())
+        .ok_or_else(|| crate::code("cloud.vadInvalid"))
 }
 
 pub struct Engine {

@@ -185,3 +185,55 @@ fn 断连保留已定稿句子() {
         transcript.warning
     );
 }
+
+/// delta 是增量：上抛给前端的必须是按 item 累积的文本。
+#[test]
+fn 增量delta累积成partial() {
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    emit(&state, CloudEvent::PartialDelta { item_id: Some("a".into()), delta: "你好".into() });
+    emit(&state, CloudEvent::PartialDelta { item_id: Some("a".into()), delta: "，世界".into() });
+    let events = session.poll();
+    let partials: Vec<String> = events.iter().filter_map(|e| match e { StreamEvent::Partial(t) => Some(t.clone()), _ => None }).collect();
+    assert_eq!(partials, vec!["你好".to_string(), "你好，世界".to_string()]);
+}
+
+/// 失败的 item 产生空 final，只弹自己的区间，后续句子仍能出来。
+#[test]
+fn 失败item不堵后续定稿() {
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    session.force_end();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    session.force_end();
+    emit(&state, CloudEvent::Final { text: String::new(), start_ms: None, end_ms: None });
+    emit(&state, CloudEvent::Final { text: "第二句".into(), start_ms: None, end_ms: None });
+    let events = session.poll();
+    let texts: Vec<String> = events.iter().filter_map(|e| match e { StreamEvent::Segment(s) => Some(s.text.clone()), _ => None }).collect();
+    assert_eq!(texts, vec!["第二句".to_string()]);
+    let segment = events.iter().find_map(|e| match e { StreamEvent::Segment(s) => Some(s), _ => None }).unwrap();
+    assert!((segment.start - 1.0).abs() < 1e-6);
+}
+
+/// 热词中的协议非法字符必须丢弃，不能整包带出去。
+#[test]
+fn 云端热词过滤协议非法字符() {
+    let (clean, ignored) = clean_cloud_keywords(&["正常".into(), "C<plus>".into(), "换\n行".into()]);
+    assert_eq!(clean, vec!["正常".to_string()]);
+    assert_eq!(ignored, 2);
+}
+
+/// 没有本地 VAD 不能创建 Realtime provider：默认模型不支持 server_vad。
+#[test]
+fn 无本地vad拒绝创建provider() {
+    let settings = crate::settings::Settings { cloud_provider: "realtime".into(), ..Default::default() };
+    match create_provider(&settings, false) {
+        Err(error) => assert_eq!(error, "cloud.vadMissing"),
+        Ok(_) => panic!("没有 VAD 不应创建 provider"),
+    }
+}

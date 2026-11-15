@@ -23,6 +23,8 @@ pub mod realtime;
 pub enum CloudEvent {
     /// 中间结果：还在变，同一段文字可能后面被改写。
     Partial(String),
+    /// Realtime 的增量 delta；会话层按 item 累积后转成 Partial(String)。
+    PartialDelta { item_id: Option<String>, delta: String },
     /// 一句定稿。
     Final {
         text: String,
@@ -62,6 +64,14 @@ pub trait CloudProvider: Send {
     fn commit(&mut self) -> Result<(), String>;
     /// 收尾：等最后的结果回来。
     fn finish(&mut self) -> Result<(), String>;
+    /// 后台上传时丢掉的 16 kHz 采样数（默认没有这种丢弃）。
+    fn take_dropped(&mut self) -> usize {
+        0
+    }
+    /// 后台异步发现的错误（默认只在下一次发送时暴露）。
+    fn take_error(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// 按设置造一个 provider。
@@ -74,6 +84,9 @@ pub fn create_provider(
 ) -> Result<Box<dyn CloudProvider>, String> {
     match settings.cloud_provider.as_str() {
         "realtime" => {
+            if !local_vad {
+                return Err(crate::code("cloud.vadMissing"));
+            }
             let base_url = if settings.cloud_base_url.trim().is_empty() {
                 realtime::DEFAULT_BASE_URL.to_string()
             } else {
@@ -84,25 +97,52 @@ pub fn create_provider(
             } else {
                 settings.cloud_model.trim().to_string()
             };
+            validate_realtime_model(&model)?;
             // 语言：auto = 不指定，让服务自己判断。
             let languages = match settings.language.as_str() {
                 "auto" => Vec::new(),
                 other => vec![other.to_string()],
             };
+            let (keywords, ignored) = clean_cloud_keywords(&settings.hotwords);
+            if ignored > 0 {
+                crate::log::warn(format!("云端热词有 {ignored} 条含协议不支持的字符，已忽略"));
+            }
             Ok(Box::new(realtime::RealtimeProvider::new(
                 realtime::RealtimeConfig {
                     base_url,
                     api_key: settings.cloud_api_key.clone(),
                     model,
                     languages,
-                    // 热词复用术语表：provider 不支持就忽略。
-                    keywords: settings.hotwords.clone(),
+                    // 热词复用术语表，但先按协议过滤非法字符。
+                    keywords,
                     local_vad,
                 },
             )))
         }
         other => Err(crate::code_detail("cloud.unsupportedProvider", other)),
     }
+}
+
+/// 外发热词按 Realtime 协议过滤：`<`、`>`、CR、LF 都不能进 keywords。
+pub(crate) fn clean_cloud_keywords(words: &[String]) -> (Vec<String>, usize) {
+    let mut clean = Vec::new();
+    let mut ignored = 0;
+    for word in words {
+        if word.chars().any(|ch| matches!(ch, '<' | '>' | '\r' | '\n')) {
+            ignored += 1;
+        } else {
+            clean.push(word.clone());
+        }
+    }
+    (clean, ignored)
+}
+
+/// 默认 Realtime 转写模型只支持客户端提交；其它兼容模型必须显式走这个契约。
+pub(crate) fn validate_realtime_model(model: &str) -> Result<(), String> {
+    if model.trim().is_empty() {
+        return Err(crate::code("cloud.unsupportedModel"));
+    }
+    Ok(())
 }
 
 /// f32 → i16：clamp 后取整。
@@ -139,6 +179,9 @@ pub struct CloudStreamingSession {
     segments: Vec<Segment>,
     /// 出错时的字典错误码：已定稿的句子留着，界面上另外提示。
     error: Option<String>,
+    /// 增量 delta 按 item 累积；前端需要的是累计串，不是最后一个碎片。
+    delta_item: Option<String>,
+    delta_text: String,
     started: Instant,
 }
 
@@ -162,6 +205,8 @@ impl CloudStreamingSession {
             partial: String::new(),
             segments: Vec::new(),
             error: None,
+            delta_item: None,
+            delta_text: String::new(),
             started: Instant::now(),
         }
     }
@@ -183,39 +228,61 @@ impl CloudStreamingSession {
                 CloudEvent::Partial(text) => {
                     if text != self.partial {
                         self.partial = text.clone();
-                        if !text.is_empty() {
-                            events.push(StreamEvent::Partial(text));
+                        if !text.is_empty() { events.push(StreamEvent::Partial(text)); }
+                    }
+                }
+                CloudEvent::PartialDelta { item_id, delta } => {
+                    if item_id.is_some() && item_id != self.delta_item {
+                        self.delta_text.clear();
+                        self.delta_item = item_id;
+                    }
+                    self.delta_text.push_str(&delta);
+                    if self.delta_text != self.partial {
+                        self.partial = self.delta_text.clone();
+                        if !self.partial.is_empty() {
+                            events.push(StreamEvent::Partial(self.partial.clone()));
                         }
                     }
                 }
                 CloudEvent::Final { text, .. } => {
                     // 提交时就把区间定下来（那时本地时钟还没被静音段推走）；
                     // final 回来得晚也不影响：按提交顺序配对。
-                    //
-                    // **空文本也要先把区间出队**：留在队列里的话，下一条
-                    // 非空 final 会配到上一个句子的区间上，整段时间戳错位。
                     let (start, end) = match self.pending.pop_front() {
                         Some(span) => span,
                         None => {
-                            // provider 自己断句（server_endpoint）：到喂进去的音频末尾为止。
                             let (start, end) = self.timeline.commit_at(self.fed_end, true);
-                            (
-                                start as f32 / SAMPLE_RATE as f32,
-                                end as f32 / SAMPLE_RATE as f32,
-                            )
+                            (start as f32 / SAMPLE_RATE as f32, end as f32 / SAMPLE_RATE as f32)
                         }
                     };
-                    // 空句（没有识别出内容）不产句子，但区间已经配掉了。
+                    // 空句不产句子，但区间已配掉；失败的 item 也走这里，防止后续句子全被卡住。
+                    self.delta_text.clear();
+                    self.delta_item = None;
+                    self.partial.clear();
                     if text.trim().is_empty() {
                         continue;
                     }
                     let segment = Segment { text, start, end };
                     events.push(StreamEvent::Segment(segment.clone()));
                     self.segments.push(segment);
-                    self.partial.clear();
                 }
             }
         }
+        // 后台断连 / 协议错误要立刻进 warning，不等下一次发送。
+        if let Some(error) = self.provider.take_error() {
+            self.error = Some(error);
+        }
+    }
+
+    /// 取回上传队列满载时丢掉的 16 kHz 采样数。
+    pub fn take_dropped(&mut self) -> usize {
+        self.provider.take_dropped()
+    }
+
+    /// 只收取后台事件，不喂音频：静音期也要让已返回的 final 出字。
+    pub fn poll(&mut self) -> Vec<StreamEvent> {
+        let mut events = Vec::new();
+        self.drain(&mut events);
+        events
     }
 
     /// 喂入 16 kHz 样本：升采样 → 转 i16 → 发给 provider。
@@ -269,6 +336,15 @@ impl CloudStreamingSession {
     /// 收尾：等 provider 把最后的结果发回来。
     fn finish(&mut self) -> Vec<StreamEvent> {
         let mut events = Vec::new();
+        // 16k→24k 重采样器还有尾部状态：flush 后才算音频真正送完。
+        if let Some(resampler) = &self.resampler {
+            let tail = resampler.resample(&[], true);
+            if !tail.is_empty() {
+                if let Err(error) = self.provider.send_audio(&to_i16(&tail)) {
+                    self.error = Some(error);
+                }
+            }
+        }
         if let Err(error) = self.provider.finish() {
             self.error = Some(error);
         }
@@ -302,6 +378,10 @@ impl AsrSession for CloudStreamingSession {
 
     fn force_end(&mut self) -> Vec<StreamEvent> {
         CloudStreamingSession::force_end(self)
+    }
+
+    fn poll(&mut self) -> Vec<StreamEvent> {
+        CloudStreamingSession::poll(self)
     }
 
     fn finish(&mut self) -> Vec<StreamEvent> {
