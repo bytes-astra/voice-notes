@@ -223,7 +223,7 @@ pub fn create_provider(
             } else {
                 settings.cloud_resource_id.trim().to_string()
             };
-            // 术语表：能力层决定要不要带，火山协议层决定哪些能带（上限 100 tokens）。
+            // 术语表：能力层决定要不要带，火山协议层决定哪些能带（上限 100 条（MAX_KEYWORDS））。
             let (words, cap_ignored) = cloud_keywords(settings, &caps);
             let (keywords, proto_ignored) = volcengine::clean_volcengine_keywords(&words);
             let ignored = cap_ignored + proto_ignored;
@@ -322,6 +322,12 @@ pub struct CloudStreamingSession {
     /// 这些采样**已经喂进会话**（时钟里算过了），所以不能再推进时钟 ——
     /// 但它们没送到服务端，识别结果里要有可见缺口。
     upload_gaps: Vec<(usize, usize)>,
+    /// 正在累积的丢包段（还没闭合）。
+    ///
+    /// **必须跨 `take_upload_gaps()` 存活**：编排每轮循环都会取一次缺口，
+    /// 累积状态若跟着被取走，连续丢包就永远并不成一条（每轮一条
+    /// `[[gap:1]]`，刷屏且累计时长自相矛盾）。闭合时机 = 下一次成功发送。
+    open_upload_gap: Option<(usize, usize)>,
     started: Instant,
 }
 
@@ -348,6 +354,7 @@ impl CloudStreamingSession {
             segments: Vec::new(),
             error: None,
             upload_gaps: Vec::new(),
+            open_upload_gap: None,
             started: Instant::now(),
         }
     }
@@ -419,9 +426,19 @@ impl CloudStreamingSession {
         self.provider.capabilities()
     }
 
-    /// 取回上传丢包的缺口（起点秒, 丢掉的 16 kHz 采样数）。
+    /// 取回已闭合的上传丢包缺口（起点 16 kHz 采样数, 丢掉的采样数）。
     pub fn take_upload_gaps(&mut self) -> Vec<(usize, usize)> {
         std::mem::take(&mut self.upload_gaps)
+    }
+
+    /// 闭合当前累积的丢包段（下次成功发送、或收尾时调用）。
+    fn close_upload_gap(&mut self) {
+        if let Some((start, count)) = self.open_upload_gap.take() {
+            crate::log::warn(format!(
+                "云端上传队列满，丢掉 {count} 个 16kHz 采样（起点 {start}）"
+            ));
+            self.upload_gaps.push((start, count));
+        }
     }
 
     /// 只收取后台事件，不喂音频：静音期也要让已返回的 final 出字。
@@ -455,16 +472,22 @@ impl CloudStreamingSession {
                     let start = audio_start;
                     // **连续丢包并成一条**：网络持续背压时每一批都会丢一点，
                     // 逐条上报会刷出几百个 [[gap:1]]，而且每条都声称丢了
-                    // 1 秒（累计时长自相矛盾）。相邻的丢包接得上就并进去。
-                    match self.upload_gaps.last_mut() {
-                        Some(last) if last.0 + last.1 == start => {
-                            last.1 += dropped;
+                    // 1 秒（累计时长自相矛盾）。相邻或重叠的丢包并进去。
+                    let merged = match self.open_upload_gap {
+                        Some((gap_start, gap_count)) if start <= gap_start + gap_count => {
+                            self.open_upload_gap = Some((gap_start, gap_count + dropped));
+                            true
                         }
-                        _ => self.upload_gaps.push((start, dropped)),
+                        _ => false,
+                    };
+                    if !merged {
+                        // 上一段丢包到此为止 → 闭合它，再开新的一段。
+                        self.close_upload_gap();
+                        self.open_upload_gap = Some((start, dropped));
                     }
-                    crate::log::warn(format!(
-                        "云端上传队列满，丢掉 {dropped} 个 16kHz 采样"
-                    ));
+                } else {
+                    // 这次送出去了 → 丢包段结束。
+                    self.close_upload_gap();
                 }
             }
             Err(error) => self.error = Some(error),
@@ -520,9 +543,21 @@ impl CloudStreamingSession {
                 match self.provider.send_audio(&to_i16(&tail)) {
                     Ok(dropped) => {
                         if dropped > 0 {
-                            // 尾部重采样出来的一小段没送出去 → 记成缺口。
+                            // 尾部重采样出来的一小段没送出去 → 并进当前丢包段。
                             let start = self.fed_end;
-                            self.upload_gaps.push((start, dropped));
+                            let merged = match self.open_upload_gap {
+                                Some((gap_start, gap_count)) if start <= gap_start + gap_count => {
+                                    self.open_upload_gap = Some((gap_start, gap_count + dropped));
+                                    true
+                                }
+                                _ => false,
+                            };
+                            if !merged {
+                                self.close_upload_gap();
+                                self.open_upload_gap = Some((start, dropped));
+                            }
+                        } else {
+                            self.close_upload_gap();
                         }
                     }
                     Err(error) => self.error = Some(error),
@@ -546,6 +581,8 @@ impl CloudStreamingSession {
         if let Err(error) = self.provider.finish() {
             self.error = Some(error);
         }
+        // 收尾：把还没闭合的丢包段落账（编排在 finish 之后才取缺口）。
+        self.close_upload_gap();
         self.drain(&mut events);
         events
     }

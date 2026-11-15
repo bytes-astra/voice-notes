@@ -332,7 +332,7 @@ async fn run(
 
     let mut emitted = 0usize;
     let mut finishing: Option<Sender<()>> = None;
-    // 收尾：末包发出去后，等服务端的最终响应（sequence 为负）才算完。
+    // 收尾：末包发出去后，等服务端的最终响应（负 sequence 或末包位）才算完。
     let mut pending_final = false;
     loop {
         tokio::select! {

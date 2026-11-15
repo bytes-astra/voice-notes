@@ -121,7 +121,7 @@ CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2
 - **断句**：OpenAI Realtime（`gpt-live-transcribe`）只支持客户端提交，所以用它时需要本地 `silero_vad.onnx`（约 2.3 MB）做静音检测；缺少时开始录音会自动下载这一份文件，不需要下载 161 MB 流式模型。火山（豆包）是**服务端断句**，不需要本地 VAD —— 静音也会上传，由服务端判断句尾（代价：上传量更大、句子时间终点会偏长）。
 - **火山的术语表上限**：双向流式的热词直传，官方文档写的是 100 tokens；应用按**条数**截到 100 条（中文一条通常 4~8 token，服务端可能再按 token 截一次），截断会在日志里记一条。
 - **中途断连**：已经定稿的句子会保留，连接问题另行提示。
-- 术语表会一起发给服务：Realtime 走 `keywords`（含协议不支持字符的条目会被跳过），火山走 `corpus.context`（限 100 tokens，超了截断）；是否生效取决于服务。
+- 术语表会一起发给服务：Realtime 走 `keywords`（含协议不支持字符的条目会被跳过），火山走 `corpus.context`（应用按 100 条截断，服务端可能再按 token 截一次）；是否生效取决于服务。
 
 各语料的当前实测字符错误率见 [docs/HOW_TO_VERIFY.md](docs/HOW_TO_VERIFY.md)。
 

@@ -56,7 +56,7 @@ fn 已定稿句子不重复上抛() {
     assert!(second.is_empty(), "已上抛过的句子不该再来一遍");
 }
 
-/// 热词：控制字符丢弃、超 100 tokens 截断。
+/// 热词：控制字符丢弃、超上限（100 条）截断。
 #[test]
 fn 热词按火山规则清洗() {
     let mut words: Vec<String> = (0..120).map(|i| format!("词{i}")).collect();

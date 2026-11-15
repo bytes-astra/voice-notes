@@ -782,7 +782,12 @@ where
         log_stream_events("云端收尾识别出一句", &events);
         emit(events);
     }
+    let events = session.finish();
+    log_stream_events("云端收尾识别出一句", &events);
+    emit(events);
     // 收尾这一批的上传丢包也要报告：不然结尾一段音频静默消失。
+    // **必须在 finish 之后取** —— 尾部重采样的丢包与没收尾的丢包段都是
+    // finish 时才落账的。
     for (start, dropped) in session.take_upload_gaps() {
         let marker = audio::gap_marker(dropped as u32, asr::SAMPLE_RATE as u32);
         let at = start as f32 / asr::SAMPLE_RATE as f32;
@@ -790,9 +795,6 @@ where
         gaps.push(segment.clone());
         emit(vec![StreamEvent::Segment(segment)]);
     }
-    let events = session.finish();
-    log_stream_events("云端收尾识别出一句", &events);
-    emit(events);
     let mut transcript = session.transcript();
     asr::insert_gaps(&mut transcript, gaps);
     transcript

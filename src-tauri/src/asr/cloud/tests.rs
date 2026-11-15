@@ -429,6 +429,9 @@ fn 上传丢包记下缺口位置() {
     session.connect().unwrap();
     session.advance_samples(16000);
     session.push(&[0.2; 16000]);
+    // 丢包段要等「下一次成功发送」或收尾才闭合 —— 闭合前取不到。
+    assert!(session.take_upload_gaps().is_empty(), "还没闭合就不该有缺口");
+    session.finish();
     let gaps = session.take_upload_gaps();
     assert_eq!(gaps.len(), 1, "丢包要有缺口：{gaps:?}");
     assert_eq!(gaps[0].1, 16_000, "丢掉的采样数要对");
@@ -524,9 +527,14 @@ fn 连续丢包并成一条缺口() {
     state.lock().unwrap().dropped_reply = 12_800;
     session.advance_samples(12_800);
     session.push(&[0.2; 12_800]);
+    // **编排每轮都会取一次缺口** —— 累积状态必须跨这次取走存活，
+    // 否则连续丢包永远并不成一条。
+    assert!(session.take_upload_gaps().is_empty(), "还没闭合就不该有缺口");
     state.lock().unwrap().dropped_reply = 12_800;
     session.advance_samples(12_800);
     session.push(&[0.2; 12_800]);
+    // 收尾闭合这段丢包。
+    session.finish();
     let gaps = session.take_upload_gaps();
     assert_eq!(gaps.len(), 1, "连续的丢包要并成一条：{gaps:?}");
     assert_eq!(gaps[0].1, 25_600, "累计采样数要对");
