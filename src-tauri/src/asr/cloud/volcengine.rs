@@ -22,7 +22,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics};
+use super::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome};
 
 mod frame;
 use frame::{ServerFrame, FLAG_LAST_NO_SEQUENCE};
@@ -136,7 +136,7 @@ impl CloudProvider for VolcengineProvider {
         }
     }
 
-    fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, String> {
+    fn send_audio(&mut self, pcm: &[i16]) -> Result<SendOutcome, String> {
         if let Some(error) = self.take_background_error() {
             return Err(error);
         }
@@ -147,11 +147,12 @@ impl CloudProvider for VolcengineProvider {
         self.packet
             .extend(pcm.iter().flat_map(|sample| sample.to_le_bytes()));
         let mut dropped_samples = 0usize;
+        let mut delivered = false;
         while self.packet.len() >= AUDIO_PACKET_BYTES {
             let rest = self.packet.split_off(AUDIO_PACKET_BYTES);
             let packet = std::mem::replace(&mut self.packet, rest);
             match commands.try_send(Command::Audio(packet)) {
-                Ok(()) => {}
+                Ok(()) => delivered = true,
                 // 队列满 = 网络背压，不是断连：这一包丢掉，但要**报回去**，
                 // 让会话把它记成缺口（静默丢音频是项目明令禁止的）。
                 Err(tokio_mpsc::error::TrySendError::Full(_)) => {
@@ -162,7 +163,10 @@ impl CloudProvider for VolcengineProvider {
                 }
             }
         }
-        Ok(dropped_samples)
+        // **只是攒进包里、一个包都没发出去 ≠ 投递了**：会话层靠这个信号
+        // 判断「丢包段是否结束」—— 攒包时若当成投递，正在累积的丢包段会被
+        // 提前闭合，连续丢包永远并不成一条。
+        Ok(SendOutcome { dropped: dropped_samples, delivered })
     }
 
     fn commit(&mut self) -> Result<(), String> {

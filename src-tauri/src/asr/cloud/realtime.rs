@@ -31,7 +31,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::partial::{self, PartialUpdate};
-use super::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics};
+use super::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome};
 
 /// Realtime 服务的默认地址（`intent=transcription` 决定这是转写会话）。
 pub const DEFAULT_BASE_URL: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
@@ -146,7 +146,7 @@ impl CloudProvider for RealtimeProvider {
         }
     }
 
-    fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, String> {
+    fn send_audio(&mut self, pcm: &[i16]) -> Result<SendOutcome, String> {
         if let Some(error) = self.take_background_error() {
             return Err(error);
         }
@@ -155,11 +155,12 @@ impl CloudProvider for RealtimeProvider {
         };
         let bytes: Vec<u8> = pcm.iter().flat_map(|sample| sample.to_le_bytes()).collect();
         match commands.try_send(Command::Audio(BASE64.encode(bytes))) {
-            Ok(()) => Ok(0),
+            // 整块入队了：这次确实投递了。
+            Ok(()) => Ok(SendOutcome::delivered()),
             Err(tokio_mpsc::error::TrySendError::Full(_)) => {
                 // 队列满：这一段整段没送出去。调用方据此在结果里留缺口。
                 let samples = pcm.len() * 16000 / TARGET_SAMPLE_RATE as usize;
-                Ok(samples)
+                Ok(SendOutcome { dropped: samples, delivered: false })
             }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => Err(crate::code("cloud.disconnected")),
         }

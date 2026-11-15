@@ -539,3 +539,54 @@ fn 连续丢包并成一条缺口() {
     assert_eq!(gaps.len(), 1, "连续的丢包要并成一条：{gaps:?}");
     assert_eq!(gaps[0].1, 25_600, "累计采样数要对");
 }
+
+/// provider 只是把音频攒进包里（一个包都没发出去）时，**不算投递**：
+/// 正在累积的丢包段不能被提前闭合。
+///
+/// 这是火山的真实形态（60 ms 推送块攒成 200 ms 的包）。
+#[test]
+fn 攒包不算投递丢包段不断() {
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
+    {
+        let mut guard = state.lock().unwrap();
+        guard.dropped_reply = 12_800;
+        guard.not_delivered = true;
+    }
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    // 第一批：丢了 0.8 秒（且这次没投递）。
+    session.advance_samples(12_800);
+    session.push(&[0.2; 12_800]);
+    // 第二批：又丢 0.8 秒，中间那次「攒包」不能把段闭合。
+    state.lock().unwrap().dropped_reply = 12_800;
+    session.advance_samples(12_800);
+    session.push(&[0.2; 12_800]);
+    session.finish();
+    let gaps = session.take_upload_gaps();
+    assert_eq!(gaps.len(), 1, "攒包不该把丢包段断开：{gaps:?}");
+    assert_eq!(gaps[0].1, 25_600, "累计采样数要对");
+}
+
+/// 丢 → 成功发送 → 丢：必须是**两条**缺口（中间的投递把段断开了）。
+#[test]
+fn 投递成功后丢包另起一段() {
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    state.lock().unwrap().dropped_reply = 12_800;
+    session.advance_samples(12_800);
+    session.push(&[0.2; 12_800]);
+    // 中间这次成功投递 → 上一段闭合。
+    state.lock().unwrap().dropped_reply = 0;
+    session.advance_samples(12_800);
+    session.push(&[0.2; 12_800]);
+    // 再丢一段。
+    state.lock().unwrap().dropped_reply = 12_800;
+    session.advance_samples(12_800);
+    session.push(&[0.2; 12_800]);
+    session.finish();
+    let gaps = session.take_upload_gaps();
+    assert_eq!(gaps.len(), 2, "投递成功把丢包段断开了：{gaps:?}");
+    assert_eq!(gaps[0].1, 12_800);
+    assert_eq!(gaps[1].1, 12_800);
+}

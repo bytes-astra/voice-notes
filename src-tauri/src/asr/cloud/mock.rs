@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::asr::cloud::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics};
+use crate::asr::cloud::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome};
 use crate::code;
 
 /// 假 provider 的内部状态：测试拿着它就能检查发了什么、注入事件。
@@ -26,6 +26,8 @@ pub struct MockState {
     pub reply_on_finish: Option<String>,
     /// 上传队列满载时丢掉的 16 kHz 采样数（模拟有界队列的丢弃）。
     pub dropped_reply: usize,
+    /// 模拟「返回 0 但其实没投递」（火山攒包时的形态）。
+    pub not_delivered: bool,
     /// `connect` 交上来的事件回调。
     pub sink: Option<Box<dyn Fn(CloudEvent) + Send + Sync>>,
 }
@@ -72,7 +74,7 @@ impl CloudProvider for MockProvider {
         Ok(())
     }
 
-    fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, String> {
+    fn send_audio(&mut self, pcm: &[i16]) -> Result<SendOutcome, String> {
         let mut state = self.state.lock().unwrap();
         // 先按约定回一条定稿：这样「provider 的结果」能进入会话。
         // 回调只往 mpsc 塞消息，不会回头锁 state —— 持锁调用是安全的。
@@ -91,7 +93,8 @@ impl CloudProvider for MockProvider {
         }
         state.sent.extend_from_slice(pcm);
         // 模拟上传队列满：这一段没送出去（只发生一次）。
-        Ok(std::mem::take(&mut state.dropped_reply))
+        let dropped = std::mem::take(&mut state.dropped_reply);
+        Ok(SendOutcome { dropped, delivered: !state.not_delivered })
     }
 
     fn commit(&mut self) -> Result<(), String> {

@@ -27,6 +27,22 @@ pub mod volcengine;
 /// 句标识：协议给的句子 id。没有 id 的协议（服务端断句族）用 `None`。
 pub type SentenceId = Option<String>;
 
+/// 一次音频发送的结果。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SendOutcome {
+    /// 没送出去的 16 kHz 采样数（正常是 0）。
+    pub dropped: usize,
+    /// 这次是否真的把音频交出去了（攒包不算）。
+    pub delivered: bool,
+}
+
+impl SendOutcome {
+    /// 全部送出去了。
+    pub fn delivered() -> Self {
+        Self { dropped: 0, delivered: true }
+    }
+}
+
 /// provider 声明的中间结果语义形态。
 ///
 /// 各家协议给中间结果的方式不同，这里显式列出来 —— 归一器按它分派，
@@ -151,9 +167,11 @@ pub trait CloudProvider: Send {
     fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String>;
     /// 发一段音频（provider 采样率、16bit、单声道）。
     ///
-    /// 返回值是**没送出去**的 16 kHz 采样数（正常是 0）：上传队列满时
-    /// 这段音频会被丢掉，调用方据此在结果里留可见缺口。
-    fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, String>;
+    /// 返回值要说清两件事：**没送出去多少**、**这次是否真的把音频交出去了**。
+    /// 只回一个「丢了多少」不够 —— provider 可能只是把音频攒进自己的包
+    /// 里（一个包都没发），会话层若把「没丢」当成「送出去了」，就会把正在
+    /// 累积的丢包段提前闭合，连续丢包永远并不成一条。
+    fn send_audio(&mut self, pcm: &[i16]) -> Result<SendOutcome, String>;
     /// 提交当前这一段（`client_commit` 家族用）。
     fn commit(&mut self) -> Result<(), String>;
     /// 收尾：等最后的结果回来。
@@ -464,7 +482,8 @@ impl CloudStreamingSession {
         };
         let pcm = to_i16(&resampled);
         match self.provider.send_audio(&pcm) {
-            Ok(dropped) => {
+            Ok(outcome) => {
+                let dropped = outcome.dropped;
                 self.fed_end = end;
                 self.fed_since_commit = true;
                 if dropped > 0 {
@@ -485,8 +504,10 @@ impl CloudStreamingSession {
                         self.close_upload_gap();
                         self.open_upload_gap = Some((start, dropped));
                     }
-                } else {
-                    // 这次送出去了 → 丢包段结束。
+                } else if outcome.delivered {
+                    // 这次真的送出去了 → 丢包段结束。
+                    // **「只是攒进 provider 的包里」不算投递** —— 否则正在累积
+                    // 的丢包段会被提前闭合，连续丢包永远并不成一条。
                     self.close_upload_gap();
                 }
             }
@@ -541,7 +562,8 @@ impl CloudStreamingSession {
             let tail = resampler.resample(&[], true);
             if !tail.is_empty() {
                 match self.provider.send_audio(&to_i16(&tail)) {
-                    Ok(dropped) => {
+                    Ok(outcome) => {
+                        let dropped = outcome.dropped;
                         if dropped > 0 {
                             // 尾部重采样出来的一小段没送出去 → 并进当前丢包段。
                             let start = self.fed_end;
@@ -556,7 +578,7 @@ impl CloudStreamingSession {
                                 self.close_upload_gap();
                                 self.open_upload_gap = Some((start, dropped));
                             }
-                        } else {
+                        } else if outcome.delivered {
                             self.close_upload_gap();
                         }
                     }
