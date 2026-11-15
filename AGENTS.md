@@ -196,6 +196,19 @@
   - **热词要按模型的词表过滤**（`engine.rs` 的 `streaming_vocab_chars` / `split_hotwords_by_vocab`）：流式模型是 cjkchar **单字**词表（1426 字），sherpa 的 `EncodeHotwords` **逐字**查表 —— 任何一个字不在表里，**整条热词**就被跳过（只往 stderr 打一句 `Cannot find ID for token`，界面上看不出为什么没生效）。喂给 sherpa 之前先剔掉含表外字的条目，并记 WARN 列出是哪几条；`Status.hotwordsIgnored` 把这个数给界面，保存后提示「其中 N 个含模型不认识的字，不会生效」。**读不到词表时全部放行** —— 别因为词表读不出来就把用户的术语表清空。
 - 标点模型（`PUNCT`，CT-Transformer zh-en，281 MB，`engine.rs` 的 `PunctuationEngine`）独立放在 `models/punct/`，默认关闭；开启后 `StreamEmitter` 在每句定稿时调 `PunctuationEngine::apply`，实时中间结果不加标点。模型缺失/加载失败时静默降级，不阻断录音。
 
+### 云端模式
+
+第三个引擎（`mode = "cloud"`），**显式 opt-in**：音频会上传，默认仍走本地；本地两条路径的行为一个字都不许改。
+
+- **provider 可插拔**：`CloudProvider` trait（`src-tauri/src/asr/cloud.rs`）只管协议 —— 建连、喂音频、提交、收尾。协议差异（帧格式、鉴权、partial 语义、术语表格式）全部关在 provider 内部：`realtime.rs`（OpenAI Realtime，JSON 帧）、`volcengine.rs`（火山 / 豆包，自研二进制帧）。加一家 = 加一个文件 + 在能力表里登记。
+- **能力声明**：`Capabilities`（句边界方式 / 是否需要本地 VAD / 中间结果语义 / 是否支持术语表 / 上传采样率）由 provider 自报，按 id 静态查的表（`provider_capabilities`）与实例**同源**（表项就是实现自报的那个常量，别手写第二份）。合法组合只有两种：客户端提交 + 需要本地 VAD；服务端断句 + 不需要本地 VAD。**「缺 VAD」不是「改用服务端断句」** —— 那是另一个能力，混起来会让客户端提交族静默退化。
+- **中间结果统一为「当前未定稿句的累计串」**：各家协议形态不同（增量拼接 / 确认前缀加草稿 / 区间替换），在 provider 内部归一（`partial.rs` 的归一器），上层只认这一种。partial 必须带句归属，否则跨句交错会串。
+- **句子时间以本地 16 kHz 时钟为准**：provider 给的时间戳只作可选增强，**不覆盖本地轴**。区间按 item_id 绑定（`CommitAck` / `Final{item_id}`）—— 服务端可能乱序返回，按到达顺序配对会整体错位一格。
+- **断句**：客户端提交族本地门控（静音在本地丢掉、静音时提交）；服务端断句族**不门控**（静音照上传，服务端靠静音判句尾），区间走本地轴兜底（终点偏长是已知取舍）。「末包 / 结束标识」不等于「结果已全回」—— 要等最终响应才收尾。
+- **凭据**：只存 settings，**不进日志、不回传前端**（`Status` 只有 `cloudConfigured` 布尔）；错误详情里的 key 要脱敏（`sanitize`）。切换 provider 会清空地址与凭据（两家的配置不能混用）。
+- **上传丢包要留缺口**：队列满时丢掉的那段音频推进真实录音时间轴并生成 `[[gap:N]]`；**连续丢包并成一条**（逐条上报会刷屏）。provider 要区分「投递了」与「只是攒包」—— 只回一个丢包数不够（`SendOutcome`）。
+- **验证**：协议层单测（帧编解码、结果映射）+ 真服务冒烟（凭据走环境变量，见 HOW_TO_VERIFY）。真 key 不入库、不进日志、不打印。
+
 ### 音频采集
 
 - **采集缓冲是消费式的**（`audio.rs`）：`audio::SampleQueue` 的 `take_new()` 取走即释放，内存恒定（录 1 小时和 1 分钟占一样多）。**电平表走独立的 `LevelRing`**（2048 样本）—— 采集缓冲没有历史了，音量表去读它会恒读 0。

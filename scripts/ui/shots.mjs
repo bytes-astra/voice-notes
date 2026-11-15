@@ -40,6 +40,13 @@ const BASE_STATUS = {
   punct: true,
   punctReady: true,
   hotwords: [],
+  // 云端：默认没配凭据；默认 provider（OpenAI Realtime）支持术语表。
+  cloudConfigured: false,
+  cloudBaseUrl: '',
+  cloudProvider: 'realtime',
+  cloudSupportsKeywords: true,
+  cloudResourceId: '',
+  cloudModel: '',
   inputDevice: null,
   punctBytes: 294_372_519,
   punctTotalBytes: 294_372_519,

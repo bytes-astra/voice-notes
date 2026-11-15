@@ -112,7 +112,7 @@ CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2
 | 服务地址 | 留空 = 用该服务的默认地址（Realtime：`wss://api.openai.com/v1/realtime?intent=transcription`；火山：`wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`） |
 | API 密钥 | 填了就保存下来；**保存后不再显示**（界面上只显示「凭据已配置」），随时可以「清除凭据」 |
 | 模型 | 只对 OpenAI Realtime 有效（默认 `gpt-live-transcribe`） |
-| 资源标识 | 只对火山有效（`X-Api-Resource-Id`，留空 = 默认；小时版 `volc.seedasr.sauc.duration` / 并发版 `.concurrent`） |
+| 资源标识 | 只对火山有效（`X-Api-Resource-Id`，留空 = 默认）。只用**豆包流式语音识别模型 2.0**：小时版 `volc.seedasr.sauc.duration` / 并发版 `volc.seedasr.sauc.concurrent` |
 
 其他行为：
 

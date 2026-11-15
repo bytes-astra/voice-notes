@@ -223,7 +223,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 - **界面检查**（`npm run check:ui`）覆盖云端：配置保存、状态徽标（已配置 / 未配置）、上传确认框、云端模式发的是 `start_cloud_recording`、**当前服务不支持术语表时给出提示**（术语表是本地流式与云端共用的全局设置，只能提示、不得隐藏入口）。
 
 - **火山（豆包）协议层**（`src-tauri/src/asr/cloud/volcengine/`）：二进制帧编解码按官方文档逐字节核对（4 字节头 + payload size，大端；消息类型 / flags / 序列号）；结果映射用官方示例 JSON（`result.utterances[]` 的 `definite` → 定稿，最后一条未定句 → 实时行；**不用 `result.text`** —— 那是全会话累计）。热词清洗（控制字符丢弃、超上限（100 条）截断）。
-- **火山的真机验证**：用 `VOICE_NOTES_VOLCENGINE_KEY` 环境变量跑 `asr::cloud::volcengine::tests::真服务冒烟`（没设就跳过，**key 不入库、不进日志**）。已验证通过（2026-11-16）：7 条中间结果 + 1 句定稿「开放时间，早上9点至下午5点。」（fixture `tests/fixtures/zh.wav` 的内容）—— 帧编解码、鉴权、中间结果、末包 → 最终响应、整句断句整条链路都对。资源 ID 用 `volc.seedasr.sauc.duration`（豆包 2.0 小时版）；`volc.bigasr.*`（模型 1.0 历史版本）另需授权，否则握手返回 403 `requested resource not granted`。
+- **火山的真机验证**：用 `VOICE_NOTES_VOLCENGINE_KEY` 环境变量跑 `asr::cloud::volcengine::tests::真服务冒烟`（没设就跳过，**key 不入库、不进日志**）。已验证通过（2026-11-16）：7 条中间结果 + 1 句定稿「开放时间，早上9点至下午5点。」（fixture `tests/fixtures/zh.wav` 的内容）—— 帧编解码、鉴权、中间结果、末包 → 最终响应、整句断句整条链路都对。资源 ID 用 `volc.seedasr.sauc.duration`（豆包 2.0 小时版）—— **只支持模型 2.0**；填了模型 1.0 的资源 ID 会握手 403 `requested resource not granted`。
 
 **云端相关测试基线**：`cargo test --lib` = **224**（其中 `asr::cloud` = 73 = 会话层 24 + Realtime 协议层 27 + 归一器 6 + 火山 16；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
