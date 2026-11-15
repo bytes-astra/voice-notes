@@ -255,7 +255,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.cloudKeyCleared': '已清除云端凭据',
   'cloud.privacyTitle': '切换到云端模式',
   'cloud.privacyMessage': '云端模式会把录音上传到云端服务处理。确认继续吗？',
-  'settings.hotwordsHint': '仅流式模式生效；一行一句常用说法，人名、地名也可以。模型不认识的字不会生效。',
+  'settings.hotwordsHint': '对流式与云端模式生效（整段模式不支持）；一行一句常用说法，人名、地名也可以。流式模式下，模型不认识的字不会生效。',
   'settings.hotwordsPlaceholder': '例如：帮我拿一下、好的没问题、老张',
   'settings.hotwordsExample': '填入示例',
   'settings.hotwordsSave': '保存术语表',

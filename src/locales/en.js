@@ -260,7 +260,7 @@ window.I18N_LOCALES['en'] = {
   'settings.cloudKeyCleared': 'Cloud key cleared',
   'cloud.privacyTitle': 'Switch to cloud mode',
   'cloud.privacyMessage': 'Cloud mode uploads your recording to a cloud service for processing. Continue?',
-  'settings.hotwordsHint': 'Only applies to streaming mode; one common phrase per line — names and places work too. Words with characters the model does not know will not take effect.',
+  'settings.hotwordsHint': 'Applies to streaming and cloud modes (offline mode is not supported); one common phrase per line — names and places work too. In streaming mode, words with characters the model does not know will not take effect.',
   'settings.hotwordsPlaceholder': 'e.g. grab that for me, sounds good, Alex',
   'settings.hotwordsExample': 'Fill example',
   'settings.hotwordsSave': 'Save terms',
