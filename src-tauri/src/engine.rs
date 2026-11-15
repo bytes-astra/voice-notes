@@ -145,6 +145,10 @@ pub struct Status {
     pub cloud_configured: bool,
     /// 云端服务地址（空 = 用 provider 默认端点）。不是凭据，可以回传。
     pub cloud_base_url: String,
+    /// 当前云端 provider 的标识（不是凭据，可以回传）。
+    pub cloud_provider: String,
+    /// 当前 provider 是否支持请求级术语表（界面据此提示限制）。
+    pub cloud_supports_keywords: bool,
     /// 云端模型名（空 = 用 provider 默认模型）。不是凭据，可以回传。
     pub cloud_model: String,
 }
@@ -232,6 +236,10 @@ pub fn status_of(app: &AppHandle, state: &AppState) -> Status {
         app_version: app.package_info().version.to_string(),
         cloud_configured: cloud_configured(&settings),
         cloud_base_url: settings.cloud_base_url.clone(),
+        cloud_provider: settings.cloud_provider.clone(),
+        cloud_supports_keywords: crate::asr::cloud::provider_capabilities(&settings.cloud_provider)
+            .map(|caps| caps.supports_keywords)
+            .unwrap_or(false),
         cloud_model: settings.cloud_model.clone(),
     }
 }

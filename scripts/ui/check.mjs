@@ -64,6 +64,8 @@ const installMock = () => {
     // 云端：只回传布尔值与地址/模型名，凭据明文不回来（真后端也是这个结构）。
     cloudConfigured: false,
     cloudBaseUrl: '',
+    cloudProvider: 'realtime',
+    cloudSupportsKeywords: true,
     cloudModel: '',
   }
   window.__mockCalls = []
@@ -1260,6 +1262,25 @@ check(
   (await page.evaluate(() => window.__mockStatus.cloudConfigured)) === true,
 )
 check('密钥不回显', (await page.locator('#cloud-api-key').inputValue()) === '')
+// 当前 provider 不支持术语表时，界面要提示 —— 术语表是本地流式与云端
+// 共用的全局设置，只能提示，不能隐藏入口。
+await page.evaluate(() => { window.__mockStatus.cloudSupportsKeywords = false })
+// 状态是拉回来才更新的：保存一次配置触发刷新。
+await page.locator('#cloud-save').click()
+await page.waitForTimeout(300)
+check(
+  '云端不支持术语表时给出提示',
+  (await page.locator('#cloud-keyword-hint').innerText()).includes('术语表'),
+  await page.locator('#cloud-keyword-hint').innerText(),
+)
+await page.evaluate(() => { window.__mockStatus.cloudSupportsKeywords = true })
+await page.locator('#cloud-save').click()
+await page.waitForTimeout(300)
+check(
+  '云端支持术语表时不提示',
+  (await page.locator('#cloud-keyword-hint').innerText()).trim() === '',
+  await page.locator('#cloud-keyword-hint').innerText(),
+)
 check(
   '配置状态提示已配置',
   (await page.locator('#cloud-status').innerText()).includes('已配置'),

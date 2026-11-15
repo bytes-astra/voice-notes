@@ -391,6 +391,8 @@ fn cloud_status_exposes_bool_not_key() {
         app_version: "1.0.0".into(),
         cloud_configured: true,
         cloud_base_url: "https://example.invalid/v1".into(),
+        cloud_provider: "realtime".into(),
+        cloud_supports_keywords: true,
         cloud_model: "mock-model".into(),
     };
     let json = serde_json::to_string(&status).unwrap();
@@ -400,6 +402,11 @@ fn cloud_status_exposes_bool_not_key() {
     // 地址与模型名不是凭据，可以回传（设置页要回填这两个框）。
     assert!(json.contains("\"cloudBaseUrl\":\"https://example.invalid/v1\""), "地址该回传：{json}");
     assert!(json.contains("\"cloudModel\":\"mock-model\""), "模型名该回传：{json}");
+    assert!(json.contains("\"cloudProvider\":\"realtime\""), "provider 标识该回传：{json}");
+    assert!(
+        json.contains("\"cloudSupportsKeywords\":true"),
+        "能力声明该回传：{json}"
+    );
 }
 
 

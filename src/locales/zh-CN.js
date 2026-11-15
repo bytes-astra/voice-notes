@@ -249,6 +249,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.cloudModelPlaceholder': '留空 = 用服务默认模型',
   'settings.cloudSave': '保存云端配置',
   'settings.cloudSaved': '云端配置已保存',
+  'settings.cloudNoKeywords': '当前云端服务不支持术语表（该服务的术语表只能控制台预置）。',
   'settings.cloudConfigured': '凭据已配置',
   'settings.cloudNotConfigured': '还没有配置凭据',
   'settings.cloudClearKey': '清除凭据',

@@ -10,7 +10,6 @@ fn config() -> RealtimeConfig {
         model: DEFAULT_MODEL.to_string(),
         languages: vec!["zh".into()],
         keywords: vec!["玄戒芯片".into()],
-        local_vad: true,
     }
 }
 
@@ -325,12 +324,17 @@ fn failed_item_releases_later_final_in_commit_order() {
     assert!(tracker.is_empty());
 }
 
-/// 默认模型永远不发 server_vad。
+/// 默认模型永远不发 server_vad：句边界恒为客户端提交。
+///
+/// 合并自两处：能力自报（`CAPABILITIES.endpoint_kind`）与
+/// `encodes_session_update` 的 `turn_detection` 为 null 断言。
 #[test]
 fn default_model_never_sends_server_vad() {
-    let mut cfg = config();
-    cfg.local_vad = false;
-    let value: Value = serde_json::from_str(&encode_session_update(&cfg)).unwrap();
+    assert_eq!(
+        RealtimeProvider::CAPABILITIES.endpoint_kind,
+        EndpointKind::ClientCommit
+    );
+    let value: Value = serde_json::from_str(&encode_session_update(&config())).unwrap();
     assert!(value["session"]["audio"]["input"]["turn_detection"].is_null());
 }
 
@@ -341,4 +345,12 @@ fn server_error_redacts_secret() {
     let detail = sanitize(message, "sk-abc123");
     assert!(!detail.contains("sk-abc123"));
     assert!(detail.contains("401"));
+}
+
+/// 外发热词按 Realtime 协议过滤：`<`、`>`、CR、LF 不能进 keywords。
+#[test]
+fn clean_cloud_keywords_drops_protocol_illegal_chars() {
+    let (clean, ignored) = clean_cloud_keywords(&["正常".into(), "C<plus>".into(), "换\n行".into()]);
+    assert_eq!(clean, vec!["正常".to_string()]);
+    assert_eq!(ignored, 2);
 }

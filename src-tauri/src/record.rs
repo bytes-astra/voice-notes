@@ -566,6 +566,24 @@ where
     transcript
 }
 
+/// 门控决策（纯函数，可单测）：能力 + 本地 VAD 是否可用 → 是否本地门控。
+///
+/// - 客户端提交（`client_commit`）：需要本地 VAD 做断句。有 VAD → 门控；
+///   没有 → **报错**（不能退化成「不门控也不提交」，那是主规格禁止的静默退化）。
+/// - 服务端断句（`server_endpoint`）：不门控，静音照上传，由服务端判句尾。
+fn gate(caps: asr::cloud::Capabilities, vad_available: bool) -> Result<bool, String> {
+    match caps.endpoint_kind {
+        asr::cloud::EndpointKind::ClientCommit => {
+            if vad_available {
+                Ok(true)
+            } else {
+                Err(crate::code("cloud.vadMissing"))
+            }
+        }
+        asr::cloud::EndpointKind::ServerEndpoint => Ok(false),
+    }
+}
+
 /// 云端模式：边录音边把音频送到云端服务，provider 那边出字。
 ///
 /// 与 `run_streaming_core` 同构：VAD 门控 / 预录 / 电平 / 缺口 / 时间轴
@@ -597,6 +615,25 @@ where
     let vad = vad_config
         .as_ref()
         .and_then(|config| sherpa_onnx::VoiceActivityDetector::create(config, 60.0));
+    // 门控由**能力**决定，不是由「本机有没有 VAD 文件」决定：
+    // 客户端提交族必须本地门控（拿不到 VAD 就报错，不静默退化）；
+    // 服务端断句族一律不门控 —— 静音照上传，服务端靠静音判句尾。
+    let gated = match gate(session.capabilities(), vad.is_some()) {
+        Ok(gated) => gated,
+        Err(error) => {
+            // 启动阶段已校验过（lib.rs 的 `vad_precondition`）；到这里说明前提
+            // 被破坏 —— 不能带着「不门控也不提交」的配置开录。
+            log::error(format!("云端录音前置条件不满足：{error}"));
+            return Transcript {
+                text: String::new(),
+                segments: Vec::new(),
+                duration_seconds: 0.0,
+                elapsed_ms: 0,
+                language: "zh-en".into(),
+                warning: Some(error),
+            };
+        }
+    };
     // 电平自动增益：偏小的录音会被 VAD 整段当非语音丢掉（见 audio::Agc）。
     let mut agc = audio::Agc::new();
     // 说话起点前留 0.4s，避免 VAD 起音延迟把字头切掉
@@ -661,7 +698,8 @@ where
             log_stream_events("云端识别出一句", &events);
             emit(events);
         }
-        let Some(detector) = vad.as_ref() else {
+        let Some(detector) = vad.as_ref().filter(|_| gated) else {
+            // 不门控（服务端断句族）：全部上传，包括静音 —— 服务端靠静音判句尾。
             if !discard.load(Ordering::Relaxed) {
                 let events = session.push(&samples);
                 log_stream_events("云端识别出一句", &events);

@@ -738,7 +738,8 @@ fn cloud_core_keeps_finalized_sentences_when_disconnected() {
     use crate::asr::cloud::mock::MockProvider;
     use crate::asr::cloud::{CloudStreamingSession, EndpointKind};
 
-    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16_000);
+    // 服务端断句族：不做本地门控（该路径不触发 force_end）。
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16_000);
     // provider 收到第一批音频就回一条定稿。
     state.lock().unwrap().reply = Some("第一句".into());
     let mut session = CloudStreamingSession::new(Box::new(provider));
@@ -781,7 +782,8 @@ fn cloud_core_does_not_double_count_upload_drops() {
     use crate::asr::cloud::mock::MockProvider;
     use crate::asr::cloud::{CloudStreamingSession, EndpointKind};
 
-    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16_000);
+    // 服务端断句族：不做本地门控（该路径不触发 force_end）。
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16_000);
     // 上传队列丢掉 1 秒（16 kHz 采样数）。
     state.lock().unwrap().dropped_reply = 16_000;
     let mut session = CloudStreamingSession::new(Box::new(provider));
@@ -815,4 +817,33 @@ fn cloud_core_does_not_double_count_upload_drops() {
         "丢掉的音频要留可见缺口标记：{}",
         transcript.text
     );
+}
+
+/// 门控决策：客户端提交族必须有本地 VAD；服务端断句族一律不门控。
+#[test]
+fn 门控按能力决定() {
+    use crate::asr::cloud::{Capabilities, EndpointKind, PartialSemantics};
+    let client_commit = Capabilities {
+        endpoint_kind: EndpointKind::ClientCommit,
+        needs_local_vad: true,
+        partial_semantics: PartialSemantics::Delta,
+        supports_keywords: true,
+        target_sample_rate: 16_000,
+    };
+    let server_endpoint = Capabilities {
+        endpoint_kind: EndpointKind::ServerEndpoint,
+        needs_local_vad: false,
+        ..client_commit
+    };
+    // 客户端提交 + 有 VAD → 门控。
+    assert!(gate(client_commit, true).expect("有 VAD 应放行"));
+    // 客户端提交 + 无 VAD → 报错（不能静默退化成「不门控也不提交」）。
+    assert_eq!(
+        gate(client_commit, false).unwrap_err(),
+        "cloud.vadMissing",
+        "缺 VAD 必须报错"
+    );
+    // 服务端断句 → 不门控，静音照上传。
+    assert!(!gate(server_endpoint, false).expect("服务端断句不门控"));
+    assert!(!gate(server_endpoint, true).expect("有 VAD 也不门控"));
 }

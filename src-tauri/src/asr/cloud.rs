@@ -17,6 +17,66 @@ use super::{AsrSession, Segment, StreamEvent, Timeline, Transcript, SAMPLE_RATE}
 
 // provider 的实现放在 `cloud/realtime.rs`（OpenAI Realtime JSON 族）。
 pub mod realtime;
+// 中间结果归一器：把各家的协议形态归一成「当前句的累计串」。
+pub mod partial;
+
+
+/// 句标识：协议给的句子 id。没有 id 的协议（服务端断句族）用 `None`。
+pub type SentenceId = Option<String>;
+
+/// provider 声明的中间结果语义形态。
+///
+/// 各家协议给中间结果的方式不同，这里显式列出来 —— 归一器按它分派，
+/// 上层（会话层 / 前端）只认一种语义：当前未定稿句的累计文本。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartialSemantics {
+    /// 增量拼接：每次追加一段（OpenAI Realtime 的 `.delta`）。
+    Delta,
+    /// 确认前缀加草稿：整体替换成「确认前缀 + 草稿」（百炼的 `.text` + `stash`）。
+    Preview,
+    /// 区间替换：按区间改写已识别片段（讯飞的 `pgs` + `rg`）。
+    Range,
+}
+
+/// provider 的能力声明。
+///
+/// **必须无堆分配**（`Clone + Copy`）：它要能做编译期常量
+/// （`impl XProvider { pub const CAPABILITIES: Capabilities = …; }`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Capabilities {
+    /// 句边界由谁定：客户端提交还是服务端断句。
+    pub endpoint_kind: EndpointKind,
+    /// 是否需要本地 VAD 做断句（客户端提交族为真）。
+    pub needs_local_vad: bool,
+    /// 中间结果的语义形态。
+    pub partial_semantics: PartialSemantics,
+    /// 是否支持请求级术语表。
+    pub supports_keywords: bool,
+    /// provider 要求的上传采样率（内部轴恒为 16 kHz）。
+    pub target_sample_rate: u32,
+}
+
+/// 能力组合是否合法。
+///
+/// 只允许两种组合：客户端提交 + 需要本地 VAD；服务端断句 + 不需要本地 VAD。
+/// 其余组合会让「缺 VAD」被误读成「服务端断句」→ 直接拒绝。
+pub fn valid_capabilities(caps: &Capabilities) -> bool {
+    match caps.endpoint_kind {
+        EndpointKind::ClientCommit => caps.needs_local_vad,
+        EndpointKind::ServerEndpoint => !caps.needs_local_vad,
+    }
+}
+
+/// 按 provider id 静态查能力。
+///
+/// 表项的唯一来源是各 provider 实现自报的常量（`XProvider::CAPABILITIES`），
+/// 不手写第二份 —— 两处漂移会让「状态回传的能力」与「实际行为」分叉。
+pub fn provider_capabilities(id: &str) -> Option<Capabilities> {
+    match id {
+        "realtime" => Some(realtime::RealtimeProvider::CAPABILITIES),
+        _ => None,
+    }
+}
 
 /// 云端 provider 上抛的事件。
 #[derive(Clone, Debug)]
@@ -30,8 +90,6 @@ pub enum CloudEvent {
     CommitAck {
         item_id: Option<String>,
     },
-    /// Realtime 的增量 delta；会话层按 item 累积后转成 Partial(String)。
-    PartialDelta { item_id: Option<String>, delta: String },
     /// 一句定稿。
     Final {
         /// 服务端给这一轮的 `item_id`：会话层靠它找到对应的句子区间。
@@ -61,12 +119,30 @@ pub enum EndpointKind {
 /// 音频 / 提交 / 收尾是同步调用（内部走 channel）：音频帧从不阻塞；提交与
 /// 收尾在队列背压时有界等待（最多 3 秒），等不到就报发送失败。
 pub trait CloudProvider: Send {
+    /// 能力声明（**唯一来源**）：其余能力方法都从它取。
+    fn capabilities(&self) -> Capabilities;
     /// 这个 provider 怎么断句。
-    fn endpoint_kind(&self) -> EndpointKind;
+    fn endpoint_kind(&self) -> EndpointKind {
+        self.capabilities().endpoint_kind
+    }
     /// provider 要求的采样率（Hz）。
     ///
     /// 会话内部始终是 16 kHz：不一样时在上传前升采样（见 `CloudStreamingSession`）。
-    fn target_sample_rate(&self) -> u32;
+    fn target_sample_rate(&self) -> u32 {
+        self.capabilities().target_sample_rate
+    }
+    /// 是否需要本地 VAD 做断句。
+    fn needs_local_vad(&self) -> bool {
+        self.capabilities().needs_local_vad
+    }
+    /// 是否支持请求级术语表。
+    fn supports_keywords(&self) -> bool {
+        self.capabilities().supports_keywords
+    }
+    /// 中间结果的语义形态。
+    fn partial_semantics(&self) -> PartialSemantics {
+        self.capabilities().partial_semantics
+    }
     /// 建连。`on_event` 是事件回调：provider 在自己的线程上调用它。
     fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String>;
     /// 发一段音频（provider 采样率、16bit、单声道）。
@@ -90,13 +166,15 @@ pub trait CloudProvider: Send {
 /// 的默认值。凭据直接进配置 —— 它不会进日志，也不会回传前端。
 pub fn create_provider(
     settings: &crate::settings::Settings,
-    local_vad: bool,
 ) -> Result<Box<dyn CloudProvider>, String> {
-    match settings.cloud_provider.as_str() {
+    let id = settings.cloud_provider.as_str();
+    // 能力先查表：这是「要不要下 VAD」「状态回传什么能力」的同一个来源。
+    let caps = provider_capabilities(id).ok_or_else(|| crate::code_detail("cloud.unsupportedProvider", id))?;
+    if !valid_capabilities(&caps) {
+        return Err(crate::code_detail("cloud.unsupportedProvider", id));
+    }
+    match id {
         "realtime" => {
-            if !local_vad {
-                return Err(crate::code("cloud.vadMissing"));
-            }
             let base_url = if settings.cloud_base_url.trim().is_empty() {
                 realtime::DEFAULT_BASE_URL.to_string()
             } else {
@@ -107,15 +185,18 @@ pub fn create_provider(
             } else {
                 settings.cloud_model.trim().to_string()
             };
-            validate_realtime_model(&model)?;
+            realtime::validate_realtime_model(&model)?;
             // 语言：auto = 不指定，让服务自己判断。
             let languages = match settings.language.as_str() {
                 "auto" => Vec::new(),
                 other => vec![other.to_string()],
             };
-            let (keywords, ignored) = clean_cloud_keywords(&settings.hotwords);
+            // 术语表两层过滤：能力层决定「要不要带」，协议层决定「哪些字符能带」。
+            let (words, cap_ignored) = cloud_keywords(settings, &caps);
+            let (keywords, proto_ignored) = realtime::clean_cloud_keywords(&words);
+            let ignored = cap_ignored + proto_ignored;
             if ignored > 0 {
-                crate::log::warn(format!("云端热词有 {ignored} 条含协议不支持的字符，已忽略"));
+                crate::log::warn(format!("云端热词有 {ignored} 条未通过协议校验，已忽略"));
             }
             Ok(Box::new(realtime::RealtimeProvider::new(
                 realtime::RealtimeConfig {
@@ -123,9 +204,7 @@ pub fn create_provider(
                     api_key: settings.cloud_api_key.clone(),
                     model,
                     languages,
-                    // 热词复用术语表，但先按协议过滤非法字符。
                     keywords,
-                    local_vad,
                 },
             )))
         }
@@ -133,26 +212,19 @@ pub fn create_provider(
     }
 }
 
-/// 外发热词按 Realtime 协议过滤：`<`、`>`、CR、LF 都不能进 keywords。
-pub(crate) fn clean_cloud_keywords(words: &[String]) -> (Vec<String>, usize) {
-    let mut clean = Vec::new();
-    let mut ignored = 0;
-    for word in words {
-        if word.chars().any(|ch| matches!(ch, '<' | '>' | '\r' | '\n')) {
-            ignored += 1;
-        } else {
-            clean.push(word.clone());
-        }
+/// 术语表：按 provider 能力决定要不要带。
+///
+/// **纯函数**（可单测）：能力声明不支持请求级术语表时返回空词表 ——
+/// 系统不得向不支持它的服务发送术语表。
+pub fn cloud_keywords(
+    settings: &crate::settings::Settings,
+    caps: &Capabilities,
+) -> (Vec<String>, usize) {
+    if !caps.supports_keywords {
+        return (Vec::new(), settings.hotwords.len());
     }
-    (clean, ignored)
-}
-
-/// 默认 Realtime 转写模型只支持客户端提交；其它兼容模型必须显式走这个契约。
-pub(crate) fn validate_realtime_model(model: &str) -> Result<(), String> {
-    if model.trim().is_empty() {
-        return Err(crate::code("cloud.unsupportedModel"));
-    }
-    Ok(())
+    // 协议专属的字符过滤在 provider 内部做（各家的规则不同）。
+    (settings.hotwords.clone(), 0)
 }
 
 /// 两个「没能单独提交」的句子区间合成一个：起点取早的，终点取晚的。
@@ -210,9 +282,6 @@ pub struct CloudStreamingSession {
     segments: Vec<Segment>,
     /// 出错时的字典错误码：已定稿的句子留着，界面上另外提示。
     error: Option<String>,
-    /// 增量 delta 按 item 累积；前端需要的是累计串，不是最后一个碎片。
-    delta_item: Option<String>,
-    delta_text: String,
     /// 上传队列满载时丢掉的音频：(起点秒, 丢掉的 16 kHz 采样数)。
     ///
     /// 这些采样**已经喂进会话**（时钟里算过了），所以不能再推进时钟 ——
@@ -243,8 +312,6 @@ impl CloudStreamingSession {
             partial: String::new(),
             segments: Vec::new(),
             error: None,
-            delta_item: None,
-            delta_text: String::new(),
             upload_gaps: Vec::new(),
             started: Instant::now(),
         }
@@ -268,19 +335,6 @@ impl CloudStreamingSession {
                     if text != self.partial {
                         self.partial = text.clone();
                         if !text.is_empty() { events.push(StreamEvent::Partial(text)); }
-                    }
-                }
-                CloudEvent::PartialDelta { item_id, delta } => {
-                    if item_id.is_some() && item_id != self.delta_item {
-                        self.delta_text.clear();
-                        self.delta_item = item_id;
-                    }
-                    self.delta_text.push_str(&delta);
-                    if self.delta_text != self.partial {
-                        self.partial = self.delta_text.clone();
-                        if !self.partial.is_empty() {
-                            events.push(StreamEvent::Partial(self.partial.clone()));
-                        }
                     }
                 }
                 CloudEvent::CommitAck { item_id } => {
@@ -309,8 +363,6 @@ impl CloudStreamingSession {
                         }
                     };
                     // 空句不产句子，但区间已配掉；失败的 item 也走这里，防止后续句子全被卡住。
-                    self.delta_text.clear();
-                    self.delta_item = None;
                     self.partial.clear();
                     if text.trim().is_empty() {
                         continue;
@@ -325,6 +377,11 @@ impl CloudStreamingSession {
         if let Some(error) = self.provider.take_error() {
             self.error = Some(error);
         }
+    }
+
+    /// 能力声明（编排层据此决定门控与提交）。
+    pub fn capabilities(&self) -> Capabilities {
+        self.provider.capabilities()
     }
 
     /// 取回上传丢包的缺口（起点秒, 丢掉的 16 kHz 采样数）。

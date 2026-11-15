@@ -116,6 +116,7 @@ export const els = {
   hotwordsSave: $('hotwords-save'),
   hotwordsExample: $('hotwords-example'),
   cloudStatus: $('cloud-status'),
+  cloudKeywordHint: $('cloud-keyword-hint'),
   cloudBaseUrl: $('cloud-base-url'),
   cloudApiKey: $('cloud-api-key'),
   cloudModel: $('cloud-model'),

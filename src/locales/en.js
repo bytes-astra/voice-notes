@@ -254,6 +254,7 @@ window.I18N_LOCALES['en'] = {
   'settings.cloudModelPlaceholder': 'Leave empty for the default model',
   'settings.cloudSave': 'Save cloud settings',
   'settings.cloudSaved': 'Cloud settings saved',
+  'settings.cloudNoKeywords': 'This cloud service does not support the term list (its word list can only be preset in the console).',
   'settings.cloudConfigured': 'Key is set',
   'settings.cloudNotConfigured': 'No key set yet',
   'settings.cloudClearKey': 'Clear key',

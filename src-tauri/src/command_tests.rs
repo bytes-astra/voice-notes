@@ -58,3 +58,32 @@ fn cancel_does_not_release_the_starting_flag() {
         "取消录音不该动「正在启动」标志 —— 那是 start 命令的 guard 独占的"
     );
 }
+
+/// 本地 VAD 的前置条件：不需要就放行，需要且缺失就报错。
+///
+/// 「缺 VAD」不能被当成「改用服务端断句」—— 那是另一个能力。
+#[test]
+fn vad_precondition_follows_capability() {
+    use crate::asr::cloud::{Capabilities, EndpointKind, PartialSemantics};
+    let client_commit = Capabilities {
+        endpoint_kind: EndpointKind::ClientCommit,
+        needs_local_vad: true,
+        partial_semantics: PartialSemantics::Delta,
+        supports_keywords: true,
+        target_sample_rate: 16_000,
+    };
+    let server_endpoint = Capabilities {
+        endpoint_kind: EndpointKind::ServerEndpoint,
+        needs_local_vad: false,
+        ..client_commit
+    };
+    assert!(vad_precondition(&client_commit, true).is_ok(), "已就绪应放行");
+    assert_eq!(
+        vad_precondition(&client_commit, false).unwrap_err(),
+        "cloud.vadMissing"
+    );
+    assert!(
+        vad_precondition(&server_endpoint, false).is_ok(),
+        "不需要本地 VAD 不该报错"
+    );
+}

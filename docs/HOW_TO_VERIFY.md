@@ -217,7 +217,12 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 - **协议编解码单测**（`src-tauri/src/asr/cloud/realtime/protocol_tests.rs`）：拿官方的示例帧当输入 —— `conversation.item.input_audio_transcription.delta`（字段 `delta`）与 `.completed`（字段 `transcript`）解成 Partial / Final、`input_audio_buffer.commit` 的回执带 `item_id`（用来给 final 按提交顺序排序）、`session.update` 的编码（`audio/pcm` + 24000、`turn_detection` 为 `null` 时由客户端断句、语言参数是 `languages` 复数）。另有**收尾记账**两组：客户端断句（提交后结果没回来就还在等）、服务端断句（迟到的旧 final 不能抹掉新音频的等待），以及**迟到的 `committed` 回执不再排队**（否则队列永远不空，收尾会一直等）。
 - **集成测试**（`src-tauri/src/record/tests.rs` 的 `cloud_core_keeps_finalized_sentences_when_disconnected`）：走 `run_cloud_streaming_core` 的完整编排，中途断连后已定稿句子仍在。
 - **凭据不外泄**：`Status` 序列化里没有 key 明文（`engine` 的单测）、错误详情里的 key 会被抹成 `***`（`sanitize()`，协议单测）、界面检查断言「密钥不回显」。
-- **界面检查**（`npm run check:ui`）覆盖云端：配置保存、状态徽标（已配置 / 未配置）、上传确认框、云端模式发的是 `start_cloud_recording`。
+- **能力声明**（`src-tauri/src/asr/cloud.rs` 的 `Capabilities`）：每个 provider 自报能力（句边界方式、是否需要本地 VAD、中间结果语义、是否支持术语表、上传采样率），按 provider id 静态查的表（`provider_capabilities`）与实例自报值必须一致。合法组合只有两种：**客户端提交 + 需要本地 VAD**、**服务端断句 + 不需要本地 VAD** —— 其余组合拒绝建 provider（「缺 VAD」绝不能被当成「改用服务端断句」）。单测覆盖能力表、组合校验、VAD 前置条件与门控决策的四种组合。
+- **中间结果归一器**（`src-tauri/src/asr/cloud/partial.rs`）：各家协议给的中间结果形态不同（增量拼接 / 确认前缀加草稿 / 区间替换），provider 内部归一成「当前未定稿句的累计串」，上层只认这一种语义。归一器按句标识分桶、句定稿时清掉自己的桶；没有句标识的协议走单桶。单测见 `src-tauri/src/asr/cloud/partial/tests.rs`。
+- **服务端断句路径**（`server_endpoint` 族）：不本地门控 —— 静音照上传，服务端靠静音判句尾；句子区间按本地轴兜底（「上一句终点 → 本次定稿到达时已喂入会话的音频终点」）。**已知取舍**：该终点会系统性偏长（服务端延迟 + 尾静音）。
+- **界面检查**（`npm run check:ui`）覆盖云端：配置保存、状态徽标（已配置 / 未配置）、上传确认框、云端模式发的是 `start_cloud_recording`、**当前服务不支持术语表时给出提示**（术语表是本地流式与云端共用的全局设置，只能提示、不得隐藏入口）。
+
+**云端相关测试基线**：`cargo test --lib` = **198**（其中 `asr::cloud` = 49 = 会话层 17 + 协议层 26 + 归一器 6；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 > [!NOTE]
 > 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。

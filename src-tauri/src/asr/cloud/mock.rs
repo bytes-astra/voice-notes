@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::asr::cloud::{CloudEvent, CloudProvider, EndpointKind};
+use crate::asr::cloud::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics};
 use crate::code;
 
 /// 假 provider 的内部状态：测试拿着它就能检查发了什么、注入事件。
@@ -53,12 +53,15 @@ impl MockProvider {
 }
 
 impl CloudProvider for MockProvider {
-    fn endpoint_kind(&self) -> EndpointKind {
-        self.kind
-    }
-
-    fn target_sample_rate(&self) -> u32 {
-        self.rate
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            endpoint_kind: self.kind,
+            // 客户端提交族需要本地 VAD；服务端断句族不需要。
+            needs_local_vad: self.kind == EndpointKind::ClientCommit,
+            partial_semantics: PartialSemantics::Delta,
+            supports_keywords: true,
+            target_sample_rate: self.rate,
+        }
     }
 
     fn connect(

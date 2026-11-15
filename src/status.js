@@ -127,6 +127,11 @@ function renderCloudConfig() {
   els.cloudStatus.textContent = status.cloudConfigured
     ? t('settings.cloudConfigured')
     : t('settings.cloudNotConfigured')
+  // 当前服务不支持请求级术语表时给出提示 —— 术语表是本地流式与云端
+  // 共用的全局设置，只能提示，不能隐藏入口（藏了就顺手废掉本地流式的术语表）。
+  els.cloudKeywordHint.textContent = status.cloudSupportsKeywords
+    ? ''
+    : t('settings.cloudNoKeywords')
   // 用户正在编辑时不要覆盖输入
   if (document.activeElement !== els.cloudBaseUrl) {
     els.cloudBaseUrl.value = status.cloudBaseUrl || ''

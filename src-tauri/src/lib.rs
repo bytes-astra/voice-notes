@@ -523,6 +523,27 @@ async fn download_streaming_model(
     Ok(status_of(&app, &state))
 }
 
+/// 本地 VAD 的前置条件（纯函数，可单测）。
+///
+/// - 不需要本地 VAD → 放行（不下载、不校验）；
+/// - 需要且已就绪 → 放行；
+/// - 需要但缺失 → 报错。
+///
+/// 「缺 VAD」绝不能被当成「改用服务端断句」—— 那是另一个能力
+/// （`needs_local_vad`）；两者混在一起会让客户端提交族静默退化。
+fn vad_precondition(
+    caps: &asr::cloud::Capabilities,
+    vad_present: bool,
+) -> Result<(), String> {
+    if !caps.needs_local_vad {
+        return Ok(());
+    }
+    if vad_present {
+        return Ok(());
+    }
+    Err(code("cloud.vadMissing"))
+}
+
 /// 两个槽登记失败的错误码。
 ///
 /// 流式的会话槽是 `stream`（`error.streamState`），整段的是 `offline_session`
@@ -761,8 +782,12 @@ async fn start_cloud_recording(
     // gpt-live-transcribe 不支持 server_vad：必须有本地 VAD 做客户端断句。
     // 只下载这份 2.3 MB 的 VAD，不要求整份流式模型；复用流式下载忙碌标志，
     // 避免与设置页的下载同时写同一个文件。
+    // 能力先查表：VAD 前置条件与状态回传用的是同一份来源。
+    let caps = asr::cloud::provider_capabilities(&settings.cloud_provider)
+        .ok_or_else(|| code_detail("cloud.unsupportedProvider", &settings.cloud_provider))?;
     let mut vad_path = models::resolve_cloud_vad(&app);
-    if vad_path.is_none() {
+    // 需要本地 VAD 而本机没有 → 先下载那一份（2.3 MB），仍没有就报错。
+    if caps.needs_local_vad && vad_path.is_none() {
         if state.downloading_streaming.swap(true, Ordering::SeqCst) {
             return Err(code("setup.busy"));
         }
@@ -779,18 +804,22 @@ async fn start_cloud_recording(
         .await?;
         vad_path = models::resolve_cloud_vad(&app);
     }
-    let Some(vad_path) = vad_path else {
-        return Err(code("cloud.vadMissing"));
+    vad_precondition(&caps, vad_path.is_some())?;
+    let vad_config = match vad_path {
+        Some(path) if caps.needs_local_vad => {
+            // 创建 detector 可能因损坏 / 版本不符失败：不能进入无门控、永不 commit 的录音。
+            let config = engine::cloud_vad_config(path);
+            Some(
+                tauri::async_runtime::spawn_blocking(move || {
+                    engine::validate_cloud_vad(&config).map(|_| config)
+                })
+                .await
+                .map_err(|e| code_detail("cloud.vadInvalid", e))??,
+            )
+        }
+        _ => None,
     };
-    let vad_config = engine::cloud_vad_config(vad_path);
-    // 创建 detector 可能因损坏 / 版本不符失败：不能进入无门控、永不 commit 的录音。
-    let vad_config = tauri::async_runtime::spawn_blocking(move || {
-        engine::validate_cloud_vad(&vad_config).map(|_| vad_config)
-    })
-    .await
-    .map_err(|e| code_detail("cloud.vadInvalid", e))??;
-    let vad_config = Some(vad_config);
-    let provider = asr::cloud::create_provider(&settings, true)?;
+    let provider = asr::cloud::create_provider(&settings)?;
     // 建连是网络操作：放阻塞线程，别堵住 async 执行器。
     // 连接失败要在**开始录音时**就报错，不能等录完才让用户撞上「停止超时」。
     let session = asr::cloud::CloudStreamingSession::new(provider);

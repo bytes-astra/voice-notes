@@ -191,14 +191,17 @@ fn disconnect_keeps_finalized_segments() {
     );
 }
 
-/// delta 是增量：上抛给前端的必须是按 item 累积的文本。
+/// 中间结果由 provider 归一为「当前句的累计串」，会话层原样上抛。
+///
+/// 归一本身在 `partial::PartialAccumulator` 里测（见 `partial/tests.rs`）；
+/// 这里守的是「会话层不再自己累加」。
 #[test]
 fn delta_accumulates_into_partial() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
-    emit(&state, CloudEvent::PartialDelta { item_id: Some("a".into()), delta: "你好".into() });
-    emit(&state, CloudEvent::PartialDelta { item_id: Some("a".into()), delta: "，世界".into() });
+    emit(&state, CloudEvent::Partial("你好".into()));
+    emit(&state, CloudEvent::Partial("你好，世界".into()));
     let events = session.poll();
     let partials: Vec<String> = events.iter().filter_map(|e| match e { StreamEvent::Partial(t) => Some(t.clone()), _ => None }).collect();
     assert_eq!(partials, vec!["你好".to_string(), "你好，世界".to_string()]);
@@ -290,22 +293,29 @@ fn first_segment(events: Vec<StreamEvent>) -> Segment {
         .expect("该来一条句子")
 }
 
-/// 热词中的协议非法字符必须丢弃，不能整包带出去。
-#[test]
-fn cloud_keywords_drop_invalid_chars() {
-    let (clean, ignored) = clean_cloud_keywords(&["正常".into(), "C<plus>".into(), "换\n行".into()]);
-    assert_eq!(clean, vec!["正常".to_string()]);
-    assert_eq!(ignored, 2);
-}
 
-/// 没有本地 VAD 不能创建 Realtime provider：默认模型不支持 server_vad。
+
+/// 能力表：客户端提交族声明「需要本地 VAD」，且能力组合合法。
 #[test]
 fn provider_requires_local_vad() {
-    let settings = crate::settings::Settings { cloud_provider: "realtime".into(), ..Default::default() };
-    match create_provider(&settings, false) {
-        Err(error) => assert_eq!(error, "cloud.vadMissing"),
-        Ok(_) => panic!("没有 VAD 不应创建 provider"),
-    }
+    let caps = provider_capabilities("realtime").expect("realtime 应有能力项");
+    assert_eq!(caps.endpoint_kind, EndpointKind::ClientCommit);
+    assert!(caps.needs_local_vad, "客户端提交族要本地 VAD 断句");
+    assert!(valid_capabilities(&caps), "能力组合应合法");
+    assert!(provider_capabilities("不存在的服务").is_none(), "未知 id 没有能力项");
+}
+
+/// 能力组合非法时拒绝建 provider（避免「缺 VAD 被读成服务端断句」）。
+#[test]
+fn invalid_capability_combination_is_rejected() {
+    let bad = Capabilities {
+        endpoint_kind: EndpointKind::ClientCommit,
+        needs_local_vad: false,
+        partial_semantics: PartialSemantics::Delta,
+        supports_keywords: true,
+        target_sample_rate: 16000,
+    };
+    assert!(!valid_capabilities(&bad), "客户端提交族不声明需要 VAD 是非法组合");
 }
 
 

@@ -30,7 +30,8 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::{CloudEvent, CloudProvider, EndpointKind};
+use super::partial::{self, PartialUpdate};
+use super::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics};
 
 /// Realtime 服务的默认地址（`intent=transcription` 决定这是转写会话）。
 pub const DEFAULT_BASE_URL: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
@@ -58,11 +59,6 @@ pub struct RealtimeConfig {
     pub languages: Vec<String>,
     /// 热词（术语表）。
     pub keywords: Vec<String>,
-    /// 本机有没有那 2.3 MB 的 VAD。
-    ///
-    /// 有 → 客户端断句（静音时提交，句子边界与本地模式一致）；
-    /// 没有 → 不允许建连：gpt-live-transcribe 不支持 server_vad。
-    pub local_vad: bool,
 }
 
 /// 后台任务收到的命令。
@@ -102,17 +98,23 @@ impl RealtimeProvider {
     }
 }
 
-impl CloudProvider for RealtimeProvider {
-    fn endpoint_kind(&self) -> EndpointKind {
-        if self.config.local_vad {
-            EndpointKind::ClientCommit
-        } else {
-            EndpointKind::ServerEndpoint
-        }
-    }
+impl RealtimeProvider {
+    /// 能力声明（**唯一来源**）：`provider_capabilities()` 的表项就是它。
+    ///
+    /// 句边界恒为客户端提交 —— `gpt-live-transcribe` 不支持 server_vad，
+    /// 「缺 VAD」不是「改用服务端断句」的理由（那是另一个能力：`needs_local_vad`）。
+    pub const CAPABILITIES: Capabilities = Capabilities {
+        endpoint_kind: EndpointKind::ClientCommit,
+        needs_local_vad: true,
+        partial_semantics: PartialSemantics::Delta,
+        supports_keywords: true,
+        target_sample_rate: TARGET_SAMPLE_RATE,
+    };
+}
 
-    fn target_sample_rate(&self) -> u32 {
-        TARGET_SAMPLE_RATE
+impl CloudProvider for RealtimeProvider {
+    fn capabilities(&self) -> Capabilities {
+        Self::CAPABILITIES
     }
 
     fn connect(
@@ -127,7 +129,6 @@ impl CloudProvider for RealtimeProvider {
             model: self.config.model.clone(),
             languages: self.config.languages.clone(),
             keywords: self.config.keywords.clone(),
-            local_vad: self.config.local_vad,
         };
         let error_tx = self.error_tx.clone();
         tauri::async_runtime::spawn(async move {
@@ -258,7 +259,11 @@ async fn run(
     // 那与「录音没有时长上限」的说法矛盾。
     let mut deadline: Option<tokio::time::Instant> = None;
     // 断句方式决定「还有没有在等的结果」怎么算。
-    let client_commit = config.local_vad;
+    // 句边界方式取自能力声明（唯一来源）。
+    let client_commit = RealtimeProvider::CAPABILITIES.endpoint_kind == EndpointKind::ClientCommit;
+    // 中间结果归一器：按 item 分桶累计，句定稿时清掉自己的桶。
+    let mut accumulator =
+        partial::PartialAccumulator::new(RealtimeProvider::CAPABILITIES.partial_semantics);
     let mut pending = Pending::default();
     loop {
         // 复制一份给 select 用：分支里要能改 `deadline` 本身。
@@ -355,16 +360,28 @@ async fn run(
                     ServerEvent::Partial { item_id, delta } => {
                         // 记下最新的 item：服务端断句时靠它判断某条 final 是不是最新的那条。
                         pending.note_item(&item_id);
-                        on_event(CloudEvent::PartialDelta { item_id, delta });
+                        // 中间结果在 provider 内部归一为「当前句的累计串」，
+                        // 上层只认这一种语义（见 `partial::PartialAccumulator`）。
+                        let text = accumulator.apply(item_id.clone(), PartialUpdate::Delta(delta));
+                        if !text.is_empty() {
+                            on_event(CloudEvent::Partial(text));
+                        }
                     }
                     ServerEvent::Final { item_id, transcript } => {
                         // 先算「还有没有在等的音频」，再更新 latest_item ——
                         // 顺序反了的话，这条 final 永远算「最新」。
                         pending.on_final(&item_id, client_commit);
                         pending.note_item(&item_id);
-                        tracker.resolve(item_id, Outcome::Text(transcript));
+                        tracker.resolve(item_id.clone(), Outcome::Text(transcript));
                         for event in tracker.flush() {
                             on_event(event);
+                        }
+                        // 这一句定稿：清掉它自己的桶，再补发当前活跃句的实时文本 ——
+                        // 前端收到定稿事件会清空实时行，迟到的旧句不该把新句
+                        // 正在显示的内容一起清掉。
+                        accumulator.finish_sentence(item_id);
+                        if let Some(current) = accumulator.current() {
+                            on_event(CloudEvent::Partial(current));
                         }
                         // 收尾时最后一条结果到了：可以交差了。
                         if finishing.is_some() && tracker.is_empty() {
@@ -388,7 +405,8 @@ async fn run(
                         // 会话层照常弹出这一轮的区间，后续句子才不会错位。
                         pending.on_final(&item_id, client_commit);
                         pending.note_item(&item_id);
-                        tracker.resolve(item_id, Outcome::Failed);
+                        tracker.resolve(item_id.clone(), Outcome::Failed);
+                        accumulator.finish_sentence(item_id);
                         for event in tracker.flush() {
                             on_event(event);
                         }
@@ -450,6 +468,31 @@ async fn connect_socket(
             crate::code_detail("cloud.connectFailed", sanitize(&error.to_string(), &config.api_key))
         })?;
     Ok(socket)
+}
+
+/// 外发热词按 Realtime 协议过滤：`<`、`>`、CR、LF 都不能进 keywords。
+///
+/// 这是 **OpenAI Realtime 的字符限制**，别家规则不同 —— 各 provider 在自己
+/// 内部过滤（见 `cloud::cloud_keywords` 只负责「要不要带」）。
+pub(crate) fn clean_cloud_keywords(words: &[String]) -> (Vec<String>, usize) {
+    let mut clean = Vec::new();
+    let mut ignored = 0;
+    for word in words {
+        if word.chars().any(|ch| matches!(ch, '<' | '>' | '\r' | '\n')) {
+            ignored += 1;
+        } else {
+            clean.push(word.clone());
+        }
+    }
+    (clean, ignored)
+}
+
+/// 默认 Realtime 转写模型只支持客户端提交；其它兼容模型必须显式走这个契约。
+pub(crate) fn validate_realtime_model(model: &str) -> Result<(), String> {
+    if model.trim().is_empty() {
+        return Err(crate::code("cloud.unsupportedModel"));
+    }
+    Ok(())
 }
 
 /// 把凭据从文本里抹掉：日志与错误里都不该出现它。
