@@ -371,10 +371,11 @@ fn set_cloud_config(
     Ok(status_of(&app, &state))
 }
 
-/// 保存流式术语表。
+/// 保存术语表。
 ///
 /// 解码方式（greedy / beam）是在创建识别器时定死的，词表变了必须把流式引擎清掉，
 /// 下次录音按新词表重建（与切换模式同样的代价：重新加载 161 MB 模型）。
+/// 云端模式不用重载：provider 每次开录时新建。
 #[tauri::command]
 async fn set_hotwords(
     app: AppHandle,

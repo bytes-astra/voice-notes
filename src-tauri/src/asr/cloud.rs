@@ -47,8 +47,9 @@ pub enum EndpointKind {
 
 /// 云端识别服务。
 ///
-/// 实现方在**自己的线程**上跑网络 IO：事件通过 `connect` 拿到的回调上抛，
-/// 音频 / 提交 / 收尾是同步调用（内部走 channel，调用方不会被网络卡住）。
+/// 实现方在**自己的线程**上跑网络 IO：事件通过 `connect` 拿到的回调上抛。
+/// 音频 / 提交 / 收尾是同步调用（内部走 channel）：音频帧从不阻塞；提交与
+/// 收尾在队列背压时有界等待（最多 3 秒），等不到就报发送失败。
 pub trait CloudProvider: Send {
     /// 这个 provider 怎么断句。
     fn endpoint_kind(&self) -> EndpointKind;
@@ -145,6 +146,16 @@ pub(crate) fn validate_realtime_model(model: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 两个「没能单独提交」的句子区间合成一个：起点取早的，终点取晚的。
+///
+/// 提交失败时服务端把两段音频并成一条结果，句子时间也只能合成一段。
+fn merge_span(earlier: Option<(f32, f32)>, later: (f32, f32)) -> (f32, f32) {
+    match earlier {
+        Some(span) => (span.0.min(later.0), span.1.max(later.1)),
+        None => later,
+    }
+}
+
 /// f32 → i16：clamp 后取整。
 ///
 /// 幅度超过 ±1 的样本（AGC 之后仍可能越界）要夹住 —— 直接 `as i16`
@@ -174,6 +185,9 @@ pub struct CloudStreamingSession {
     fed_since_commit: bool,
     /// 已提交、还没回来的 final 的时间区间（按提交顺序）。
     pending: VecDeque<(f32, f32)>,
+    /// 提交失败的区间：服务端没收到这次 commit，那一段音频会并进下一次
+    /// 提交、只回一条 final —— 区间先攒着，等下一次提交成功时一起登记。
+    uncommitted_span: Option<(f32, f32)>,
     /// 最近一次收到的中间结果。
     partial: String,
     segments: Vec<Segment>,
@@ -202,6 +216,7 @@ impl CloudStreamingSession {
             fed_end: 0,
             fed_since_commit: false,
             pending: VecDeque::new(),
+            uncommitted_span: None,
             partial: String::new(),
             segments: Vec::new(),
             error: None,
@@ -318,15 +333,30 @@ impl CloudStreamingSession {
             // 句子的终点是「最后喂进去的音频」的末尾，不是当前时钟
             // （时钟还在走静音段，算进去句子会拖长）。
             let (start, end) = self.timeline.commit_at(self.fed_end, true);
-            self.pending.push_back((
+            let span = (
                 start as f32 / SAMPLE_RATE as f32,
                 end as f32 / SAMPLE_RATE as f32,
-            ));
+            );
             self.fed_since_commit = false;
-            if self.provider.endpoint_kind() == EndpointKind::ClientCommit {
-                if let Err(error) = self.provider.commit() {
-                    self.error = Some(error);
-                }
+            match self.provider.endpoint_kind() {
+                // 客户端断句：**提交成功之后**才登记区间。提交失败时服务端不会
+                // 为这一句回 final，先登记的话之后每条 final 都会配到上一句的
+                // 区间上 —— 失败点以后整段时间戳错位一格。
+                EndpointKind::ClientCommit => match self.provider.commit() {
+                    Ok(()) => {
+                        let span = merge_span(self.uncommitted_span.take(), span);
+                        self.pending.push_back(span);
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        // 服务端没收到这次 commit，这段音频会并进下一次提交、
+                        // 只回一条 final：区间攒着，等下次提交成功一起登记。
+                        self.uncommitted_span =
+                            Some(merge_span(self.uncommitted_span.take(), span));
+                    }
+                },
+                // 服务端断句没有 commit：区间先登记，等 final 回来配。
+                EndpointKind::ServerEndpoint => self.pending.push_back(span),
             }
         }
         self.drain(&mut events);
@@ -344,6 +374,11 @@ impl CloudStreamingSession {
                     self.error = Some(error);
                 }
             }
+        }
+        // 之前提交失败攒下的区间：收尾这次提交会把那段音频一起带上，
+        // 服务端为它回的 final 也要按顺序配到区间。
+        if let Some(span) = self.uncommitted_span.take() {
+            self.pending.push_back(span);
         }
         if let Err(error) = self.provider.finish() {
             self.error = Some(error);

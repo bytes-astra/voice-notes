@@ -29,7 +29,7 @@ pub struct Settings {
     pub punct: bool,
     /// 使用的输入设备名（None = 系统默认）
     pub input_device: Option<String>,
-    /// 流式模式的热词（术语表）：只在 streaming 模式生效，空 = 不启用
+    /// 热词（术语表）：流式与云端模式使用（整段模式不支持），空 = 不启用
     pub hotwords: Vec<String>,
     pub output_dir: Option<String>,
     pub model_dir: Option<String>,

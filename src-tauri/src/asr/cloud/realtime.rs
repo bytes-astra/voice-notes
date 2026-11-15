@@ -42,6 +42,12 @@ pub const TARGET_SAMPLE_RATE: u32 = 24000;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const FINISH_TIMEOUT: Duration = Duration::from_secs(10);
 const UPLOAD_QUEUE_CAPACITY: usize = 84;
+/// 控制帧（commit / finish）排队的等待上限。
+///
+/// 上传队列满说明网络在背压：控制帧不能丢（丢了这一句永远等不到 final），
+/// 但也不能无限等（socket 卡死时录音线程会一直挂住）。等到这个上限就报错，
+/// 让调用方按「发送失败」收尾。
+const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Realtime 会话配置。
 pub struct RealtimeConfig {
@@ -165,9 +171,9 @@ impl CloudProvider for RealtimeProvider {
         let Some(commands) = self.commands.as_ref() else {
             return Err(crate::code("cloud.disconnected"));
         };
-        commands
-            .try_send(Command::Commit)
-            .map_err(|_| crate::code("cloud.disconnected"))
+        // 控制帧不能因为队列满就丢：丢了这次 commit，服务端就不会为这一句
+        // 出 final，会话侧的区间与 pending 记账跟着整体错位。
+        send_control(commands, Command::Commit, CONTROL_SEND_TIMEOUT)
     }
 
     fn finish(&mut self) -> Result<(), String> {
@@ -178,9 +184,8 @@ impl CloudProvider for RealtimeProvider {
             return Err(crate::code("cloud.disconnected"));
         };
         let (done_tx, done_rx) = channel();
-        commands
-            .try_send(Command::Finish(done_tx))
-            .map_err(|_| crate::code("cloud.disconnected"))?;
+        // 同 `commit`：收尾命令丢了就等于最后一句永远等不到结果。
+        send_control(commands, Command::Finish(done_tx), CONTROL_SEND_TIMEOUT)?;
         match done_rx.recv_timeout(FINISH_TIMEOUT) {
             Ok(()) => self.take_error().map_or(Ok(()), Err),
             Err(_) => Err(self
@@ -195,6 +200,34 @@ impl CloudProvider for RealtimeProvider {
 
     fn take_error(&mut self) -> Option<String> {
         RealtimeProvider::take_error(self)
+    }
+}
+
+/// 把控制帧送进上传队列：满了就**有界**等一会儿，不丢帧也不无限阻塞。
+///
+/// 音频帧（`send_audio`）满了可以直接丢并记缺口；commit / finish 丢不起 ——
+/// 丢一次 commit 就少一条 final，丢一次 finish 就少最后一句。但 socket 卡死
+/// 时上传队列永远排不进去，所以等满 `timeout` 就按发送失败返回。
+fn send_control(
+    commands: &tokio_mpsc::Sender<Command>,
+    mut command: Command,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match commands.try_send(command) {
+            Ok(()) => return Ok(()),
+            Err(tokio_mpsc::error::TrySendError::Full(returned)) => {
+                command = returned;
+                if std::time::Instant::now() >= deadline {
+                    return Err(crate::code("cloud.sendFailed"));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                return Err(crate::code("cloud.disconnected"));
+            }
+        }
     }
 }
 
@@ -345,10 +378,26 @@ async fn run(
                             }
                         }
                     }
-                    ServerEvent::Failed { item_id } => {
-                        if let Some(id) = &item_id { order.failed(id); }
+                    ServerEvent::Failed { item_id, reason } => {
+                        // 失败也要留痕：这句文本会从结果里消失，日志里必须有
+                        // 一条可追的记录（服务端给的原因同样先脱敏）。
+                        let reason = sanitize(&reason, &config.api_key);
+                        let id = item_id.as_deref().unwrap_or("未知");
+                        if reason.is_empty() {
+                            crate::log::warn(format!("云端识别失败：item {id}"));
+                        } else {
+                            crate::log::warn(format!("云端识别失败：item {id}，{reason}"));
+                        }
+                        // 失败的 item 也要占住它在**提交队列**里的位置：用一条空
+                        // final 走同一条排序通道。直接上抛会绕过 `FinalOrder` ——
+                        // 失败的不是队首时，会话层按 FIFO 配区间就会配错（后面
+                        // 每个句子的时间戳整体错位），排在它后面的 final 也会
+                        // 因为队首永远等不到而卡在 `ready` 里。
                         pending.on_final(&item_id, client_commit);
-                        on_event(CloudEvent::Final { text: String::new(), start_ms: None, end_ms: None });
+                        pending.note_item(&item_id);
+                        for event in order.push(item_id, String::new()) {
+                            on_event(event);
+                        }
                         if finishing.is_some() && order.is_empty() {
                             if let Some(done) = finishing.take() { let _ = done.send(()); break; }
                         }
@@ -469,7 +518,11 @@ enum ServerEvent {
     Error {
         message: String,
     },
-    Failed { item_id: Option<String> },
+    Failed {
+        item_id: Option<String>,
+        /// 服务端给的原因（`error.message`），只进日志、已脱敏。
+        reason: String,
+    },
     SessionUpdated,
     Other,
 }
@@ -506,7 +559,15 @@ fn decode_event(raw: &str) -> ServerEvent {
                 .to_string(),
         },
         "input_audio_buffer.committed" => ServerEvent::Committed { item_id },
-        "conversation.item.input_audio_transcription.failed" => ServerEvent::Failed { item_id },
+        "conversation.item.input_audio_transcription.failed" => ServerEvent::Failed {
+            item_id,
+            reason: value
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        },
         "session.updated" => ServerEvent::SessionUpdated,
         "error" => ServerEvent::Error {
             message: value
@@ -619,6 +680,9 @@ impl FinalOrder {
     }
 
     /// 一条 final 到了：能发就发，不能发就存着。
+    ///
+    /// 识别失败的 item 用**空文本**走同一条通道（`run` 的 `Failed` 分支）：
+    /// 排序、放行后面的 final、让会话层弹掉对应区间，三件事都由它一次做完。
     fn push(&mut self, item_id: Option<String>, transcript: String) -> Vec<CloudEvent> {
         let event = CloudEvent::Final {
             text: transcript,
@@ -633,12 +697,6 @@ impl FinalOrder {
             // 没有 item_id：没法排序，直接发。
             None => vec![event],
         }
-    }
-
-    fn failed(&mut self, item_id: &str) {
-        self.queue.retain(|id| id != item_id);
-        self.ready.retain(|(id, _)| id != item_id);
-        self.emitted.push(item_id.to_string());
     }
 
     /// 队首就绪就发出去。

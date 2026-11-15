@@ -612,9 +612,12 @@ where
         let new_audio = queue.take_new();
         // 丢掉的输入同样占真实录音时间：缺口结束后才是后续音频的位置。
         session.advance_dropped(audio::resampled_len(new_audio.dropped, rate));
+        // 上传队列满载丢掉的音频**不再**推进时钟：这些采样在喂给会话时
+        // 已经计入 `advance_samples`（用户确实录到了，只是没送到云端），
+        // 再 `advance_dropped` 一次会把录音时长算多一倍、缺口标记也跟着漂。
+        // 与采集丢包不同 —— 那种采样根本没进过会话。
         let uploaded_dropped = session.take_dropped();
         if uploaded_dropped > 0 {
-            session.advance_dropped(uploaded_dropped);
             let at = session.elapsed_seconds();
             let marker = audio::gap_marker(uploaded_dropped as u32, asr::SAMPLE_RATE as u32);
             let segment = asr::Segment { text: marker, start: at, end: at };
