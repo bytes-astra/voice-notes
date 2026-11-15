@@ -7,7 +7,7 @@ use super::*;
 /// 这条差别是给前端留的活：凭据不回传，输入框留空没法区分
 /// 「没改」和「要清空」—— 所以约定由调用方显式表达。
 #[test]
-fn 云端配置_none不改凭据_空串清空() {
+fn cloud_config_none_keeps_key_empty_clears() {
     let mut settings = Settings {
         cloud_api_key: "old-key".into(),
         ..Settings::default()

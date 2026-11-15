@@ -5,7 +5,7 @@ use super::*;
 
 /// f32 → i16：越界的幅度要夹住。
 #[test]
-fn f32转i16夹住越界() {
+fn f32_to_i16_clamps_out_of_range() {
     let pcm = to_i16(&[1.5, -1.5, 0.0, 0.5, -0.5]);
     assert_eq!(pcm[0], 32767, "超过 1 要夹到上限");
     assert_eq!(pcm[1], -32768, "低于 -1 要夹到下限");
@@ -16,7 +16,7 @@ fn f32转i16夹住越界() {
 
 /// 时钟只按 16 kHz 采样数推进：丢掉的音频同样占录音时间。
 #[test]
-fn 喂音频推进时间轴() {
+fn feeding_audio_advances_timeline() {
     let (provider, _state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -30,7 +30,7 @@ fn 喂音频推进时间轴() {
 
 /// final → Segment：句子时间由本地时钟给出。
 #[test]
-fn final映射成句子() {
+fn final_maps_to_segment() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -59,7 +59,7 @@ fn final映射成句子() {
 
 /// provider 给的时间戳只是增强：不许覆盖本地轴。
 #[test]
-fn provider时间戳不覆盖本地轴() {
+fn provider_timestamps_do_not_override_local_timeline() {
     let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -85,7 +85,7 @@ fn provider时间戳不覆盖本地轴() {
 
 /// 服务端自己断句的 provider：客户端不提交。
 #[test]
-fn 服务端断句的provider不提交() {
+fn server_endpoint_provider_does_not_commit() {
     let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -97,7 +97,7 @@ fn 服务端断句的provider不提交() {
 
 /// provider 要 24 kHz：上传前升采样，本地时间轴仍是 16 kHz。
 #[test]
-fn provider要24k时上传前升采样() {
+fn upsamples_before_upload_when_provider_wants_24k() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 24000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -113,7 +113,7 @@ fn provider要24k时上传前升采样() {
 
 /// 空 final 也要把区间配掉：否则下一句会配到上一句的区间上（时间戳整段错位）。
 #[test]
-fn 空final不抢下一句的区间() {
+fn empty_final_does_not_steal_next_span() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -156,7 +156,7 @@ fn 空final不抢下一句的区间() {
 
 /// 断连：已定稿的句子留着，错误另外报。
 #[test]
-fn 断连保留已定稿句子() {
+fn disconnect_keeps_finalized_segments() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -188,7 +188,7 @@ fn 断连保留已定稿句子() {
 
 /// delta 是增量：上抛给前端的必须是按 item 累积的文本。
 #[test]
-fn 增量delta累积成partial() {
+fn delta_accumulates_into_partial() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -201,7 +201,7 @@ fn 增量delta累积成partial() {
 
 /// 失败的 item 产生空 final，只弹自己的区间，后续句子仍能出来。
 #[test]
-fn 失败item不堵后续定稿() {
+fn failed_item_does_not_block_later_finals() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -220,9 +220,72 @@ fn 失败item不堵后续定稿() {
     assert!((segment.start - 1.0).abs() < 1e-6);
 }
 
+/// 提交失败时不能先登记区间：服务端没收到这次 commit，两段音频会在下一次
+/// 提交时并成一条 final —— 区间也要合成一段，否则失败点以后每个句子的
+/// 时间戳都错位一格。
+#[test]
+fn failed_commit_merges_span_into_next_commit() {
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    // 第一句：0~1 秒，commit 失败（没送出去）。
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    state.lock().unwrap().fail_commit = true;
+    session.force_end();
+    assert_eq!(state.lock().unwrap().commits, 0, "失败的那次不算提交成功");
+    // 第二句：1~2 秒，commit 成功；服务端把两段合成一条结果。
+    state.lock().unwrap().fail_commit = false;
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    session.force_end();
+    assert_eq!(state.lock().unwrap().commits, 1);
+    emit(
+        &state,
+        CloudEvent::Final {
+            text: "第一句第二句".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    let merged = first_segment(session.poll());
+    assert!(
+        (merged.start - 0.0).abs() < 1e-6 && (merged.end - 2.0).abs() < 1e-6,
+        "合并后的句子该覆盖 0~2 秒：{merged:?}"
+    );
+    // 第三句：2~3 秒，另一条正常的 final。
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    session.force_end();
+    emit(
+        &state,
+        CloudEvent::Final {
+            text: "第三句".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    let third = first_segment(session.poll());
+    assert!(
+        (third.start - 2.0).abs() < 1e-6 && (third.end - 3.0).abs() < 1e-6,
+        "第三句该落在 2~3 秒（失败点之后不能整体错位）：{third:?}"
+    );
+}
+
+/// 事件里第一条句子。
+fn first_segment(events: Vec<StreamEvent>) -> Segment {
+    events
+        .into_iter()
+        .find_map(|event| match event {
+            StreamEvent::Segment(segment) => Some(segment),
+            _ => None,
+        })
+        .expect("该来一条句子")
+}
+
 /// 热词中的协议非法字符必须丢弃，不能整包带出去。
 #[test]
-fn 云端热词过滤协议非法字符() {
+fn cloud_keywords_drop_invalid_chars() {
     let (clean, ignored) = clean_cloud_keywords(&["正常".into(), "C<plus>".into(), "换\n行".into()]);
     assert_eq!(clean, vec!["正常".to_string()]);
     assert_eq!(ignored, 2);
@@ -230,7 +293,7 @@ fn 云端热词过滤协议非法字符() {
 
 /// 没有本地 VAD 不能创建 Realtime provider：默认模型不支持 server_vad。
 #[test]
-fn 无本地vad拒绝创建provider() {
+fn provider_requires_local_vad() {
     let settings = crate::settings::Settings { cloud_provider: "realtime".into(), ..Default::default() };
     match create_provider(&settings, false) {
         Err(error) => assert_eq!(error, "cloud.vadMissing"),

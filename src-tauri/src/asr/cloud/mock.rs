@@ -18,8 +18,12 @@ pub struct MockState {
     pub finishes: usize,
     /// 发送失败（模拟断连）。
     pub fail: bool,
+    /// 提交失败（模拟上传背压时 commit 没送出去）。
+    pub fail_commit: bool,
     /// 第一次收到音频时回一条定稿（模拟 provider 的结果）。
     pub reply: Option<String>,
+    /// 上传队列满载时丢掉的 16 kHz 采样数（模拟有界队列的丢弃）。
+    pub dropped_reply: usize,
     /// `connect` 交上来的事件回调。
     pub sink: Option<Box<dyn Fn(CloudEvent) + Send + Sync>>,
 }
@@ -83,13 +87,22 @@ impl CloudProvider for MockProvider {
     }
 
     fn commit(&mut self) -> Result<(), String> {
-        self.state.lock().unwrap().commits += 1;
+        let mut state = self.state.lock().unwrap();
+        if state.fail_commit {
+            return Err(code("cloud.sendFailed"));
+        }
+        state.commits += 1;
         Ok(())
     }
 
     fn finish(&mut self) -> Result<(), String> {
         self.state.lock().unwrap().finishes += 1;
         Ok(())
+    }
+
+    fn take_dropped(&mut self) -> usize {
+        let mut state = self.state.lock().unwrap();
+        std::mem::take(&mut state.dropped_reply)
     }
 }
 

@@ -659,7 +659,7 @@ fn peek(slot: &Mutex<Option<u8>>) -> Option<u8> {
 /// 没会话」的中间态：识别线程永远收不到 stop（线程泄漏、永久占着 239 MB
 /// 引擎）、麦克风不关、语言/ITN 永久锁死。
 #[test]
-fn 会话槽坏了采集器槽也不能被写() {
+fn session_slot_poison_does_not_write_recorder_slot() {
     let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
     let session_slot: Mutex<Option<u8>> = Mutex::new(None);
     poison(&session_slot);
@@ -676,7 +676,7 @@ fn 会话槽坏了采集器槽也不能被写() {
 
 /// 采集器槽坏了，会话槽也不能被写过。
 #[test]
-fn 采集器槽坏了会话槽也不能被写() {
+fn recorder_slot_poison_does_not_write_session_slot() {
     let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
     let session_slot: Mutex<Option<u8>> = Mutex::new(None);
     poison(&recorder_slot);
@@ -693,7 +693,7 @@ fn 采集器槽坏了会话槽也不能被写() {
 
 /// 登记成功：两个槽都装上了。
 #[test]
-fn 登记成功两个槽都有() {
+fn register_slots_fills_both_slots() {
     let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
     let session_slot: Mutex<Option<u8>> = Mutex::new(None);
     register_slots(&recorder_slot, &session_slot, 1u8, 2u8).expect("登记");
@@ -701,9 +701,9 @@ fn 登记成功两个槽都有() {
     assert_eq!(peek(&session_slot), Some(2));
 }
 
-/// 已经在录音时登记要报占用，且不能动任何一个槽。
+/// register_slots_reports_busy_when_recording，且不能动任何一个槽。
 #[test]
-fn 已经在录音时登记要报占用() {
+fn register_slots_reports_busy_when_recording() {
     let recorder_slot: Mutex<Option<u8>> = Mutex::new(Some(9));
     let session_slot: Mutex<Option<u8>> = Mutex::new(None);
     let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
@@ -717,7 +717,7 @@ fn 已经在录音时登记要报占用() {
 
 /// 会话槽还占着（上一轮没清干净）时也不能登记。
 #[test]
-fn 会话槽占着时登记要报占用() {
+fn register_slots_reports_busy_when_session_slot_taken() {
     let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
     let session_slot: Mutex<Option<u8>> = Mutex::new(Some(7));
     let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
@@ -769,5 +769,50 @@ fn cloud_core_keeps_finalized_sentences_when_disconnected() {
         transcript.warning.is_some(),
         "断连要留下原因：{:?}",
         transcript.warning
+    );
+}
+
+/// 上传队列满载丢掉的音频**不能**再把时钟推一遍。
+///
+/// 这些采样喂进会话时已经计入 `advance_samples`（用户确实录到了，只是没送到
+/// 云端）。再 `advance_dropped` 一次，录音时长会虚增一倍、缺口标记跟着漂。
+#[test]
+fn cloud_core_does_not_double_count_upload_drops() {
+    use crate::asr::cloud::mock::MockProvider;
+    use crate::asr::cloud::{CloudStreamingSession, EndpointKind};
+
+    let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16_000);
+    // 上传队列丢掉 1 秒（16 kHz 采样数）。
+    state.lock().unwrap().dropped_reply = 16_000;
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+
+    let queue = audio::SampleQueue::new(16_000);
+    // 同一秒的音频也录到了。
+    queue.push(&vec![0.1f32; 16_000]);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopper = stop.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        stopper.store(true, Ordering::SeqCst);
+    });
+    let transcript = run_cloud_streaming_core(
+        session,
+        None,
+        queue,
+        16_000,
+        stop,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    );
+    assert!(
+        (transcript.duration_seconds - 1.0).abs() < 0.05,
+        "丢掉的 1 秒已经算在录到的 1 秒里，时长不该变成 2 秒：{}",
+        transcript.duration_seconds
+    );
+    assert!(
+        transcript.text.contains("[[gap:1]]"),
+        "丢掉的音频要留可见缺口标记：{}",
+        transcript.text
     );
 }

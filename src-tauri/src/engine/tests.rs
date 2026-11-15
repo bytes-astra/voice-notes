@@ -27,7 +27,7 @@ fn fake_offline_key(settings: &Settings) -> OfflineEngineKey {
 }
 
 /// 装一个假整段引擎（走生产同一条 `install_engine` 路径）。
-fn 装假整段(
+fn fake_offline_engine(
     slot: &Mutex<Option<Arc<FakeEngine>>>,
     settings: &Mutex<Settings>,
 ) -> Result<Arc<FakeEngine>, String> {
@@ -45,7 +45,7 @@ fn 装假整段(
 }
 
 /// 装一个假流式引擎（走生产同一条 `install_engine` 路径）。
-fn 装假流式(
+fn fake_streaming_engine(
     slot: &Mutex<Option<Arc<FakeStreaming>>>,
     settings: &Mutex<Settings>,
 ) -> Result<Arc<FakeStreaming>, String> {
@@ -66,11 +66,11 @@ fn 装假流式(
 
 /// 设置没变就该复用同一个引擎 —— 不该每次都重新加载 239 MB 模型。
 #[test]
-fn 设置没变就复用引擎() {
+fn reuses_engine_when_settings_unchanged() {
     let slot: Mutex<Option<Arc<FakeEngine>>> = Mutex::new(None);
     let settings = Mutex::new(Settings::default());
-    let first = 装假整段(&slot, &settings).expect("装引擎");
-    let second = 装假整段(&slot, &settings).expect("装引擎");
+    let first = fake_offline_engine(&slot, &settings).expect("装引擎");
+    let second = fake_offline_engine(&slot, &settings).expect("装引擎");
     assert!(
         Arc::ptr_eq(&first, &second),
         "设置没变就该复用同一个引擎，不该重新加载模型"
@@ -82,12 +82,12 @@ fn 设置没变就复用引擎() {
 /// 陈旧判定原来只看语言和 ITN：换了模型目录照样复用旧引擎，
 /// 新模型目录被静默吞掉 —— 界面上看不出任何异常。
 #[test]
-fn 换了模型目录就重建引擎() {
+fn rebuilds_engine_when_model_dir_changes() {
     let slot: Mutex<Option<Arc<FakeEngine>>> = Mutex::new(None);
     let settings = Mutex::new(Settings::default());
-    let first = 装假整段(&slot, &settings).expect("装引擎");
+    let first = fake_offline_engine(&slot, &settings).expect("装引擎");
     settings.lock().unwrap().model_dir = Some("/models/other".into());
-    let second = 装假整段(&slot, &settings).expect("装引擎");
+    let second = fake_offline_engine(&slot, &settings).expect("装引擎");
     assert!(
         !Arc::ptr_eq(&first, &second),
         "换了模型目录必须重建引擎 —— 否则新模型目录被静默吞掉"
@@ -96,12 +96,12 @@ fn 换了模型目录就重建引擎() {
 
 /// 语言变了必须重建（这条原来就有，守住别改回去）。
 #[test]
-fn 换了语言就重建引擎() {
+fn rebuilds_engine_when_language_changes() {
     let slot: Mutex<Option<Arc<FakeEngine>>> = Mutex::new(None);
     let settings = Mutex::new(Settings::default());
-    let first = 装假整段(&slot, &settings).expect("装引擎");
+    let first = fake_offline_engine(&slot, &settings).expect("装引擎");
     settings.lock().unwrap().language = "en".into();
-    let second = 装假整段(&slot, &settings).expect("装引擎");
+    let second = fake_offline_engine(&slot, &settings).expect("装引擎");
     assert!(
         !Arc::ptr_eq(&first, &second),
         "换了语言必须重建引擎 —— 否则新语言被静默吞掉"
@@ -110,12 +110,12 @@ fn 换了语言就重建引擎() {
 
 /// 热词变了必须重建流式引擎 —— 词表是建解码器时定死的。
 #[test]
-fn 换了热词就重建流式引擎() {
+fn rebuilds_streaming_engine_when_hotwords_change() {
     let slot: Mutex<Option<Arc<FakeStreaming>>> = Mutex::new(None);
     let settings = Mutex::new(Settings::default());
-    let first = 装假流式(&slot, &settings).expect("装引擎");
+    let first = fake_streaming_engine(&slot, &settings).expect("装引擎");
     settings.lock().unwrap().hotwords = vec!["番茄".to_string()];
-    let second = 装假流式(&slot, &settings).expect("装引擎");
+    let second = fake_streaming_engine(&slot, &settings).expect("装引擎");
     assert!(
         !Arc::ptr_eq(&first, &second),
         "换了热词必须重建流式引擎 —— 否则新术语表被静默吞掉"
@@ -127,7 +127,7 @@ fn 换了热词就重建流式引擎() {
 /// 设置是在锁外被改的（set_model_dir / set_hotwords）：读设置和装引擎之间
 /// 只要有缝，旧快照就会把新设置顶掉，而且陈旧判定不自愈 —— 新设置被吞掉。
 #[test]
-fn 等锁期间设置改了也要用新设置() {
+fn uses_new_settings_when_changed_while_waiting_for_lock() {
     let slot = Arc::new(Mutex::new(None::<Arc<FakeEngine>>));
     let settings = Arc::new(Mutex::new(Settings::default()));
     let old_language = settings.lock().unwrap().language.clone();
@@ -145,7 +145,7 @@ fn 等锁期间设置改了也要用新设置() {
     // 线程 B 去装引擎（阻塞在槽锁上）。
     let slot2 = slot.clone();
     let settings2 = settings.clone();
-    let loader = std::thread::spawn(move || 装假整段(&slot2, &settings2));
+    let loader = std::thread::spawn(move || fake_offline_engine(&slot2, &settings2));
 
     std::thread::sleep(Duration::from_millis(100)); // 让 B 真的堵在锁上
     settings.lock().unwrap().language = "en".into(); // 等锁期间改设置
@@ -165,7 +165,7 @@ fn 等锁期间设置改了也要用新设置() {
 /// 在 async 执行器线程上死等，整个执行器就卡住了 —— 命令的响应会被
 /// 拖到模型加载完，用户看着像界面冻住了。
 #[test]
-fn 快路径在锁被占着时不干等() {
+fn fast_path_does_not_wait_when_lock_is_held() {
     let slot = Arc::new(Mutex::new(Some(Arc::new(7u8))));
     let (tx, rx) = mpsc::channel();
     let worker = slot.clone();
@@ -190,7 +190,7 @@ fn 快路径在锁被占着时不干等() {
 
 /// 锁空着的时候快路径照常拿到引擎。
 #[test]
-fn 快路径在锁空时拿到引擎() {
+fn fast_path_returns_engine_when_lock_is_free() {
     let slot: Mutex<Option<Arc<u8>>> = Mutex::new(Some(Arc::new(3)));
     assert_eq!(cached_engine(&slot).map(|engine| *engine), Some(3));
     let empty: Mutex<Option<Arc<u8>>> = Mutex::new(None);
@@ -198,7 +198,7 @@ fn 快路径在锁空时拿到引擎() {
 }
 
 #[test]
-fn 录音启动预留锁配置且退出复位() {
+fn recording_start_reserves_lock_and_resets_on_drop() {
     let state = AppState::new(Settings::default());
     assert!(!state.recording_starting.swap(true, Ordering::SeqCst));
     {
@@ -209,7 +209,7 @@ fn 录音启动预留锁配置且退出复位() {
 }
 
 #[test]
-fn 下载守卫在提前返回时复位() {
+fn download_guard_resets_on_early_return() {
     let state = AppState::new(Settings::default());
     state.downloading.store(true, Ordering::SeqCst);
     {
@@ -220,7 +220,7 @@ fn 下载守卫在提前返回时复位() {
 
 /// 整段在下载时，流式的下载按钮不该被判成 busy —— 两个下载各用各的标志。
 #[test]
-fn 下载标志互不阻塞() {
+fn download_flags_do_not_block_each_other() {
     let state = AppState::new(Settings::default());
     // 整段开始下载
     assert!(!state.downloading.swap(true, Ordering::SeqCst));
@@ -232,7 +232,7 @@ fn 下载标志互不阻塞() {
 }
 
 #[test]
-fn 词表只收单字符号() {
+fn vocab_keeps_only_single_char_tokens() {
     let tokens = "\
 <blk> 0
 <sos/eos> 1
@@ -258,7 +258,7 @@ fn 词表只收单字符号() {
 }
 
 #[test]
-fn 词表外的字整条热词作废() {
+fn hotword_with_out_of_vocab_char_is_dropped() {
     let mut vocab = HashSet::new();
     vocab.insert('你');
     vocab.insert('好');
@@ -280,7 +280,7 @@ fn 词表外的字整条热词作废() {
 }
 
 #[test]
-fn 读不到词表时热词全部保留() {
+fn keeps_all_hotwords_when_vocab_unreadable() {
     let hotwords = vec!["你好".to_string(), "渴了".to_string()];
     let (usable, ignored) = split_hotwords_by_vocab(&hotwords, &HashSet::new());
     assert_eq!(usable, hotwords);
@@ -292,7 +292,7 @@ fn 读不到词表时热词全部保留() {
 /// 流式侧原来只发 loading + ready，失败时不发 error —— 前端 state.engine
 /// 会永远停在 loading，徽标卡在「加载中」。抽成纯函数才能脱开 AppHandle 守住。
 #[test]
-fn 加载结果映射成引擎状态() {
+fn maps_load_result_to_engine_state() {
     let ok = engine_state_for::<()>(&Ok(()));
     assert_eq!(ok.phase, "ready");
     assert!(ok.message.is_none());
@@ -310,7 +310,7 @@ fn 加载结果映射成引擎状态() {
 /// 这条守的是「两边走同一个 `vad_config`」这个结构事实：参数不同就一定
 /// 是有人绕过 builder 手写了配置。
 #[test]
-fn 两模式_vad_参数一致() {
+fn both_modes_share_vad_params() {
     let offline = vad_config(Some("/tmp/vad.onnx".to_string()), MAX_SEGMENT_SECONDS);
     let streaming = vad_config(Some("/tmp/vad.onnx".to_string()), STREAM_MAX_SPEECH_SECONDS);
 
@@ -349,7 +349,7 @@ fn 两模式_vad_参数一致() {
 /// Status 只有 `cloud_configured: bool`，key 本身不在字段里 —— 这条守的是
 /// 将来有人往 Status 加 `cloud_api_key` 字段时，序列化断言会直接红。
 #[test]
-fn 云端配置只回布尔值_key不进状态() {
+fn cloud_status_exposes_bool_not_key() {
     /// 假 key：测试里出现的绝不能是真凭证。
     const DUMMY_KEY: &str = "vn-test-dummy-key";
 
@@ -405,7 +405,7 @@ fn 云端配置只回布尔值_key不进状态() {
 
 /// VAD 文件存在但无法创建 detector 时，云端启动必须失败，不能进入无门控分支。
 #[test]
-fn 云端vad创建失败拒绝启动() {
+fn cloud_start_fails_when_vad_cannot_be_created() {
     let config = cloud_vad_config("/definitely/not/a/real/silero_vad.onnx".into());
     assert_eq!(validate_cloud_vad(&config).unwrap_err(), "cloud.vadInvalid");
 }
