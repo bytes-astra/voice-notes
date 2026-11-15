@@ -95,7 +95,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'mode.streamingDownloadFirst': '先下载流式模型再使用',
   'mode.switchedBack': '流式模型只支持中文，已切回整段模式',
   'mode.cloud': '云端',
-  'mode.cloudDesc': '实时出字 · 上传到云端',
+  'mode.cloudDesc': '实时出字 · 音频上传',
   'mode.cloudNeedConfig': '先在设置里填写云端服务与凭据',
 
   'model.badge.streamingReady': '流式模型已就绪',

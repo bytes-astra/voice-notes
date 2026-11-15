@@ -86,7 +86,7 @@ window.I18N_LOCALES['en'] = {
 
   'mode.offline': 'One-shot',
   'mode.group': 'Transcription mode',
-  'mode.offlineDesc': 'Sentence by sentence · many languages',
+  'mode.offlineDesc': 'Sentence by sentence · multi-lang',
   'mode.streaming': 'Streaming',
   'mode.streamingDesc': 'Text as you speak · Chinese only',
   'mode.streamingDownload': 'Download streaming model',
@@ -98,7 +98,7 @@ window.I18N_LOCALES['en'] = {
   'mode.streamingDownloadFirst': 'Download the streaming model first',
   'mode.switchedBack': 'Streaming model only supports Chinese — switched back to one-shot',
   'mode.cloud': 'Cloud',
-  'mode.cloudDesc': 'Text as you speak · uploaded to a cloud service',
+  'mode.cloudDesc': 'Text as you speak · audio uploaded',
   'mode.cloudNeedConfig': 'Fill in the cloud service and its key in Settings first',
 
   'model.badge.streamingReady': 'Streaming model ready',

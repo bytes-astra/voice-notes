@@ -517,6 +517,24 @@ check(
   }),
 )
 check('英文转写页无横向溢出', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+// 英文副标题改短后三档应该排在一行（换行说明还是太长）。
+check(
+  '英文模式行排在一行',
+  await page.evaluate(() => {
+    const row = document.querySelector('.mode-row')
+    const chip = row?.querySelector('.mode-chip')
+    if (!row || !chip) return false
+    // 行内所有芯片的顶部对齐且只有一行：芯片数 == 第一行的芯片数。
+    const tops = [...row.querySelectorAll('.mode-chip')].map((el) => Math.round(el.getBoundingClientRect().top))
+    return new Set(tops).size === 1
+  }),
+  await page.evaluate(() => {
+    const row = document.querySelector('.mode-row')
+    if (!row) return '(找不到模式行)'
+    const tops = [...row.querySelectorAll('.mode-chip')].map((el) => Math.round(el.getBoundingClientRect().top))
+    return `芯片顶部：${tops.join(' / ')}`
+  }),
+)
 await page.locator('.nav-item[data-view="settings"]').click()
 await page.waitForTimeout(100)
 
