@@ -657,7 +657,9 @@ where
         // 打在终点会排到句子后面（读起来像句子之后才丢的）。
         for (start, dropped) in session.take_upload_gaps() {
             let marker = audio::gap_marker(dropped as u32, asr::SAMPLE_RATE as u32);
-            let segment = asr::Segment { text: marker, start, end: start };
+            // 起点是 16 kHz 采样数 → 转成秒（与句子区间同一把尺子）。
+            let at = start as f32 / asr::SAMPLE_RATE as f32;
+            let segment = asr::Segment { text: marker, start: at, end: at };
             gaps.push(segment.clone());
             if !discard.load(Ordering::Relaxed) {
                 emit(vec![StreamEvent::Segment(segment)]);
@@ -783,7 +785,8 @@ where
     // 收尾这一批的上传丢包也要报告：不然结尾一段音频静默消失。
     for (start, dropped) in session.take_upload_gaps() {
         let marker = audio::gap_marker(dropped as u32, asr::SAMPLE_RATE as u32);
-        let segment = asr::Segment { text: marker, start, end: start };
+        let at = start as f32 / asr::SAMPLE_RATE as f32;
+        let segment = asr::Segment { text: marker, start: at, end: at };
         gaps.push(segment.clone());
         emit(vec![StreamEvent::Segment(segment)]);
     }

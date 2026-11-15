@@ -62,7 +62,7 @@ fn 热词按火山规则清洗() {
     let mut words: Vec<String> = (0..120).map(|i| format!("词{i}")).collect();
     words.push("带\n控制符".into());
     let (clean, ignored) = clean_volcengine_keywords(&words);
-    assert_eq!(clean.len(), MAX_KEYWORD_TOKENS, "超上限要截断");
+    assert_eq!(clean.len(), MAX_KEYWORDS, "超上限要截断");
     assert_eq!(ignored, 1 + 20, "控制符 1 条 + 截断 20 条");
 }
 

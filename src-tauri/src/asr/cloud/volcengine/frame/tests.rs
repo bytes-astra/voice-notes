@@ -40,8 +40,9 @@ fn 解析服务端响应() {
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     frame.extend_from_slice(payload);
     match decode_server_frame(&frame).expect("应能解析") {
-        ServerFrame::Response { sequence, payload: body } => {
+        ServerFrame::Response { sequence, flags, payload: body } => {
             assert_eq!(sequence, 7);
+            assert_eq!(flags, FLAG_POSITIVE_SEQUENCE);
             assert_eq!(body, payload);
         }
         other => panic!("应是响应帧，实际 {other:?}"),
@@ -87,4 +88,20 @@ fn 截断帧报错而非崩溃() {
     frame.extend_from_slice(&1i32.to_be_bytes());
     frame.extend_from_slice(&100u32.to_be_bytes()); // 声称 100 字节，实际没有
     assert!(decode_server_frame(&frame).is_err(), "payload 被截断");
+}
+
+/// 最终响应也可能用「末包位 + 无 sequence」编码（sequence 读作 0）。
+#[test]
+fn 末包位也算最终响应() {
+    let payload = b"{}";
+    let mut frame = encode_header(MESSAGE_TYPE_FULL_SERVER_RESPONSE, FLAG_LAST_NO_SEQUENCE, SERIALIZATION_JSON).to_vec();
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(payload);
+    match decode_server_frame(&frame).expect("应能解析") {
+        ServerFrame::Response { sequence, flags, .. } => {
+            assert_eq!(sequence, 0, "没有 sequence 时读作 0");
+            assert_eq!(flags & FLAG_LAST_NO_SEQUENCE, FLAG_LAST_NO_SEQUENCE, "末包位要保留");
+        }
+        other => panic!("应是响应帧，实际 {other:?}"),
+    }
 }

@@ -25,14 +25,18 @@ use tokio_tungstenite::tungstenite::Message;
 use super::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics};
 
 mod frame;
-use frame::ServerFrame;
+use frame::{ServerFrame, FLAG_LAST_NO_SEQUENCE};
 
 /// 默认端点（双向流式优化版）。
 pub const DEFAULT_BASE_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 /// 默认资源 ID（模型 2.0，按小时计费）。用户可在设置里改。
 pub const DEFAULT_RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
-/// 双向流式的热词上限（官方文档：100 tokens）。
-pub const MAX_KEYWORD_TOKENS: usize = 100;
+/// 双向流式的热词条数上限。
+///
+/// 官方文档写的是「100 tokens」，**这里按条数截断** —— 中文一条通常 4~8
+/// token，100 条仍可能超过服务端按 token 算的上限（服务端会再截一次）。
+/// 名字用「条数」而不是 tokens，免得文档与实现对不上。
+pub const MAX_KEYWORDS: usize = 100;
 /// 控制帧排队等待的上限（秒）。
 const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -211,10 +215,10 @@ pub(crate) fn clean_volcengine_keywords(words: &[String]) -> (Vec<String>, usize
         }
         clean.push(word.clone());
     }
-    // 官方上限 100 tokens（双向流式）：超了截断。
-    if clean.len() > MAX_KEYWORD_TOKENS {
-        ignored += clean.len() - MAX_KEYWORD_TOKENS;
-        clean.truncate(MAX_KEYWORD_TOKENS);
+    // 上限 100 条（见 MAX_KEYWORDS）：超了截断。
+    if clean.len() > MAX_KEYWORDS {
+        ignored += clean.len() - MAX_KEYWORDS;
+        clean.truncate(MAX_KEYWORDS);
     }
     (clean, ignored)
 }
@@ -375,12 +379,13 @@ async fn run(
                     }
                 };
                 match frame::decode_server_frame(&raw) {
-                    Ok(ServerFrame::Response { sequence, payload }) => {
+                    Ok(ServerFrame::Response { sequence, flags, payload }) => {
                         for event in map_response(&payload, &mut emitted) {
                             on_event(event);
                         }
-                        // 最终响应：sequence 为负数。
-                        if pending_final && sequence < 0 {
+                        // 最终响应：sequence 为负数，或 flags 带「末包」位
+                        // （协议里两种编码都合法，只认一种会白等 10 秒）。
+                        if pending_final && (sequence < 0 || flags & FLAG_LAST_NO_SEQUENCE != 0) {
                             pending_final = false;
                             if let Some(done) = finishing.take() { let _ = done.send(()); break; }
                         }

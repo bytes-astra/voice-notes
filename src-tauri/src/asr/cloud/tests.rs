@@ -432,7 +432,7 @@ fn 上传丢包记下缺口位置() {
     let gaps = session.take_upload_gaps();
     assert_eq!(gaps.len(), 1, "丢包要有缺口：{gaps:?}");
     assert_eq!(gaps[0].1, 16_000, "丢掉的采样数要对");
-    assert!(gaps[0].0 < 0.01, "缺口起点是这段音频的起点：{gaps:?}");
+    assert_eq!(gaps[0].0, 0, "缺口起点是这段音频的起点（16 kHz 采样数）：{gaps:?}");
 }
 
 
@@ -511,4 +511,23 @@ fn 能力不支持术语表时不带词() {
     let (words, ignored) = cloud_keywords(&settings, &caps);
     assert!(words.is_empty(), "不支持就不该带词：{words:?}");
     assert_eq!(ignored, 1, "被丢弃的词数要报出来");
+}
+
+/// 连续丢包要并成一条缺口：网络持续背压时逐条上报会刷出几百个
+/// [[gap:1]]，而且每条都声称丢了 1 秒（累计时长自相矛盾）。
+#[test]
+fn 连续丢包并成一条缺口() {
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    // 连续两批都丢：第一批 0.8 秒，第二批 0.8 秒（接得上）。
+    state.lock().unwrap().dropped_reply = 12_800;
+    session.advance_samples(12_800);
+    session.push(&[0.2; 12_800]);
+    state.lock().unwrap().dropped_reply = 12_800;
+    session.advance_samples(12_800);
+    session.push(&[0.2; 12_800]);
+    let gaps = session.take_upload_gaps();
+    assert_eq!(gaps.len(), 1, "连续的丢包要并成一条：{gaps:?}");
+    assert_eq!(gaps[0].1, 25_600, "累计采样数要对");
 }

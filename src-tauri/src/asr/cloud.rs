@@ -315,11 +315,13 @@ pub struct CloudStreamingSession {
     segments: Vec<Segment>,
     /// 出错时的字典错误码：已定稿的句子留着，界面上另外提示。
     error: Option<String>,
-    /// 上传队列满载时丢掉的音频：(起点秒, 丢掉的 16 kHz 采样数)。
+    /// 上传队列满载时丢掉的音频：(起点 16 kHz 采样数, 丢掉的采样数)。
+    ///
+    /// 起点用采样数（不是秒）：连续丢包要判断「接得上」，只有同单位才能比。
     ///
     /// 这些采样**已经喂进会话**（时钟里算过了），所以不能再推进时钟 ——
     /// 但它们没送到服务端，识别结果里要有可见缺口。
-    upload_gaps: Vec<(f32, usize)>,
+    upload_gaps: Vec<(usize, usize)>,
     started: Instant,
 }
 
@@ -418,7 +420,7 @@ impl CloudStreamingSession {
     }
 
     /// 取回上传丢包的缺口（起点秒, 丢掉的 16 kHz 采样数）。
-    pub fn take_upload_gaps(&mut self) -> Vec<(f32, usize)> {
+    pub fn take_upload_gaps(&mut self) -> Vec<(usize, usize)> {
         std::mem::take(&mut self.upload_gaps)
     }
 
@@ -450,8 +452,16 @@ impl CloudStreamingSession {
                 self.fed_since_commit = true;
                 if dropped > 0 {
                     // 没送出去：缺口起点就是这段音频的起点（整段都没发出去）。
-                    let start = audio_start as f32 / SAMPLE_RATE as f32;
-                    self.upload_gaps.push((start, dropped));
+                    let start = audio_start;
+                    // **连续丢包并成一条**：网络持续背压时每一批都会丢一点，
+                    // 逐条上报会刷出几百个 [[gap:1]]，而且每条都声称丢了
+                    // 1 秒（累计时长自相矛盾）。相邻的丢包接得上就并进去。
+                    match self.upload_gaps.last_mut() {
+                        Some(last) if last.0 + last.1 == start => {
+                            last.1 += dropped;
+                        }
+                        _ => self.upload_gaps.push((start, dropped)),
+                    }
                     crate::log::warn(format!(
                         "云端上传队列满，丢掉 {dropped} 个 16kHz 采样"
                     ));
@@ -507,8 +517,15 @@ impl CloudStreamingSession {
         if let Some(resampler) = &self.resampler {
             let tail = resampler.resample(&[], true);
             if !tail.is_empty() {
-                if let Err(error) = self.provider.send_audio(&to_i16(&tail)) {
-                    self.error = Some(error);
+                match self.provider.send_audio(&to_i16(&tail)) {
+                    Ok(dropped) => {
+                        if dropped > 0 {
+                            // 尾部重采样出来的一小段没送出去 → 记成缺口。
+                            let start = self.fed_end;
+                            self.upload_gaps.push((start, dropped));
+                        }
+                    }
+                    Err(error) => self.error = Some(error),
                 }
             }
         }

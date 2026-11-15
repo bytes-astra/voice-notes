@@ -78,8 +78,8 @@ pub fn encode_audio(payload: &[u8], last: bool) -> Vec<u8> {
 /// 服务端帧。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerFrame {
-    /// 识别结果（`sequence` 为负数表示这是最终响应）。
-    Response { sequence: i32, payload: Vec<u8> },
+    /// 识别结果（`sequence` 为负数、或 flags 带末包位，都表示这是最终响应）。
+    Response { sequence: i32, flags: u8, payload: Vec<u8> },
     /// 协议错误帧。
     Error { code: u32, message: String },
 }
@@ -108,6 +108,7 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
             }
             Ok(ServerFrame::Response {
                 sequence,
+                flags,
                 payload: data[offset..end].to_vec(),
             })
         }
