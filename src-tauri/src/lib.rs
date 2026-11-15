@@ -357,13 +357,15 @@ fn set_cloud_config(
     base_url: String,
     api_key: Option<String>,
     model: String,
+    provider: Option<String>,
+    resource_id: Option<String>,
 ) -> Result<Status, String> {
     {
         let mut guard = state
             .settings
             .lock()
             .map_err(|_| code("error.settingsState"))?;
-        settings::apply_cloud_config(&mut guard, base_url, api_key, model);
+        settings::apply_cloud_config(&mut guard, base_url, api_key, model, provider, resource_id);
     }
     persist(&app, &state)?;
     // 凭据不进日志：这里只记「配置已保存」，不打印任何 key 内容。

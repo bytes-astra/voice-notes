@@ -14,7 +14,7 @@ pub const MAX_HOTWORDS: usize = 100;
 pub const MAX_HOTWORD_CHARS: usize = 32;
 pub const MODES: [&str; 3] = ["offline", "streaming", "cloud"];
 /// 云端 provider 取值（`cloud_provider`）。默认 `realtime`（Realtime JSON 族）。
-pub const CLOUD_PROVIDERS: [&str; 1] = ["realtime"];
+pub const CLOUD_PROVIDERS: [&str; 2] = ["realtime", "volcengine"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -39,6 +39,8 @@ pub struct Settings {
     pub cloud_api_key: String,
     /// 云端模型名（provider 相关）
     pub cloud_model: String,
+    /// 云端资源标识（火山的 `X-Api-Resource-Id`；空 = 用该 provider 的默认）。
+    pub cloud_resource_id: String,
     /// 云端 provider：`realtime`（Realtime JSON 族）
     pub cloud_provider: String,
 }
@@ -57,6 +59,7 @@ impl Default for Settings {
             cloud_base_url: String::new(),
             cloud_api_key: String::new(),
             cloud_model: String::new(),
+            cloud_resource_id: String::new(),
             cloud_provider: "realtime".into(),
         }
     }
@@ -181,11 +184,23 @@ pub fn apply_cloud_config(
     base_url: String,
     api_key: Option<String>,
     model: String,
+    provider: Option<String>,
+    resource_id: Option<String>,
 ) {
     settings.cloud_base_url = base_url.trim().to_string();
     settings.cloud_model = model.trim().to_string();
     if let Some(key) = api_key {
         settings.cloud_api_key = key.trim().to_string();
+    }
+    // provider 只接受已知值：非法值回退默认（normalize 也会做一次）。
+    if let Some(provider) = provider {
+        let provider = provider.trim();
+        if CLOUD_PROVIDERS.contains(&provider) {
+            settings.cloud_provider = provider.to_string();
+        }
+    }
+    if let Some(resource_id) = resource_id {
+        settings.cloud_resource_id = resource_id.trim().to_string();
     }
 }
 

@@ -19,6 +19,8 @@ use super::{AsrSession, Segment, StreamEvent, Timeline, Transcript, SAMPLE_RATE}
 pub mod realtime;
 // 中间结果归一器：把各家的协议形态归一成「当前句的累计串」。
 pub mod partial;
+// 火山（豆包）双向流式 ASR provider：自研二进制帧协议。
+pub mod volcengine;
 
 
 /// 句标识：协议给的句子 id。没有 id 的协议（服务端断句族）用 `None`。
@@ -74,6 +76,7 @@ pub fn valid_capabilities(caps: &Capabilities) -> bool {
 pub fn provider_capabilities(id: &str) -> Option<Capabilities> {
     match id {
         "realtime" => Some(realtime::RealtimeProvider::CAPABILITIES),
+        "volcengine" => Some(volcengine::VolcengineProvider::CAPABILITIES),
         _ => None,
     }
 }
@@ -204,6 +207,33 @@ pub fn create_provider(
                     api_key: settings.cloud_api_key.clone(),
                     model,
                     languages,
+                    keywords,
+                },
+            )))
+        }
+        "volcengine" => {
+            let base_url = if settings.cloud_base_url.trim().is_empty() {
+                volcengine::DEFAULT_BASE_URL.to_string()
+            } else {
+                settings.cloud_base_url.trim().to_string()
+            };
+            let resource_id = if settings.cloud_resource_id.trim().is_empty() {
+                volcengine::DEFAULT_RESOURCE_ID.to_string()
+            } else {
+                settings.cloud_resource_id.trim().to_string()
+            };
+            // 术语表：能力层决定要不要带，火山协议层决定哪些能带（上限 100 tokens）。
+            let (words, cap_ignored) = cloud_keywords(settings, &caps);
+            let (keywords, proto_ignored) = volcengine::clean_volcengine_keywords(&words);
+            let ignored = cap_ignored + proto_ignored;
+            if ignored > 0 {
+                crate::log::warn(format!("云端热词有 {ignored} 条未通过协议校验，已忽略"));
+            }
+            Ok(Box::new(volcengine::VolcengineProvider::new(
+                volcengine::VolcengineConfig {
+                    base_url,
+                    api_key: settings.cloud_api_key.clone(),
+                    resource_id,
                     keywords,
                 },
             )))

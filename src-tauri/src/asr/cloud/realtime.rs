@@ -93,7 +93,10 @@ impl RealtimeProvider {
     }
 
     /// 后台任务报的错（如果有）：连接断了之后，后面的发送都要失败。
-    fn take_error(&self) -> Option<String> {
+    ///
+    /// **不叫 `take_error`**：trait 上有同名默认方法，固有方法会被它遮蔽
+    /// （调用落回默认实现 → 恒为 `None` → 后台错误永远读不出来）。
+    fn take_background_error(&self) -> Option<String> {
         self.errors.try_recv().ok()
     }
 }
@@ -144,7 +147,7 @@ impl CloudProvider for RealtimeProvider {
     }
 
     fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, String> {
-        if let Some(error) = self.take_error() {
+        if let Some(error) = self.take_background_error() {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
@@ -163,7 +166,7 @@ impl CloudProvider for RealtimeProvider {
     }
 
     fn commit(&mut self) -> Result<(), String> {
-        if let Some(error) = self.take_error() {
+        if let Some(error) = self.take_background_error() {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
@@ -175,7 +178,7 @@ impl CloudProvider for RealtimeProvider {
     }
 
     fn finish(&mut self) -> Result<(), String> {
-        if let Some(error) = self.take_error() {
+        if let Some(error) = self.take_background_error() {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
@@ -185,15 +188,17 @@ impl CloudProvider for RealtimeProvider {
         // 同 `commit`：收尾命令丢了就等于最后一句永远等不到结果。
         send_control(commands, Command::Finish(done_tx), CONTROL_SEND_TIMEOUT)?;
         match done_rx.recv_timeout(FINISH_TIMEOUT) {
-            Ok(()) => self.take_error().map_or(Ok(()), Err),
+            Ok(()) => self.take_background_error().map_or(Ok(()), Err),
             Err(_) => Err(self
-                .take_error()
+                .take_background_error()
                 .unwrap_or_else(|| crate::code("cloud.timeout"))),
         }
     }
 
+    /// 后台错误：转发到 provider 自己的错误通道（**不递归**：这里调的
+    /// 是固有方法 `take_background_error`，不是 trait 的同名方法）。
     fn take_error(&mut self) -> Option<String> {
-        RealtimeProvider::take_error(self)
+        self.take_background_error()
     }
 }
 

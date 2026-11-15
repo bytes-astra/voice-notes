@@ -66,6 +66,7 @@ const installMock = () => {
     cloudBaseUrl: '',
     cloudProvider: 'realtime',
     cloudSupportsKeywords: true,
+    cloudResourceId: '',
     cloudModel: '',
   }
   window.__mockCalls = []
@@ -115,6 +116,8 @@ const installMock = () => {
               ...window.__mockStatus,
               cloudBaseUrl: args.baseUrl ?? '',
               cloudModel: args.model ?? '',
+              cloudProvider: args.provider ?? window.__mockStatus.cloudProvider,
+              cloudResourceId: args.resourceId ?? window.__mockStatus.cloudResourceId,
               // 凭据只记「有没有」，明文不留（跟真后端一个口径）。
               cloudConfigured:
                 args.apiKey === undefined
@@ -1262,6 +1265,28 @@ check(
   (await page.evaluate(() => window.__mockStatus.cloudConfigured)) === true,
 )
 check('密钥不回显', (await page.locator('#cloud-api-key').inputValue()) === '')
+// 云端服务可选：不同 provider 的配置项不同（火的要资源标识，不要模型名）。
+await page.locator('#cloud-provider-select .select-button').click()
+await page.waitForTimeout(150)
+await page.locator('.select-popup .select-item', { hasText: '火山' }).first().click()
+await page.waitForTimeout(300)
+check(
+  '切到火山后出现资源标识、隐藏模型名',
+  (await page.locator('#cloud-resource-field').isVisible()) &&
+    !(await page.locator('#cloud-model-field').isVisible()),
+  `资源标识可见=${await page.locator('#cloud-resource-field').isVisible()} 模型可见=${await page.locator('#cloud-model-field').isVisible()}`,
+)
+check(
+  '云端服务选择已保存',
+  (await page.evaluate(() => window.__mockStatus.cloudProvider)) === 'volcengine',
+  await page.evaluate(() => window.__mockStatus.cloudProvider),
+)
+// 切回默认服务
+await page.locator('#cloud-provider-select .select-button').click()
+await page.waitForTimeout(150)
+await page.locator('.select-popup .select-item', { hasText: 'OpenAI' }).first().click()
+await page.waitForTimeout(300)
+
 // 当前 provider 不支持术语表时，界面要提示 —— 术语表是本地流式与云端
 // 共用的全局设置，只能提示，不能隐藏入口。
 await page.evaluate(() => { window.__mockStatus.cloudSupportsKeywords = false })

@@ -149,6 +149,8 @@ pub struct Status {
     pub cloud_provider: String,
     /// 当前 provider 是否支持请求级术语表（界面据此提示限制）。
     pub cloud_supports_keywords: bool,
+    /// 云端资源标识（火山的 `X-Api-Resource-Id`；空 = 用默认）。不是凭据。
+    pub cloud_resource_id: String,
     /// 云端模型名（空 = 用 provider 默认模型）。不是凭据，可以回传。
     pub cloud_model: String,
 }
@@ -241,6 +243,7 @@ pub fn status_of(app: &AppHandle, state: &AppState) -> Status {
             .map(|caps| caps.supports_keywords)
             .unwrap_or(false),
         cloud_model: settings.cloud_model.clone(),
+        cloud_resource_id: settings.cloud_resource_id.clone(),
     }
 }
 

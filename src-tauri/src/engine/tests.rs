@@ -393,6 +393,7 @@ fn cloud_status_exposes_bool_not_key() {
         cloud_base_url: "https://example.invalid/v1".into(),
         cloud_provider: "realtime".into(),
         cloud_supports_keywords: true,
+        cloud_resource_id: "volc.seedasr.sauc.duration".into(),
         cloud_model: "mock-model".into(),
     };
     let json = serde_json::to_string(&status).unwrap();

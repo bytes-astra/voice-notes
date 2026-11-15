@@ -216,6 +216,10 @@
               <p class="muted small" data-i18n="settings.cloudHint">可选。填好后可以在转写页选「云端」模式；不填就只在本机处理。</p>
               <p class="muted small" id="cloud-status"></p>
               <p class="muted small" id="cloud-keyword-hint"></p>
+              <div class="field">
+                <span class="field-label" data-i18n="settings.cloudProvider">云端服务</span>
+                <div id="cloud-provider-select" class="select" data-i18n-aria="settings.cloudProvider"></div>
+              </div>
               <label class="field">
                 <span class="field-label" data-i18n="settings.cloudBaseUrl">服务地址</span>
                 <input type="text" id="cloud-base-url" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudBaseUrlPlaceholder" />
@@ -224,9 +228,13 @@
                 <span class="field-label" data-i18n="settings.cloudApiKey">API 密钥</span>
                 <input type="password" id="cloud-api-key" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudApiKeyPlaceholder" />
               </label>
-              <label class="field">
+              <label class="field" id="cloud-model-field">
                 <span class="field-label" data-i18n="settings.cloudModel">模型</span>
                 <input type="text" id="cloud-model" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudModelPlaceholder" />
+              </label>
+              <label class="field" id="cloud-resource-field">
+                <span class="field-label" data-i18n="settings.cloudResourceId">资源标识</span>
+                <input type="text" id="cloud-resource-id" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudResourceIdPlaceholder" />
               </label>
               <div class="row">
                 <button type="button" class="btn small primary" id="cloud-save" data-i18n="settings.cloudSave">保存云端配置</button>

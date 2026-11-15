@@ -9,7 +9,7 @@ import { renderHistory, saveHistory, setHistoryLoadHandler } from './history.js'
 import { clearResult, relocalizeResult, renderResultActions, showTranscript } from './result.js'
 import {
   clearCloudKey, downloadModel, downloadStreamingModel, loadDevices,
-  localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
+  cloudProviderItems, localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
   saveCloudConfig, setMode, setSelects, warmUp,
 } from './status.js'
 import {
@@ -21,6 +21,7 @@ import { copyText, saveText } from './export.js'
 import { renderThemeIcon, syncWindowBackground, syncWindowTheme, toggleTheme } from './theme.js'
 
 let deviceSelect = null
+let cloudProviderSelect = null
 let localeSelect = null
 // 界面语言是否已经初始化过：第一次 applyLocale 是启动时的初始化，不算「切换」。
 let localeReady = false
@@ -270,6 +271,24 @@ export function bindUI() {
     onChange: (value) => applyLocale(value),
   })
   localeSelect.setItems(localeItems(), localStorage.getItem(LOCALE_KEY) || 'system')
+  cloudProviderSelect = UISelect.create(els.cloudProviderSelect, {
+    onChange: async (value) => {
+      // 换服务 = 换一套配置含义：立刻存下选择，再按新 provider 刷新字段。
+      try {
+        state.status = await invoke('set_cloud_config', {
+          baseUrl: els.cloudBaseUrl.value.trim(),
+          apiKey: undefined,
+          model: els.cloudModel.value.trim(),
+          provider: value,
+          resourceId: els.cloudResourceId.value.trim(),
+        })
+        renderStatus()
+      } catch (error) {
+        toast(fmtError(error), 'error')
+      }
+    },
+  })
+  cloudProviderSelect.setItems(cloudProviderItems(), state.status?.cloudProvider || 'realtime')
   deviceSelect = UISelect.create(els.deviceSelect, {
     // 列设备会触发 macOS 的麦克风权限弹窗，所以只在用户打开下拉框时才列
     onBeforeOpen: loadDevices,
@@ -289,7 +308,7 @@ export function bindUI() {
     [{ value: savedDevice, label: savedDevice || t('record.deviceDefault') }],
     savedDevice,
   )
-  setSelects(deviceSelect, localeSelect)
+  setSelects(deviceSelect, localeSelect, cloudProviderSelect)
   els.pickFileBtn?.addEventListener('click', () => void pickAndTranscribeFile())
 
   document.addEventListener('keydown', (event) => {

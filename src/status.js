@@ -5,11 +5,13 @@ import { confirmDialog, invoke, logEvent, openDialog } from './tauri.js'
 
 /* 下拉框实例由入口创建后交给这里（status 不该认识 applyLocale，否则会和入口互相依赖） */
 let deviceSelect = null
+let cloudProviderSelect = null
 let localeSelect = null
 
-export function setSelects(device, locale) {
+export function setSelects(device, locale, cloudProvider) {
   deviceSelect = device
   localeSelect = locale
+  cloudProviderSelect = cloudProvider
 }
 
 /// 模型徽标文案：流式与整段用同一套说法，避免两处提示对不上。
@@ -118,6 +120,14 @@ export function renderStatus() {
   renderMode()
 }
 
+/// 云端服务（provider）选项。
+export function cloudProviderItems() {
+  return [
+    { value: 'realtime', label: t('settings.cloudProviderRealtime') },
+    { value: 'volcengine', label: t('settings.cloudProviderVolcengine') },
+  ]
+}
+
 /// 云端配置表单：回填服务地址与模型名。
 ///
 /// 凭据不会回传前端 —— 密钥输入框留空，配没配用一行状态字说明。
@@ -139,6 +149,13 @@ function renderCloudConfig() {
   if (document.activeElement !== els.cloudModel) {
     els.cloudModel.value = status.cloudModel || ''
   }
+  if (document.activeElement !== els.cloudResourceId) {
+    els.cloudResourceId.value = status.cloudResourceId || ''
+  }
+  // 配置项按 provider 解释：火山的「模型名」是固定的，资源标识才有意义。
+  const provider = status.cloudProvider || 'realtime'
+  els.cloudModelField.classList.toggle('hidden', provider !== 'realtime')
+  els.cloudResourceField.classList.toggle('hidden', provider !== 'volcengine')
 }
 
 /// 云端模式会把录音上传出去：第一次必须用户明确同意。
@@ -161,6 +178,11 @@ async function confirmCloudUpload() {
   }
 }
 
+/// 当前选中的云端服务（没选就按默认走）。
+function cloudProviderValue() {
+  return cloudProviderSelect?.value || state.status?.cloudProvider || 'realtime'
+}
+
 /// 保存云端配置。
 ///
 /// 凭据不会回传前端，所以密钥框留空 = 不改；要清空走「清除凭据」。
@@ -171,6 +193,8 @@ export async function saveCloudConfig() {
       baseUrl: els.cloudBaseUrl.value.trim(),
       apiKey: typed ? typed : undefined,
       model: els.cloudModel.value.trim(),
+      provider: cloudProviderValue(),
+      resourceId: els.cloudResourceId.value.trim(),
     })
     renderStatus()
     els.cloudApiKey.value = ''
@@ -187,6 +211,8 @@ export async function clearCloudKey() {
       baseUrl: els.cloudBaseUrl.value.trim(),
       apiKey: '',
       model: els.cloudModel.value.trim(),
+      provider: cloudProviderValue(),
+      resourceId: els.cloudResourceId.value.trim(),
     })
     renderStatus()
     els.cloudApiKey.value = ''
@@ -337,6 +363,9 @@ export function refreshSelectItems(localeValue) {
     deviceSelect.setItems(items, items.some((item) => item.value === current) ? current : '')
   }
   if (localeSelect) localeSelect.setItems(localeItems(), localeValue)
+  if (cloudProviderSelect) {
+    cloudProviderSelect.setItems(cloudProviderItems(), state.status?.cloudProvider || 'realtime')
+  }
 }
 
 /// 百分比：两个进度条共用一份算法。
