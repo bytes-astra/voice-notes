@@ -231,7 +231,17 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   - **映射的四条硬规则**（每条都有单测）：`text` 是整句快照（**替换不追加**）；心跳先判（`sentence_id` 固定 0，否则会误把上一句定稿）；新句出现而上一句未定稿 → **按最后快照防御性定稿**（否则会话层的 Partial 替换语义会让上一句文字永久消失）；已定稿句的后续事件**一律忽略**（防重复 Final，也防迟到的 `end` 把新句的实时行清掉）。
   - **收尾流程有假服务端测试**（`finish_keeps_reading_and_flushes_leftover_packet`）：本地 `TcpListener` + `accept_async` 起一个假 WebSocket 服务端，收到 `finish-task` 后才发两条尾部结果、最后才发 `task-finished`。它守两条规则：**残包要在 `finish-task` 之前发出去**（否则最后 0~99 ms 永不上传、句尾少字）、**`finish-task` 之后要继续收**（发完就关会丢尾部结果）。
   - **阿里真机冒烟**：`VOICE_NOTES_ALIYUN_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --lib asr::cloud::aliyun::tests::live_smoke -- --nocapture`。
-    **已验证通过**（2026-11-16，模型 `qwen-audio-3.1-asr-flash-streaming`）：7 条中间结果 + 1 条定稿「开放时间早上9点至下午5点。」（fixture `tests/fixtures/zh.wav`），最后一条中间结果是「开放时间早上9点至下午5」（草稿还没落定，最后的「。」在定稿里）。端点、鉴权、`run-task` 请求体、二进制音频帧、`sentence` + `stash` 的结果结构、`finish-task` → `task-finished` 整条链路都对上了真实服务。这次实测确认了两件：② 同一句的连续结果确实**越来越完整**（最后一条实时行是定稿文本去掉末尾标点的那一截），③ `heartbeat: true` 没有产生额外事件。**①「不传 `language_hints` 时是否自动识别多语种」这次没测**（fixture 只有中文）—— 「30 语种」的说法目前只有官方文档依据，要换语种实测。
+    **已验证通过**（2026-11-16，模型 `qwen-audio-3.1-asr-flash-streaming`）：7 条中间结果 + 1 条定稿「开放时间早上9点至下午5点。」（fixture `tests/fixtures/zh.wav`），最后一条中间结果是「开放时间早上9点至下午5」（草稿还没落定，最后的「。」在定稿里）。端点、鉴权、`run-task` 请求体、二进制音频帧、`sentence` + `stash` 的结果结构、`finish-task` → `task-finished` 整条链路都对上了真实服务。这次实测确认了四件：
+1. **多句断句正常**：同一段音频喂两遍 → 断成两句（定稿 2 条）。
+2. **同一句的连续结果确实越来越完整**（最后一条实时行是定稿文本去掉末尾标点的那一截）。
+3. **`heartbeat: true` 没有产生额外事件**。
+4. **服务端在句子开头会「漂」**：开头几条中间结果是「太」→「菜放」→「菜放时间在」，之后才修正成「开放时间早上9点」——ASR 的典型开头漂移，我们如实显示，不做特殊处理。
+
+**两点这次没验**：
+- **「不传 `language_hints` 时是否自动识别多语种」**：fixture 只有中文，「30 语种」目前只有官方文档依据，要换语种实测。
+- **即时热词的实际增益**：fixture 本身就含「开放时间」，加与不加热词看不出差别；要验证增益得用一段**不含该词**的音频。
+
+**注意服务端的识别结果有随机性**：同一段音频两次运行，定稿文本不同（一次「开放时间：早上9点至下午5点。」带冒号，一次「开放时间早上9点至下午5点。」不带）—— 排查识别差异时别把这个当 bug。
   - **官方文档出处**（2026-11-16 核对）：
     - 协议与事件：<https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api>、<https://help.aliyun.com/zh/model-studio/fun-asr-client-events>、<https://help.aliyun.com/zh/model-studio/fun-asr-server-events>
     - 音频规格与「整句快照」口径：<https://help.aliyun.com/zh/model-studio/automatic-speech-recognition>
