@@ -690,6 +690,8 @@ check(
 )
 
 // ②' 同一 start、缺口**先**到（新 max 处）：缺口仍然排在句子前面。
+//    它抓的是「同 start 时把句子排到缺口前」的反向实现（把 tie-break 反过来
+//    就会红）；「完全不排序」它抓不到 —— 那种实现恰好也是缺口在前。
 await emitSegment('[[gap:22]]', 22, 22)
 await page.waitForTimeout(60)
 await emitSegment('同刻先缺口', 22, 22)
@@ -753,7 +755,10 @@ check(
   ['第一句', '第二句', '第三句'].every((t) => final.includes(t)),
   final.slice(0, 60)
 )
-check('停止后迟到的句子不混进最终转写', !final.includes('迟到的一句'), final.slice(-60))
+// 守的是「最终转写以后端返回的全文为准」这条契约（迟到的句子不混进去）。
+// 注意这条比「段列表重建不会把它带进来」弱：迟到段发出时用户正处于编辑态，
+// 它走的是编辑分支、根本没进段列表。
+check('最终转写以后端返回的全文为准', !final.includes('迟到的一句'), final.slice(-60))
 check('停止后回到空闲', (await page.locator('.app').getAttribute('data-phase')) === 'idle')
 check('停止后语言与 ITN 解锁', await page.evaluate(() =>
   [...document.querySelectorAll('#lang-row .chip')].every((chip) => !chip.disabled) &&
