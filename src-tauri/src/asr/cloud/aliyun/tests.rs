@@ -487,3 +487,76 @@ fn finish_之后继续收尾部结果且残包先发出去() {
         "不足一包的残包必须在 finish-task 之前发出去（否则句尾少字）"
     );
 }
+
+// ── 真机冒烟 ────────────────────────────────────────────────────────
+
+/// 真服务冒烟：连上百炼 → 喂一段真实语音 → 收中间结果与定稿 → 收尾。
+///
+///   VOICE_NOTES_ALIYUN_KEY=... cargo test --manifest-path src-tauri/Cargo.toml \
+///     --lib asr::cloud::aliyun::tests::真服务冒烟 -- --nocapture
+///
+/// **没有环境变量就跳过**（打印一行「跳过」，不打印 key）。key 只从环境变量
+/// 读 —— 不写进仓库、不进日志、不进断言消息。
+///
+/// 冒烟时顺带确认三件官方口径存疑的事（结果记进 `docs/HOW_TO_VERIFY.md`）：
+/// ① 不传 `language_hints` 时是否真的自动识别多语种；
+/// ② 同一句的连续 `text` 是否「越改越完整」而不是只在末尾追加；
+/// ③ `heartbeat: true` 会不会产生额外事件。
+#[test]
+fn 真服务冒烟() {
+    let Ok(key) = std::env::var("VOICE_NOTES_ALIYUN_KEY") else {
+        println!("跳过：未设置 VOICE_NOTES_ALIYUN_KEY");
+        return;
+    };
+
+    // 真实语音 fixture（16 kHz / 单声道 / 5.6 秒）。
+    let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
+    let samples: Vec<f32> = wave.samples().to_vec();
+    assert_eq!(wave.sample_rate(), 16_000, "fixture 应该是 16 kHz");
+
+    let config = AliyunConfig {
+        base_url: String::new(),
+        api_key: key,
+        model: String::new(),
+        // 不传语言：确认「自动识别」真的可用。
+        language_hint: None,
+        context_text: build_context(&["开放时间".to_string()]).0,
+    };
+    use crate::asr::cloud::{CloudStreamingSession, StreamEvent};
+    use crate::asr::AsrSession;
+    let mut session = CloudStreamingSession::new(Box::new(AliyunProvider::new(config)));
+    session.connect().expect("应能连上百炼");
+
+    let mut finals: Vec<String> = Vec::new();
+    let mut partials: Vec<String> = Vec::new();
+    let collect = |events: Vec<StreamEvent>, finals: &mut Vec<String>, partials: &mut Vec<String>| {
+        for event in events {
+            match event {
+                StreamEvent::Partial(text) => partials.push(text),
+                StreamEvent::Segment(segment) => finals.push(segment.text),
+            }
+        }
+    };
+    // 按 20 ms 一批喂进去，每批之后收一次后台事件。
+    for part in samples.chunks(16_000 / 50) {
+        session.advance_samples(part.len());
+        collect(session.push(part), &mut finals, &mut partials);
+        collect(session.poll(), &mut finals, &mut partials);
+    }
+    // 收尾：服务端断句族不需要 force_end，直接 finish 等 task-finished。
+    collect(session.finish(), &mut finals, &mut partials);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline && finals.is_empty() {
+        collect(session.poll(), &mut finals, &mut partials);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    println!("中间结果条数：{}", partials.len());
+    println!("定稿句子：{finals:?}");
+    println!("最后一条中间结果：{:?}", partials.last());
+    assert!(!finals.is_empty(), "应该至少收到一句定稿");
+    assert!(
+        finals.iter().any(|text| !text.trim().is_empty()),
+        "定稿不应全是空的：{finals:?}"
+    );
+}

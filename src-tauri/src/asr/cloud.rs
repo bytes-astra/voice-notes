@@ -53,7 +53,9 @@ impl SendOutcome {
 pub enum PartialSemantics {
     /// 增量拼接：每次追加一段（OpenAI Realtime 的 `.delta`）。
     Delta,
-    /// 确认前缀加草稿：整体替换成「确认前缀 + 草稿」（百炼的 `.text` + `stash`）。
+    /// 确认前缀加草稿：整体替换成「确认前缀 + 草稿」。百炼 Qwen Realtime 的
+    /// `.text` + `stash` 是标准形态；火山与阿里的「确认前缀为空、整句快照」
+    /// 是它的退化形态。
     Preview,
     /// 区间替换：按区间改写已识别片段（讯飞的 `pgs` + `rg`）。
     Range,
@@ -88,7 +90,7 @@ pub fn valid_capabilities(caps: &Capabilities) -> bool {
     }
 }
 
-/// 按 provider id 静态查能力。
+/// 按 provider id 静态查能力（`realtime` / `volcengine` / `aliyun`）。
 ///
 /// 表项的唯一来源是各 provider 实现自报的常量（`XProvider::CAPABILITIES`），
 /// 不手写第二份 —— 两处漂移会让「状态回传的能力」与「实际行为」分叉。
