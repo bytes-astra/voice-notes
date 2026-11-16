@@ -195,6 +195,35 @@ fn finals(events: &[CloudEvent]) -> Vec<String> {
         .collect()
 }
 
+/// 造一条 `result-generated` 的**原始协议 JSON**（官方形状：
+/// `payload.output.sentence`，草稿在 `sentence.stash` 里）。
+fn result_generated(sentence_id: i64, text: &str, stash_text: &str, stash_id: i64) -> String {
+    json!({
+        "header": { "event": "result-generated" },
+        "payload": { "output": { "sentence": {
+            "sentence_id": sentence_id,
+            "sentence_end": false,
+            "text": text,
+            "heartbeat": false,
+            "stash": { "sentence_id": stash_id, "text": stash_text },
+        } } },
+    })
+    .to_string()
+}
+
+/// 走**真实协议链路**：JSON → `decode_server_event` → `parse_sentence` →
+/// `AliyunMapper::map_sentence`。
+///
+/// **不能手工造 `Sentence` 结构体**：那会绕过协议解析，解析那一段就没有
+/// 守卫了（实测：把 `parse_sentence` 里的 stash 解析改成 `String::new()`，
+/// 276 条测试全绿）。
+fn map_protocol_json(mapper: &mut AliyunMapper, raw: &str) -> Vec<CloudEvent> {
+    let ServerEvent::Sentence(sentence) = decode_server_event(raw).expect("协议帧应能解码") else {
+        panic!("该解出句子事件");
+    };
+    mapper.map_sentence(sentence)
+}
+
 /// 实时行文本 = **已确认的前缀 + 草稿**（本模型的结果结构：sentence + stash）。
 ///
 /// 第二次的样例刻意用「**改写**第一次」（更短），这样「追加」实现会得到
@@ -204,11 +233,11 @@ fn finals(events: &[CloudEvent]) -> Vec<String> {
 #[test]
 fn partial_is_confirmed_prefix_plus_draft() {
     let mut mapper = AliyunMapper::new();
-    let first = mapper.map_sentence(sentence_with(Some(1), false, "你好世界", "", None));
+    let first = map_protocol_json(&mut mapper, &result_generated(1, "你好世界", "", 2));
     assert_eq!(partials(&first), vec!["你好世界".to_string()]);
 
     // 确认前缀变短 + 草稿有内容 → 实时行 = 前缀 + 草稿。
-    let second = mapper.map_sentence(sentence_with(Some(1), false, "你好", "呀", Some(2)));
+    let second = map_protocol_json(&mut mapper, &result_generated(1, "你好", "呀", 2));
     assert_eq!(
         partials(&second),
         vec!["你好呀".to_string()],
@@ -222,8 +251,11 @@ fn partial_is_confirmed_prefix_plus_draft() {
 #[test]
 fn declared_partial_semantics_matches_samples() {
     let mut mapper = AliyunMapper::new();
-    let first = partials(&mapper.map_sentence(sentence_with(Some(1), false, "你好世界", "", None)));
-    let second = partials(&mapper.map_sentence(sentence_with(Some(1), false, "你好", "呀", Some(2))));
+    let first = partials(&map_protocol_json(
+        &mut mapper,
+        &result_generated(1, "你好世界", "", 2),
+    ));
+    let second = partials(&map_protocol_json(&mut mapper, &result_generated(1, "你好", "呀", 2)));
     let (first, second) = (first[0].clone(), second[0].clone());
 
     // 推导：第二次若包含第一次的全部内容且更长 → 增量；否则（更短/改写）→ 整句替换。

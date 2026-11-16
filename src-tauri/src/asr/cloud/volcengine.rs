@@ -329,7 +329,7 @@ async fn run(
     // 首次全量请求：音频参数 + 断句参数 + 热词。
     let frame = frame::encode_full_request(&encode_full_request(&config));
     if let Err(error) = socket.send(Message::Binary(frame.into())).await {
-        let error = crate::code_detail("cloud.connectFailed", error.to_string());
+        let error = super::logging::code_detail("cloud.connectFailed", error.to_string(), Some(&config.api_key));
         let _ = ready.send(Err(error.clone()));
         let _ = errors.send(error);
         return;
@@ -348,14 +348,22 @@ async fn run(
                     Command::Audio(packet) => {
                         let frame = frame::encode_audio(&packet, false);
                         if let Err(error) = socket.send(Message::Binary(frame.into())).await {
-                            let _ = errors.send(crate::code_detail("cloud.sendFailed", error.to_string()));
+                            let _ = errors.send(super::logging::code_detail(
+                                "cloud.sendFailed",
+                                error.to_string(),
+                                Some(&config.api_key),
+                            ));
                             break;
                         }
                     }
                     Command::Finish(done) => {
                         let frame = frame::encode_audio(&[], true);
                         if let Err(error) = socket.send(Message::Binary(frame.into())).await {
-                            let _ = errors.send(crate::code_detail("cloud.sendFailed", error.to_string()));
+                            let _ = errors.send(super::logging::code_detail(
+                                "cloud.sendFailed",
+                                error.to_string(),
+                                Some(&config.api_key),
+                            ));
                             let _ = done.send(());
                             break;
                         }
@@ -379,7 +387,11 @@ async fn run(
                     }
                     Ok(_) => continue,
                     Err(error) => {
-                        let _ = errors.send(crate::code_detail("cloud.disconnected", error.to_string()));
+                        let _ = errors.send(super::logging::code_detail(
+                            "cloud.disconnected",
+                            error.to_string(),
+                            Some(&config.api_key),
+                        ));
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
                     }
@@ -403,7 +415,11 @@ async fn run(
                         break;
                     }
                     Err(error) => {
-                        let _ = errors.send(crate::code_detail("cloud.protocolError", error));
+                        let _ = errors.send(super::logging::code_detail(
+                            "cloud.protocolError",
+                            error,
+                            Some(&config.api_key),
+                        ));
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
                     }
@@ -430,7 +446,11 @@ async fn connect_socket(
     };
     let mut request = base_url
         .into_client_request()
-        .map_err(|error| crate::code_detail("cloud.connectFailed", error.to_string()))?;
+        .map_err(|error| super::logging::code_detail(
+            "cloud.connectFailed",
+            error.to_string(),
+            Some(&config.api_key),
+        ))?;
     let resource_id = if config.resource_id.trim().is_empty() {
         DEFAULT_RESOURCE_ID
     } else {
@@ -452,7 +472,11 @@ async fn connect_socket(
     let (socket, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|error| {
-            crate::code_detail("cloud.connectFailed", sanitize(&error.to_string(), &config.api_key))
+            super::logging::code_detail(
+                "cloud.connectFailed",
+                sanitize(&error.to_string(), &config.api_key),
+                Some(&config.api_key),
+            )
         })?;
     Ok(socket)
 }
@@ -465,7 +489,7 @@ fn map_error_code(code: u32, message: &str) -> String {
     match code {
         45000002 => crate::code("cloud.noResult"),
         45000081 => crate::code("cloud.timeout"),
-        _ => crate::code_detail("cloud.protocolError", format!("{code}: {message}")),
+        _ => super::logging::code_detail("cloud.protocolError", format!("{code}: {message}"), None),
     }
 }
 

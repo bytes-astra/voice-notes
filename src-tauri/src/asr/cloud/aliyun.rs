@@ -434,7 +434,7 @@ fn hotword_text_fits(word: &str) -> bool {
 /// 解码一条服务端文本帧。
 pub fn decode_server_event(raw: &str) -> Result<ServerEvent, String> {
     let value: Value = serde_json::from_str(raw)
-        .map_err(|error| crate::code_detail("cloud.protocolError", error.to_string()))?;
+        .map_err(|error| super::logging::code_detail("cloud.protocolError", error.to_string(), None))?;
     let header = value.get("header").cloned().unwrap_or(Value::Null);
     let event = header.get("event").and_then(Value::as_str).unwrap_or("");
     Ok(match event {
@@ -704,7 +704,7 @@ async fn run(
         .send(Message::Text(encode_run_task(&config, &task_id).into()))
         .await
     {
-        let error = crate::code_detail("cloud.sendFailed", error.to_string());
+        let error = super::logging::code_detail("cloud.sendFailed", error.to_string(), Some(&config.api_key));
         let _ = ready.send(Err(error.clone()));
         let _ = errors.send(error);
         return;
@@ -733,14 +733,22 @@ async fn run(
                             continue;
                         }
                         if let Err(error) = socket.send(Message::Binary(packet.into())).await {
-                            let _ = errors.send(crate::code_detail("cloud.sendFailed", error.to_string()));
+                            let _ = errors.send(super::logging::code_detail(
+                                "cloud.sendFailed",
+                                error.to_string(),
+                                Some(&config.api_key),
+                            ));
                             break;
                         }
                     }
                     Command::Finish(done) => {
                         let payload = encode_finish_task(&task_id);
                         if let Err(error) = socket.send(Message::Text(payload.into())).await {
-                            let _ = errors.send(crate::code_detail("cloud.sendFailed", error.to_string()));
+                            let _ = errors.send(super::logging::code_detail(
+                                "cloud.sendFailed",
+                                error.to_string(),
+                                Some(&config.api_key),
+                            ));
                             let _ = done.send(());
                             break;
                         }
@@ -768,7 +776,11 @@ async fn run(
                     // 服务端不该发二进制帧；忽略而不是报错。
                     Ok(_) => continue,
                     Err(error) => {
-                        let _ = errors.send(crate::code_detail("cloud.disconnected", error.to_string()));
+                        let _ = errors.send(super::logging::code_detail(
+                            "cloud.disconnected",
+                            error.to_string(),
+                            Some(&config.api_key),
+                        ));
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
                     }
@@ -792,7 +804,7 @@ async fn run(
                     }
                     Ok(ServerEvent::TaskFailed { code, message }) => {
                         let detail = format!("{code}: {}", sanitize(&message, &config.api_key));
-                        let error = crate::code_detail("cloud.protocolError", detail);
+                        let error = super::logging::code_detail("cloud.protocolError", detail, Some(&config.api_key));
                         if !started {
                             startup_error = Some(error.clone());
                         }
@@ -855,7 +867,11 @@ async fn connect_socket(
     let mut request = config
         .base_url()
         .into_client_request()
-        .map_err(|error| crate::code_detail("cloud.connectFailed", error.to_string()))?;
+        .map_err(|error| super::logging::code_detail(
+            "cloud.connectFailed",
+            error.to_string(),
+            Some(&config.api_key),
+        ))?;
     let header = format!("Bearer {}", config.api_key)
         .parse()
         .map_err(|_| crate::code("cloud.connectFailed"))?;
@@ -871,9 +887,10 @@ async fn connect_socket(
                     return crate::code("cloud.authFailed");
                 }
             }
-            crate::code_detail(
+            super::logging::code_detail(
                 "cloud.connectFailed",
                 sanitize(&error.to_string(), &config.api_key),
+                Some(&config.api_key),
             )
         })?;
     Ok(socket)

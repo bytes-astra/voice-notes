@@ -916,11 +916,17 @@ fn log_choke_point_redacts_the_credential() {
 /// **为什么是源码级守卫**：日志写进文件与 stderr，测试抓不到返回值 ——
 /// 唯一能自动发现「有人绕过关口自己写日志」的办法是**读源码**。
 ///
-/// 扫 `log::warn` / `log::info` / `log::error` 三个片段：`crate::log::warn`
-/// 与 `use crate::log;` 之后的 `log::warn` 都在内；关口自己的
-/// `logging::warn` 不匹配（`logging::warn` 里没有 `log::warn` 这段）。
+/// 扫两个**路径片段**：
 ///
-/// **扫的是「直白的绕过」** —— 更隐蔽的别名（`use crate::log as l;`）守不住。
+/// - `crate::log` —— 盖住 `crate::log::warn/info/error/write`，也盖住
+///   `use crate::log;` 与 `use crate::log as l;`（import 那一行就含这个片段）。
+/// - `crate::code_detail` —— 它内部就是 `log::error` → 写日志文件，但**不脱敏**。
+///   云端模块一律用 `logging::code_detail`（先脱敏再委托）。
+///
+/// 关口自己的路径（`logging::warn` / `logging::code_detail`）不匹配 ✓。
+///
+/// **已知边界**（别当「抓住所有绕过」）：`eprintln!` 只进 stderr、不进日志文件，
+/// 不在范围内；脱敏只保证「凭据的**精确子串**」不出现（变形、URL 编码不保证）。
 #[test]
 fn cloud_logs_go_through_the_redacting_choke_point() {
     let asr_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/asr");
@@ -933,10 +939,10 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
     );
     for file in files {
         let source = std::fs::read_to_string(&file).expect("读源码");
-        for fragment in ["log::warn", "log::info", "log::error"] {
+        for fragment in ["crate::log", "crate::code_detail"] {
             assert!(
                 !source.contains(fragment),
-                "{}: 日志必须走 asr/cloud/logging.rs 的关口（写入前脱敏），不许直接调 {fragment}",
+                "{}: 日志必须走 asr/cloud/logging.rs 的关口（写入前脱敏），不许直接用 {fragment}",
                 file.display()
             );
         }
@@ -962,7 +968,13 @@ fn cloud_source_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
             files.extend(cloud_source_files(&path));
             continue;
         }
-        if name == "tests.rs" || name.ends_with("_tests.rs") || name == "logging.rs" {
+        // 测试文件与 `mock.rs` 都是 `#[cfg(test)]`，不进产物；关口自己
+        // （`logging.rs`）得能调 `crate::log::`。
+        if name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || name == "mock.rs"
+            || name == "logging.rs"
+        {
             continue;
         }
         if name.ends_with(".rs") {

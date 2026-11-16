@@ -457,3 +457,96 @@ fn deltas_accumulate_into_the_sentence_so_far() {
         "realtime/{:?}: 声明的形态与协议实际形态不符", derived
     );
 }
+
+/// 契约守卫（**生产链路**）：Realtime 的中间结果是**当前句的累计串**。
+///
+/// 这条守卫跑**真实 run 循环** —— 本地假 WebSocket 服务端回两帧 `.delta`
+/// （同一个 `item_id`），断言 provider 上抛的 `CloudEvent::Partial` 是
+/// 「你好」与「你好，世界」。
+///
+/// **为什么不能只在测试里自建归一器**：那样只守住「归一器自己」，守不住
+/// 「provider → 归一器 → 上抛」这段接线 —— 生产调用点被绕开时不会有任何
+/// 守卫变红（实测过：把 `realtime.rs` 的 `accumulator.apply(...)` 改成
+/// `let text = delta;`，276 条测试全绿）。
+#[test]
+fn deltas_accumulate_on_the_production_path() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let server = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // 先等客户端的 session.update，回 session.updated（connect 在等它）。
+            while let Some(message) = socket.next().await {
+                let Ok(message) = message else { break };
+                let Message::Text(text) = message else { continue };
+                let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                if value["type"].as_str() == Some("session.update") {
+                    socket
+                        .send(Message::Text(
+                            json!({ "type": "session.updated" }).to_string().into(),
+                        ))
+                        .await
+                        .unwrap();
+                    break;
+                }
+            }
+            // 两帧 delta：**同一个 item_id** —— 不同 id 会开两个桶，第二次
+            // 上抛的只是半句。
+            for delta in ["你好", "，世界"] {
+                let frame = json!({
+                    "type": "conversation.item.input_audio_transcription.delta",
+                    "item_id": "item_1",
+                    "delta": delta,
+                });
+                socket
+                    .send(Message::Text(frame.to_string().into()))
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(40)).await;
+            }
+            // 让客户端把两帧都读完。
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+    });
+
+    let config = RealtimeConfig {
+        base_url: format!("ws://{addr}/v1/realtime?intent=transcription"),
+        api_key: "test-key".into(),
+        model: DEFAULT_MODEL.to_string(),
+        languages: vec!["zh".into()],
+        keywords: vec![],
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut provider = RealtimeProvider::new(config);
+    provider
+        .connect(Box::new(move |event| {
+            let _ = tx.send(event);
+        }))
+        .expect("应能连上假服务端");
+
+    let mut partials: Vec<String> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline && partials.len() < 2 {
+        if let Ok(CloudEvent::Partial(text)) = rx.recv_timeout(Duration::from_millis(200)) {
+            partials.push(text);
+        }
+    }
+    let _ = server.join();
+
+    // 期望值是**手写字面量**。
+    assert_eq!(
+        partials,
+        vec!["你好".to_string(), "你好，世界".to_string()],
+        "realtime/Delta: 上抛的中间结果必须是当前句的累计串（生产链路）"
+    );
+}

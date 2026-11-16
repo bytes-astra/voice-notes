@@ -87,7 +87,11 @@ pub enum ServerFrame {
 /// 解析服务端帧。
 pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
     if data.len() < 4 {
-        return Err(crate::code_detail("cloud.protocolError", "帧太短：连 4 字节头都不够"));
+        return Err(crate::asr::cloud::logging::code_detail(
+            "cloud.protocolError",
+            "帧太短：连 4 字节头都不够",
+            None,
+        ));
     }
     let message_type = data[1] >> 4;
     let flags = data[1] & 0x0f;
@@ -104,7 +108,11 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
             let size = read_u32(data, &mut offset)?;
             let end = offset + size as usize;
             if end > data.len() {
-                return Err(crate::code_detail("cloud.protocolError", "帧长度不够：payload 被截断"));
+                return Err(crate::asr::cloud::logging::code_detail(
+            "cloud.protocolError",
+            "帧长度不够：payload 被截断",
+            None,
+        ));
             }
             Ok(ServerFrame::Response {
                 sequence,
@@ -118,16 +126,21 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
             let size = read_u32(data, &mut offset)?;
             let end = offset + size as usize;
             if end > data.len() {
-                return Err(crate::code_detail("cloud.protocolError", "错误帧长度不够：消息被截断"));
+                return Err(crate::asr::cloud::logging::code_detail(
+            "cloud.protocolError",
+            "错误帧长度不够：消息被截断",
+            None,
+        ));
             }
             Ok(ServerFrame::Error {
                 code,
                 message: String::from_utf8_lossy(&data[offset..end]).into_owned(),
             })
         }
-        other => Err(crate::code_detail(
+        other => Err(crate::asr::cloud::logging::code_detail(
             "cloud.protocolError",
             format!("不认识的服务端消息类型：{other:b}"),
+            None,
         )),
     }
 }
@@ -135,7 +148,7 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
 fn read_bytes<'a>(data: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8], String> {
     let end = *offset + len;
     if end > data.len() {
-        return Err(crate::code_detail("cloud.protocolError", "帧长度不够"));
+        return Err(crate::asr::cloud::logging::code_detail("cloud.protocolError", "帧长度不够", None));
     }
     let slice = &data[*offset..end];
     *offset = end;

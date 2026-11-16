@@ -254,7 +254,7 @@ async fn run(
         .send(Message::Text(encode_session_update(&config).into()))
         .await
     {
-        let error = crate::code_detail("cloud.connectFailed", error.to_string());
+        let error = super::logging::code_detail("cloud.connectFailed", error.to_string(), Some(&config.api_key));
         let _ = ready.send(Err(error.clone()));
         let _ = errors.send(error);
         return;
@@ -298,13 +298,21 @@ async fn run(
                             pending.on_audio();
                         }
                         if let Err(error) = socket.send(Message::Text(encode_append(&audio).into())).await {
-                            let _ = errors.send(crate::code_detail("cloud.sendFailed", error.to_string()));
+                            let _ = errors.send(super::logging::code_detail(
+                                "cloud.sendFailed",
+                                error.to_string(),
+                                Some(&config.api_key),
+                            ));
                             break;
                         }
                     }
                     Command::Commit => {
                         if let Err(error) = socket.send(Message::Text(encode_commit().into())).await {
-                            let _ = errors.send(crate::code_detail("cloud.sendFailed", error.to_string()));
+                            let _ = errors.send(super::logging::code_detail(
+                                "cloud.sendFailed",
+                                error.to_string(),
+                                Some(&config.api_key),
+                            ));
                             break;
                         }
                         pending.on_commit(client_commit);
@@ -325,7 +333,11 @@ async fn run(
                         let need_commit = !client_commit || pending.uncommitted_audio;
                         if need_commit {
                             if let Err(error) = socket.send(Message::Text(encode_commit().into())).await {
-                                let _ = errors.send(crate::code_detail("cloud.sendFailed", error.to_string()));
+                                let _ = errors.send(super::logging::code_detail(
+                                    "cloud.sendFailed",
+                                    error.to_string(),
+                                    Some(&config.api_key),
+                                ));
                                 let _ = done.send(());
                                 break;
                             }
@@ -361,7 +373,11 @@ async fn run(
                     }
                     Ok(_) => continue,
                     Err(error) => {
-                        let _ = errors.send(crate::code_detail("cloud.disconnected", error.to_string()));
+                        let _ = errors.send(super::logging::code_detail(
+                            "cloud.disconnected",
+                            error.to_string(),
+                            Some(&config.api_key),
+                        ));
                         if let Some(done) = finishing.take() {
                             let _ = done.send(());
                         }
@@ -450,7 +466,7 @@ async fn run(
                         let code = if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid api key") {
                             "cloud.authFailed"
                         } else { "cloud.protocolError" };
-                        let error = crate::code_detail(code, message);
+                        let error = super::logging::code_detail(code, message, Some(&config.api_key));
                         // 报错要把提交槽解开：否则槽永远悬着 → flush 不再往前推进
                         // → 这一句之后的所有 final 都被扣住（转写里静默少了后文），
                         // 收尾还要白等 10 秒。
@@ -479,7 +495,11 @@ async fn connect_socket(
         .base_url
         .as_str()
         .into_client_request()
-        .map_err(|error| crate::code_detail("cloud.connectFailed", error.to_string()))?;
+        .map_err(|error| super::logging::code_detail(
+            "cloud.connectFailed",
+            error.to_string(),
+            Some(&config.api_key),
+        ))?;
     // 凭据只进请求头：URL 与日志里都不许出现。
     let auth = format!("Bearer {}", config.api_key);
     let header = auth
@@ -490,7 +510,11 @@ async fn connect_socket(
         .await
         .map_err(|error| {
             // 错误详情里不能有 key（有些库会把请求头带进错误里）。
-            crate::code_detail("cloud.connectFailed", sanitize(&error.to_string(), &config.api_key))
+            super::logging::code_detail(
+                "cloud.connectFailed",
+                sanitize(&error.to_string(), &config.api_key),
+                Some(&config.api_key),
+            )
         })?;
     Ok(socket)
 }

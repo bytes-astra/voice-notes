@@ -198,9 +198,13 @@ pub fn create_provider(
 ) -> Result<Box<dyn CloudProvider>, String> {
     let id = settings.cloud_provider.as_str();
     // 能力先查表：这是「要不要下 VAD」「状态回传什么能力」的同一个来源。
-    let caps = provider_capabilities(id).ok_or_else(|| crate::code_detail("cloud.unsupportedProvider", id))?;
+    let caps = provider_capabilities(id).ok_or_else(|| logging::code_detail(
+        "cloud.unsupportedProvider",
+        id,
+        Some(&settings.cloud_api_key),
+    ))?;
     if !valid_capabilities(&caps) {
-        return Err(crate::code_detail("cloud.unsupportedProvider", id));
+        return Err(logging::code_detail("cloud.unsupportedProvider", id, Some(&settings.cloud_api_key)));
     }
     match id {
         "realtime" => {
@@ -275,7 +279,7 @@ pub fn create_provider(
             // 模型白名单：协议骨架相同，但参数与结果结构不同（本模型有 stash
             // 草稿、即时热词、方言开关），不按「名字随便填」处理。
             if !aliyun::SUPPORTED_MODELS.contains(&model.as_str()) {
-                return Err(crate::code_detail("cloud.unsupportedModel", &model));
+                return Err(logging::code_detail("cloud.unsupportedModel", &model, Some(&settings.cloud_api_key)));
             }
             // 术语表：能力层决定要不要带，协议层决定能带多少（2000 条，带权重）。
             let (words, cap_ignored) = cloud_keywords(settings, &caps);
@@ -292,7 +296,7 @@ pub fn create_provider(
                 vocabulary,
             })))
         }
-        other => Err(crate::code_detail("cloud.unsupportedProvider", other)),
+        other => Err(logging::code_detail("cloud.unsupportedProvider", other, Some(&settings.cloud_api_key))),
     }
 }
 
