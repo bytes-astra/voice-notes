@@ -24,6 +24,8 @@ pub mod realtime;
 pub mod partial;
 // 火山（豆包）双向流式 ASR provider：自研二进制帧协议。
 pub mod volcengine;
+// 云端日志的**唯一出口**：写入前脱敏（见 `logging.rs`）。
+pub(crate) mod logging;
 
 
 /// 句标识：协议给的句子 id。没有 id 的协议（服务端断句族）用 `None`。
@@ -223,7 +225,7 @@ pub fn create_provider(
             let (keywords, proto_ignored) = realtime::clean_cloud_keywords(&words);
             let ignored = cap_ignored + proto_ignored;
             if ignored > 0 {
-                crate::log::warn(format!("云端热词有 {ignored} 条未通过协议校验，已忽略"));
+                log_ignored_hotwords(ignored, &settings.cloud_api_key);
             }
             Ok(Box::new(realtime::RealtimeProvider::new(
                 realtime::RealtimeConfig {
@@ -251,7 +253,7 @@ pub fn create_provider(
             let (keywords, proto_ignored) = volcengine::clean_volcengine_keywords(&words);
             let ignored = cap_ignored + proto_ignored;
             if ignored > 0 {
-                crate::log::warn(format!("云端热词有 {ignored} 条未通过协议校验，已忽略"));
+                log_ignored_hotwords(ignored, &settings.cloud_api_key);
             }
             Ok(Box::new(volcengine::VolcengineProvider::new(
                 volcengine::VolcengineConfig {
@@ -280,7 +282,7 @@ pub fn create_provider(
             let (vocabulary, proto_ignored) = aliyun::build_vocabulary(&words);
             let ignored = cap_ignored + proto_ignored;
             if ignored > 0 {
-                crate::log::warn(format!("云端热词有 {ignored} 条未通过协议校验，已忽略"));
+                log_ignored_hotwords(ignored, &settings.cloud_api_key);
             }
             Ok(Box::new(aliyun::AliyunProvider::new(aliyun::AliyunConfig {
                 base_url: settings.cloud_base_url.clone(),
@@ -292,6 +294,17 @@ pub fn create_provider(
         }
         other => Err(crate::code_detail("cloud.unsupportedProvider", other)),
     }
+}
+
+/// 热词被协议层丢掉时记一条。
+///
+/// 凭据在设置里 —— 顺手交给关口脱敏（这行文案本身没有 provider 文本，
+/// 但关口是唯一出口，别在这里另起一条）。
+fn log_ignored_hotwords(ignored: usize, api_key: &str) {
+    logging::warn(
+        &format!("云端热词有 {ignored} 条未通过协议校验，已忽略"),
+        Some(api_key),
+    );
 }
 
 /// 生成一个 UUID v4 形状的唯一串。
@@ -527,9 +540,10 @@ impl CloudStreamingSession {
     /// 闭合当前累积的丢包段（下次成功发送、或收尾时调用）。
     fn close_upload_gap(&mut self) {
         if let Some((start, count)) = self.open_upload_gap.take() {
-            crate::log::warn(format!(
-                "云端上传队列满，丢掉 {count} 个 16kHz 采样（起点 {start}）"
-            ));
+            logging::warn(
+                &format!("云端上传队列满，丢掉 {count} 个 16kHz 采样（起点 {start}）"),
+                None,
+            );
             self.upload_gaps.push((start, count));
         }
     }
@@ -701,7 +715,7 @@ impl CloudStreamingSession {
             let segment = Segment { text, start, end };
             events.push(StreamEvent::Segment(segment.clone()));
             self.segments.push(segment);
-            crate::log::warn("云端最后一句没有定稿，按实时文本兜底落成句子");
+            logging::warn("云端最后一句没有定稿，按实时文本兜底落成句子", None);
         }
         events
     }

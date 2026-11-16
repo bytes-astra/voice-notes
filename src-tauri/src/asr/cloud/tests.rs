@@ -896,3 +896,78 @@ fn zero_length_segments_keep_arrival_order() {
         "同批零长句的先后以到达顺序为准"
     );
 }
+
+/// 云端日志的关口：凭据从日志文本里抹掉。
+///
+/// 这是 RC-K6「日志那半边」的机制守卫 —— 关口把凭据替换成 `***`。
+#[test]
+fn log_choke_point_redacts_the_credential() {
+    let key = "sk-secret-123";
+    let text = format!("上传失败：{key}，重试一次");
+    let out = super::logging::redact(&text, Some(key));
+    assert!(!out.contains(key), "凭据不能留在日志文本里：{out}");
+    assert!(out.contains("***"), "凭据要脱敏：{out}");
+    // `None` = 这条日志是本模块自己写的固定文案，不含 provider 文本 → 原样。
+    assert_eq!(super::logging::redact("固定文案", None), "固定文案");
+}
+
+/// 云端模块的日志必须走脱敏关口（`asr/cloud/logging.rs`）。
+///
+/// **为什么是源码级守卫**：日志写进文件与 stderr，测试抓不到返回值 ——
+/// 唯一能自动发现「有人绕过关口自己写日志」的办法是**读源码**。
+///
+/// 扫 `log::warn` / `log::info` / `log::error` 三个片段：`crate::log::warn`
+/// 与 `use crate::log;` 之后的 `log::warn` 都在内；关口自己的
+/// `logging::warn` 不匹配（`logging::warn` 里没有 `log::warn` 这段）。
+///
+/// **扫的是「直白的绕过」** —— 更隐蔽的别名（`use crate::log as l;`）守不住。
+#[test]
+fn cloud_logs_go_through_the_redacting_choke_point() {
+    let asr_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/asr");
+    let mut files = vec![asr_dir.join("cloud.rs")];
+    files.extend(cloud_source_files(&asr_dir.join("cloud")));
+    files.sort();
+    assert!(
+        files.len() > 1,
+        "该扫到云端模块的文件才对（至少 cloud.rs + provider）：{files:?}"
+    );
+    for file in files {
+        let source = std::fs::read_to_string(&file).expect("读源码");
+        for fragment in ["log::warn", "log::info", "log::error"] {
+            assert!(
+                !source.contains(fragment),
+                "{}: 日志必须走 asr/cloud/logging.rs 的关口（写入前脱敏），不许直接调 {fragment}",
+                file.display()
+            );
+        }
+    }
+}
+
+/// 云端模块下的源码文件（递归）：跳过关口自己与测试文件。
+///
+/// 测试文件不进产物 —— 扫它们没有意义；关口自己得能调 `crate::log::`。
+fn cloud_source_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        if path.is_dir() {
+            // 测试目录不进产物 —— 不扫。
+            if name == "tests" {
+                continue;
+            }
+            files.extend(cloud_source_files(&path));
+            continue;
+        }
+        if name == "tests.rs" || name.ends_with("_tests.rs") || name == "logging.rs" {
+            continue;
+        }
+        if name.ends_with(".rs") {
+            files.push(path);
+        }
+    }
+    files
+}

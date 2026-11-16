@@ -564,8 +564,9 @@ impl AliyunMapper {
         let raw_id = sentence.id.filter(|id| *id != 0);
         if raw_id.is_none() && !self.warned_missing_id {
             self.warned_missing_id = true;
-            crate::log::warn(
+            super::logging::warn(
                 "阿里云端：服务端的句子没有 sentence_id（0 视为心跳），改用句结束标志切句",
+                None,
             );
         }
         // ③ 已定稿的句：后续事件一律忽略。文本没变不刷 WARN（服务端重发同一条
@@ -573,7 +574,7 @@ impl AliyunMapper {
         if let Some(id) = raw_id {
             if let Some(finalized) = self.finalized.get(&id) {
                 if !sentence.text.trim().is_empty() && finalized != sentence.text.trim() {
-                    crate::log::warn("阿里云端：已定稿的句子又收到了新的文本，已忽略");
+                    super::logging::warn("阿里云端：已定稿的句子又收到了新的文本，已忽略", None);
                 }
                 return events;
             }
@@ -725,7 +726,10 @@ async fn run(
                         // `connect()` 成功才可能走到这里；这条门是纵深防御
                         // （调用方忽略 connect 的 Err 时不要发出违约帧）。
                         if !started {
-                            crate::log::warn("阿里云端：task-started 之前收到音频，已丢弃");
+                            super::logging::warn(
+                                "阿里云端：task-started 之前收到音频，已丢弃",
+                                Some(&config.api_key),
+                            );
                             continue;
                         }
                         if let Err(error) = socket.send(Message::Binary(packet.into())).await {
@@ -793,7 +797,7 @@ async fn run(
                             startup_error = Some(error.clone());
                         }
                         // 详情只进日志（已脱敏），不进界面。
-                        crate::log::warn(format!("阿里云端：{error}"));
+                        super::logging::warn(&format!("阿里云端：{error}"), Some(&config.api_key));
                         let _ = errors.send(error);
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
@@ -835,9 +839,10 @@ fn log_usage(raw: &str) {
     let duration = usage.get("duration").and_then(Value::as_i64).unwrap_or(0);
     let input = usage.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
     let output = usage.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
-    crate::log::info(format!(
-        "阿里云端：任务完成 时长 {duration}s，输入 {input} token，输出 {output} token"
-    ));
+    super::logging::info(
+        &format!("阿里云端：任务完成 时长 {duration}s，输入 {input} token，输出 {output} token"),
+        None,
+    );
 }
 
 /// 连上阿里：`Authorization: Bearer <key>`（凭据只进请求头）。

@@ -405,13 +405,19 @@ async fn run(
                     }
                     ServerEvent::Failed { item_id, reason } => {
                         // 失败也要留痕：这句文本会从结果里消失，日志里必须有
-                        // 一条可追的记录（服务端给的原因同样先脱敏）。
-                        let reason = sanitize(&reason, &config.api_key);
+                        // 一条可追的记录（服务端给的原因在**关口**里脱敏 ——
+                        // 关口是云端模块唯一的日志出口）。
                         let id = item_id.as_deref().unwrap_or("未知");
                         if reason.is_empty() {
-                            crate::log::warn(format!("云端识别失败：item {id}"));
+                            super::logging::warn(
+                                &format!("云端识别失败：item {id}"),
+                                Some(&config.api_key),
+                            );
                         } else {
-                            crate::log::warn(format!("云端识别失败：item {id}，{reason}"));
+                            super::logging::warn(
+                                &format!("云端识别失败：item {id}，{reason}"),
+                                Some(&config.api_key),
+                            );
                         }
                         // 失败的一轮不会回 final：用空文本走同一条通道 ——
                         // 会话层照常弹出这一轮的区间，后续句子才不会错位。
