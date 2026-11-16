@@ -819,6 +819,87 @@ fn cloud_core_does_not_double_count_upload_drops() {
     );
 }
 
+/// 收尾时的尾部缺口：缺口要落在最后一句**之后**，不能盖住它。
+///
+/// 丢掉的那段音频是在第一句之后上传的（第二次上传才丢包），缺口锚在丢包
+/// 起点 —— 正好是第一句的终点。收尾把这段缺口落账时，它必须排在第一句后面，
+/// 而不是被并进第一句里（那会让用户以为那句话多说了半秒）。
+#[test]
+fn 云端收尾的尾部缺口排在最后一句之后() {
+    use crate::asr::cloud::mock::MockProvider;
+    use crate::asr::cloud::{CloudStreamingSession, EndpointKind};
+
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16_000);
+    {
+        let mut guard = state.lock().unwrap();
+        // 第一次上传回一句话。
+        guard.reply = Some("第一句".into());
+        // 第二次上传丢掉 1 秒（16 kHz 采样数）。
+        guard.drop_plan = Some(vec![0, 16_000]);
+    }
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+
+    let queue = audio::SampleQueue::new(16_000);
+    queue.push(&vec![0.1f32; 16_000]);
+    // 第一次上传之后补一批音频：制造第二次上传（第二次才丢包）。
+    let feed = queue.clone();
+    let watcher = state.clone();
+    let mut fed = false;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopper = stop.clone();
+    let sender = state.clone();
+    std::thread::spawn(move || {
+        // 第二次上传之后停：那时缺口还开着（没被成功投递闭合），收尾才落账。
+        while sender.lock().unwrap().sends < 2 {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        stopper.store(true, Ordering::SeqCst);
+    });
+    let transcript = run_cloud_streaming_core(
+        session,
+        None,
+        queue,
+        16_000,
+        stop,
+        Arc::new(AtomicBool::new(false)),
+        move |_events| {
+            let sends = watcher.lock().unwrap().sends;
+            if sends == 1 && !fed {
+                fed = true;
+                feed.push(&vec![0.1f32; 16_000]);
+            }
+        },
+    );
+
+    assert!(
+        state.lock().unwrap().sends >= 2,
+        "要有两次上传才能测收尾的尾部缺口"
+    );
+    let sentence = transcript
+        .segments
+        .iter()
+        .find(|segment| segment.text == "第一句")
+        .expect("第一句要在");
+    let gap = transcript
+        .segments
+        .iter()
+        .find(|segment| segment.text.contains("[[gap:"))
+        .expect("收尾的尾部缺口要在");
+    assert_eq!(gap.start, gap.end, "缺口是一个时刻，不是一段区间");
+    assert!(
+        gap.start >= sentence.end,
+        "缺口不能落在最后一句里面：缺口 {}，最后一句到 {}",
+        gap.start,
+        sentence.end
+    );
+    assert!(
+        transcript.text.ends_with("[[gap:1]]"),
+        "缺口要排在最后一句之后：{}",
+        transcript.text
+    );
+}
+
 /// 门控决策：客户端提交族必须有本地 VAD；服务端断句族一律不门控。
 #[test]
 fn 门控按能力决定() {

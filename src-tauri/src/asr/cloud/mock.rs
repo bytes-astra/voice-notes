@@ -25,7 +25,17 @@ pub struct MockState {
     /// 收尾时回一条定稿（模拟 provider 把剩余音频合成一条）。
     pub reply_on_finish: Option<String>,
     /// 上传队列满载时丢掉的 16 kHz 采样数（模拟有界队列的丢弃）。
+    ///
+    /// **一次性**：发一次就取走（`std::mem::take`）——要精确控制「第几次上传
+    /// 才丢包」用 `drop_plan`。
     pub dropped_reply: usize,
+    /// 按「第几次上传」精确控制丢包（每个元素是那次丢掉的 16 kHz 采样数；
+    /// 队空 = 不丢）。
+    ///
+    /// **有计划时只看计划**，不看 `dropped_reply`；没有计划才用后者。
+    pub drop_plan: Option<Vec<usize>>,
+    /// 已经发过几次音频（测试据此驱动下一次动作）。
+    pub sends: usize,
     /// 模拟「返回 0 但其实没投递」（火山攒包时的形态）。
     pub not_delivered: bool,
     /// `connect` 交上来的事件回调。
@@ -92,8 +102,15 @@ impl CloudProvider for MockProvider {
             return Err(code("cloud.sendFailed"));
         }
         state.sent.extend_from_slice(pcm);
-        // 模拟上传队列满：这一段没送出去（只发生一次）。
-        let dropped = std::mem::take(&mut state.dropped_reply);
+        // 模拟上传队列满：这一段没送出去。
+        // 有丢包计划时按「第几次上传」精确控制；没有计划才用一次性的
+        // `dropped_reply`（发一次就取走）。
+        let index = state.sends;
+        let dropped = match &state.drop_plan {
+            Some(plan) => plan.get(index).copied().unwrap_or(0),
+            None => std::mem::take(&mut state.dropped_reply),
+        };
+        state.sends += 1;
         Ok(SendOutcome { dropped, delivered: !state.not_delivered })
     }
 

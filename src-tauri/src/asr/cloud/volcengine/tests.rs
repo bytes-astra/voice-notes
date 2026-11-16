@@ -213,3 +213,21 @@ fn 真服务冒烟() {
         "定稿不应全是空的：{finals:?}"
     );
 }
+
+/// 服务端错误消息里的凭据要脱敏。
+///
+/// **必须用 `_` 分支的错误码**（如 `45000151`）—— `45000002` / `45000081`
+/// 那两个码 `map_error_code` 根本不看 `message`，拿它们断言会**恒真**
+/// （把 `sanitize` 调用删掉也照样过）。
+#[test]
+fn 服务端错误消息里的凭据要脱敏() {
+    let key = "sk-secret-123";
+    let detail = map_error_code(45000151, &sanitize("上传失败：sk-secret-123", key));
+    assert!(
+        detail.starts_with("cloud.protocolError"),
+        "错误详情要带上字典码：{}",
+        detail
+    );
+    assert!(detail.contains("***"), "凭据要脱敏：{}", detail);
+    assert!(!detail.contains(key), "凭据不能出现在错误详情里：{}", detail);
+}
