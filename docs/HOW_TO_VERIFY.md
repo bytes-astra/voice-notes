@@ -231,6 +231,11 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   - **映射的四条硬规则**（每条都有单测）：`text` 是整句快照（**替换不追加**）；心跳先判（`sentence_id` 固定 0，否则会误把上一句定稿）；新句出现而上一句未定稿 → **按最后快照防御性定稿**（否则会话层的 Partial 替换语义会让上一句文字永久消失）；已定稿句的后续事件**一律忽略**（防重复 Final，也防迟到的 `end` 把新句的实时行清掉）。
   - **收尾流程有假服务端测试**（`finish_之后继续收尾部结果且残包先发出去`）：本地 `TcpListener` + `accept_async` 起一个假 WebSocket 服务端，收到 `finish-task` 后才发两条尾部结果、最后才发 `task-finished`。它守两条规则：**残包要在 `finish-task` 之前发出去**（否则最后 0~99 ms 永不上传、句尾少字）、**`finish-task` 之后要继续收**（发完就关会丢尾部结果）。
   - **阿里真机冒烟**：`VOICE_NOTES_ALIYUN_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --lib asr::cloud::aliyun::tests::真服务冒烟 -- --nocapture`。跑的时候顺带确认三件官方口径存疑的事：① 不传 `language_hints` 时是否真的自动识别多语种（若实际被限制成中/英，「30 语种」的说法要改）；② 同一句的连续 `text` 是否「越改越完整」而不是只在末尾追加；③ `heartbeat: true` 会不会产生额外事件。**结果记在本节。**
+  - **官方文档出处**（2026-11-16 核对）：
+    - 协议与事件：<https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api>、<https://help.aliyun.com/zh/model-studio/fun-asr-client-events>、<https://help.aliyun.com/zh/model-studio/fun-asr-server-events>
+    - 音频规格与「整句快照」口径：<https://help.aliyun.com/zh/model-studio/automatic-speech-recognition>
+    - 模型与语种：<https://help.aliyun.com/zh/model-studio/asr-model>、<https://help.aliyun.com/zh/model-studio/fun-asr-realtime>
+    - 术语表（预编译词表，本变更未采用）：<https://www.alibabacloud.com/help/zh/model-studio/vocabulary-http-api>、<https://docs.bailian.console.aliyun.com/zh/model-studio/improve-asr-accuracy>
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（客户端事件页 1300 / Paraformer SDK 页 800）→ **显式设 1300**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按 fun-asr 的「不传 = 自动识别」**；Paraformer 是否有 `sentence_id` → **没有**（本变更只用 fun-asr 的）。
 
 **云端相关测试基线**：`cargo test --lib` = **257**（其中 `asr::cloud` = 105 = 会话层 29 + Realtime 协议层 27 + 归一器 6 + 火山 18 + 阿里 25；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
