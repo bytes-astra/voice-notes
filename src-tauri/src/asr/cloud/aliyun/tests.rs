@@ -15,7 +15,7 @@ fn config() -> AliyunConfig {
 // ── run-task / finish-task ──────────────────────────────────────────
 
 #[test]
-fn run_task_携带必需的字段与固定取值() {
+fn run_task_carries_required_fields() {
     let raw = encode_run_task(&config(), "task-1");
     let value: Value = serde_json::from_str(&raw).unwrap();
 
@@ -37,7 +37,7 @@ fn run_task_携带必需的字段与固定取值() {
 }
 
 #[test]
-fn run_task_的语言提示只放一个值() {
+fn run_task_sends_single_language_hint() {
     let mut cfg = config();
     cfg.language_hint = Some("zh".into());
     let value: Value = serde_json::from_str(&encode_run_task(&cfg, "t")).unwrap();
@@ -48,7 +48,7 @@ fn run_task_的语言提示只放一个值() {
 }
 
 #[test]
-fn run_task_带术语表时放进_context() {
+fn run_task_puts_glossary_into_context() {
     let mut cfg = config();
     cfg.context_text = Some("术语表：祺元、洛柯".into());
     let value: Value = serde_json::from_str(&encode_run_task(&cfg, "t")).unwrap();
@@ -67,7 +67,7 @@ fn run_task_带术语表时放进_context() {
 }
 
 #[test]
-fn finish_task_复用同一个_task_id_且_input_为空对象() {
+fn finish_task_reuses_task_id_with_empty_input() {
     let value: Value = serde_json::from_str(&encode_finish_task("task-9")).unwrap();
     assert_eq!(value["header"]["action"], "finish-task");
     assert_eq!(value["header"]["task_id"], "task-9");
@@ -77,7 +77,7 @@ fn finish_task_复用同一个_task_id_且_input_为空对象() {
 // ── input.context 的组装与截断 ──────────────────────────────────────
 
 #[test]
-fn 空词表不带上下文() {
+fn empty_glossary_omits_context() {
     let (text, ignored) = build_context(&[]);
     assert_eq!(text, None);
     assert_eq!(ignored, 0);
@@ -88,7 +88,7 @@ fn 空词表不带上下文() {
 }
 
 #[test]
-fn 词表拼成一段带前缀的文本() {
+fn glossary_becomes_prefixed_text() {
     let words = vec!["祺元".to_string(), "洛柯".to_string()];
     let (text, ignored) = build_context(&words);
     assert_eq!(text.as_deref(), Some("术语表：祺元、洛柯"));
@@ -96,7 +96,7 @@ fn 词表拼成一段带前缀的文本() {
 }
 
 #[test]
-fn 超限时在术语边界上丢整条而不是截半个词() {
+fn over_limit_drops_whole_terms_not_half_a_word() {
     // 每个词 100 个中文字：前缀 4 字 + 100 + 「、」+ 100 + 「、」+ 100 = 306，
     // 再加第 4 个词就是 407 > 400 → 第 4 条整条丢弃。
     let words: Vec<String> = (0..4).map(|_| "甲".repeat(100)).collect();
@@ -111,7 +111,7 @@ fn 超限时在术语边界上丢整条而不是截半个词() {
 }
 
 #[test]
-fn 上限按字符计而不是字节() {
+fn limit_counts_chars_not_bytes() {
     // 397 个中文字 + 前缀 4 字 = 401 > 400 → 一条都放不下。
     let (text, ignored) = build_context(&["甲".repeat(397)]);
     assert_eq!(text, None);
@@ -125,7 +125,7 @@ fn 上限按字符计而不是字节() {
 // ── 事件解码 ────────────────────────────────────────────────────────
 
 #[test]
-fn 解码四种服务端事件() {
+fn decodes_all_four_server_events() {
     let started = r#"{"header":{"task_id":"t","event":"task-started","attributes":{}},"payload":{}}"#;
     assert!(matches!(
         decode_server_event(started).unwrap(),
@@ -162,7 +162,7 @@ fn 解码四种服务端事件() {
 }
 
 #[test]
-fn 未知事件不报错() {
+fn unknown_event_is_ignored() {
     let raw = r#"{"header":{"event":"some-future-event"},"payload":{}}"#;
     assert!(matches!(
         decode_server_event(raw).unwrap(),
@@ -171,7 +171,7 @@ fn 未知事件不报错() {
 }
 
 #[test]
-fn 非_json_报协议错误() {
+fn non_json_payload_reports_protocol_error() {
     let error = decode_server_event("not json").unwrap_err();
     assert!(error.starts_with("cloud.protocolError"), "{error}");
 }
@@ -213,7 +213,7 @@ fn finals(events: &[CloudEvent]) -> Vec<String> {
 /// 样例刻意用「第二次**改写**第一次」（更短），这样「追加」实现会得到
 /// 「你好世界你好」而不是「你好」—— 前缀型样例区分不出这两种实现。
 #[test]
-fn 中间结果是整句快照_替换不追加() {
+fn partial_is_whole_snapshot_not_appended() {
     let mut mapper = AliyunMapper::new();
     let first = mapper.map_sentence(sentence(1, false, "你好世界"));
     assert_eq!(partials(&first), vec!["你好世界".to_string()]);
@@ -229,7 +229,7 @@ fn 中间结果是整句快照_替换不追加() {
 ///
 /// 推导只看样例文本（不接收 `PartialSemantics`），所以把声明改错时这条会红。
 #[test]
-fn 声明的中间结果形态与样例一致() {
+fn declared_partial_semantics_matches_samples() {
     let mut mapper = AliyunMapper::new();
     let first = partials(&mapper.map_sentence(sentence(1, false, "你好世界")));
     let second = partials(&mapper.map_sentence(sentence(1, false, "你好")));
@@ -250,7 +250,7 @@ fn 声明的中间结果形态与样例一致() {
 }
 
 #[test]
-fn 句子结束时产定稿() {
+fn sentence_end_yields_final() {
     let mut mapper = AliyunMapper::new();
     mapper.map_sentence(sentence(1, false, "好，我知道"));
     let events = mapper.map_sentence(sentence(1, true, "好，我知道了"));
@@ -258,7 +258,7 @@ fn 句子结束时产定稿() {
 }
 
 #[test]
-fn 心跳被忽略且不触发定稿() {
+fn heartbeat_is_ignored_and_does_not_finalize() {
     let mut mapper = AliyunMapper::new();
     mapper.map_sentence(sentence(1, false, "第一句"));
     // 心跳的 sentence_id 固定为 0：若先判「新 id」就会把第一句提前定稿。
@@ -275,7 +275,7 @@ fn 心跳被忽略且不触发定稿() {
 }
 
 #[test]
-fn 新句开始而上一句未定稿时按快照定稿() {
+fn new_sentence_finalizes_previous_by_snapshot() {
     let mut mapper = AliyunMapper::new();
     mapper.map_sentence(sentence(1, false, "说了一半"));
     // 服务端直接开新句（官方没承诺一定会先给 sentence_end=true）。
@@ -285,7 +285,7 @@ fn 新句开始而上一句未定稿时按快照定稿() {
 }
 
 #[test]
-fn 已定稿的句再收到事件一律忽略() {
+fn finalized_sentence_ignores_later_events() {
     let mut mapper = AliyunMapper::new();
     mapper.map_sentence(sentence(1, true, "定稿了"));
     let again = mapper.map_sentence(sentence(1, true, "定稿了"));
@@ -293,7 +293,7 @@ fn 已定稿的句再收到事件一律忽略() {
 }
 
 #[test]
-fn 迟到的_end_不会清掉新句的实时行() {
+fn late_end_does_not_clear_new_live_line() {
     let mut mapper = AliyunMapper::new();
     mapper.map_sentence(sentence(1, false, "第一句"));
     // 新句开始 → 第一句被防御性定稿。
@@ -304,7 +304,7 @@ fn 迟到的_end_不会清掉新句的实时行() {
 }
 
 #[test]
-fn 空文本不产_partial_也不产空定稿() {
+fn empty_text_yields_no_partial_and_no_empty_final() {
     let mut mapper = AliyunMapper::new();
     let empty_partial = mapper.map_sentence(sentence(1, false, "   "));
     assert!(empty_partial.is_empty());
@@ -313,7 +313,7 @@ fn 空文本不产_partial_也不产空定稿() {
 }
 
 #[test]
-fn 同句结束时文本为空则用已有快照定稿() {
+fn empty_end_uses_existing_snapshot() {
     let mut mapper = AliyunMapper::new();
     mapper.map_sentence(sentence(1, false, "有内容"));
     let events = mapper.map_sentence(sentence(1, true, ""));
@@ -327,7 +327,7 @@ fn 同句结束时文本为空则用已有快照定稿() {
 // ── 能力声明 ────────────────────────────────────────────────────────
 
 #[test]
-fn 能力声明为服务端断句且不需要本地_vad() {
+fn capabilities_are_server_endpoint_without_local_vad() {
     let caps = AliyunProvider::CAPABILITIES;
     assert_eq!(caps.endpoint_kind, EndpointKind::ServerEndpoint);
     assert!(!caps.needs_local_vad);
@@ -339,7 +339,7 @@ fn 能力声明为服务端断句且不需要本地_vad() {
 /// 后台错误必须能从 `&mut dyn CloudProvider` 取到 —— 只写固有方法会让
 /// trait 的默认实现遮蔽它（恒 `None`）。
 #[test]
-fn 后台错误能从_trait_方法取到() {
+fn background_error_is_taken_through_trait_method() {
     let mut provider = AliyunProvider::new(config());
     provider.error_tx.send("cloud.disconnected".into()).unwrap();
     let dynamic: &mut dyn CloudProvider = &mut provider;
@@ -348,7 +348,7 @@ fn 后台错误能从_trait_方法取到() {
 
 /// 语言映射：`auto` 与未知值都不传，`yue` 映射成 `zh`（阿里没有 `yue` code）。
 #[test]
-fn 语言映射按官方支持的_code() {
+fn language_hint_maps_supported_codes() {
     assert_eq!(language_hint("auto"), None);
     assert_eq!(language_hint(""), None);
     assert_eq!(language_hint("zh").as_deref(), Some("zh"));
@@ -370,7 +370,7 @@ fn 语言映射按官方支持的_code() {
 /// 服务端收到 `finish-task` 后才发两条尾部定稿，最后才发 `task-finished`。
 /// 实现若「发完就关连接/停止读」，第二条定稿必然收不到 → 红。
 #[test]
-fn finish_之后继续收尾部结果且残包先发出去() {
+fn finish_keeps_reading_and_flushes_leftover_packet() {
     use std::sync::{Arc, Mutex};
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -490,10 +490,10 @@ fn finish_之后继续收尾部结果且残包先发出去() {
 
 // ── 真机冒烟 ────────────────────────────────────────────────────────
 
-/// 真服务冒烟：连上百炼 → 喂一段真实语音 → 收中间结果与定稿 → 收尾。
+/// live_smoke：连上百炼 → 喂一段真实语音 → 收中间结果与定稿 → 收尾。
 ///
 ///   VOICE_NOTES_ALIYUN_KEY=... cargo test --manifest-path src-tauri/Cargo.toml \
-///     --lib asr::cloud::aliyun::tests::真服务冒烟 -- --nocapture
+///     --lib asr::cloud::aliyun::tests::live_smoke -- --nocapture
 ///
 /// **没有环境变量就跳过**（打印一行「跳过」，不打印 key）。key 只从环境变量
 /// 读 —— 不写进仓库、不进日志、不进断言消息。
@@ -503,7 +503,7 @@ fn finish_之后继续收尾部结果且残包先发出去() {
 /// ② 同一句的连续 `text` 是否「越改越完整」而不是只在末尾追加；
 /// ③ `heartbeat: true` 会不会产生额外事件。
 #[test]
-fn 真服务冒烟() {
+fn live_smoke() {
     let Ok(key) = std::env::var("VOICE_NOTES_ALIYUN_KEY") else {
         println!("跳过：未设置 VOICE_NOTES_ALIYUN_KEY");
         return;

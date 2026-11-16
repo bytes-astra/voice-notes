@@ -4,7 +4,7 @@ use super::*;
 
 /// 增量拼接：逐段追加。
 #[test]
-fn 增量拼接按当前句累加() {
+fn delta_appends_to_current_sentence() {
     let mut acc = PartialAccumulator::new(PartialSemantics::Delta);
     let first = acc.apply(Some("a".into()), PartialUpdate::Delta("你好".into()));
     assert_eq!(first, "你好");
@@ -14,7 +14,7 @@ fn 增量拼接按当前句累加() {
 
 /// 确认前缀 + 草稿：整体替换。
 #[test]
-fn 确认前缀加草稿整体替换() {
+fn preview_replaces_whole_sentence() {
     let mut acc = PartialAccumulator::new(PartialSemantics::Preview);
     let first = acc.apply(
         Some("a".into()),
@@ -30,7 +30,7 @@ fn 确认前缀加草稿整体替换() {
 
 /// 区间替换：只改指定区间。
 #[test]
-fn 区间替换只改指定区间() {
+fn range_update_rewrites_only_given_range() {
     let mut acc = PartialAccumulator::new(PartialSemantics::Range);
     acc.apply(Some("a".into()), PartialUpdate::Delta("你".into()));
     acc.apply(Some("a".into()), PartialUpdate::Delta("好".into()));
@@ -43,7 +43,7 @@ fn 区间替换只改指定区间() {
 
 /// 句定稿后清掉自己的桶；别的桶不受影响。
 #[test]
-fn 定稿只清自己的桶() {
+fn finish_clears_only_its_own_bucket() {
     let mut acc = PartialAccumulator::new(PartialSemantics::Delta);
     acc.apply(Some("a".into()), PartialUpdate::Delta("第一句".into()));
     acc.apply(Some("b".into()), PartialUpdate::Delta("第二句".into()));
@@ -54,7 +54,7 @@ fn 定稿只清自己的桶() {
 
 /// 没有句标识 → 单桶：一条定稿清空整桶。
 #[test]
-fn 无句标识走单桶() {
+fn no_id_uses_single_bucket() {
     let mut acc = PartialAccumulator::new(PartialSemantics::Delta);
     acc.apply(None, PartialUpdate::Delta("一句".into()));
     assert_eq!(acc.finish_sentence(None).as_deref(), Some("一句"));
@@ -63,7 +63,7 @@ fn 无句标识走单桶() {
 
 /// 当前活跃句 = 最近被更新的那一句（用于旧句定稿后补发实时文本）。
 #[test]
-fn 当前活跃句是最近更新的() {
+fn current_is_the_last_touched_sentence() {
     let mut acc = PartialAccumulator::new(PartialSemantics::Delta);
     acc.apply(Some("a".into()), PartialUpdate::Delta("甲".into()));
     acc.apply(Some("b".into()), PartialUpdate::Delta("乙".into()));

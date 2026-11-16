@@ -16,7 +16,7 @@ const SAMPLE: &str = r#"{
 
 /// 已定稿的句子 → 定稿事件（不是实时行）。
 #[test]
-fn 定稿句子映射为final() {
+fn definite_sentence_maps_to_final() {
     let mut emitted = 0;
     let events = map_response(SAMPLE.as_bytes(), &mut emitted);
     let finals: Vec<String> = events
@@ -32,7 +32,7 @@ fn 定稿句子映射为final() {
 
 /// 最后一条未定稿的句子 → 实时行（当前句的累计串）。
 #[test]
-fn 未定稿句子映射为partial() {
+fn indefinite_sentence_maps_to_partial() {
     let payload = r#"{"result":{"utterances":[{"definite":false,"text":"正在说"}]}}"#;
     let mut emitted = 0;
     let events = map_response(payload.as_bytes(), &mut emitted);
@@ -48,7 +48,7 @@ fn 未定稿句子映射为partial() {
 
 /// 同一句定稿后不再重复上抛（服务端会重复发累积结果）。
 #[test]
-fn 已定稿句子不重复上抛() {
+fn finalized_sentence_is_not_emitted_twice() {
     let mut emitted = 0;
     let first = map_response(SAMPLE.as_bytes(), &mut emitted);
     assert_eq!(first.len(), 2);
@@ -58,7 +58,7 @@ fn 已定稿句子不重复上抛() {
 
 /// 热词：控制字符丢弃、超上限（100 条）截断。
 #[test]
-fn 热词按火山规则清洗() {
+fn keywords_are_cleaned_by_volcengine_rules() {
     let mut words: Vec<String> = (0..120).map(|i| format!("词{i}")).collect();
     words.push("带\n控制符".into());
     let (clean, ignored) = clean_volcengine_keywords(&words);
@@ -68,7 +68,7 @@ fn 热词按火山规则清洗() {
 
 /// 术语表 → `corpus.context`（JSON 字符串）。
 #[test]
-fn 术语表编码为corpus_context() {
+fn keywords_encoded_as_corpus_context() {
     let context = encode_corpus_context(&["玄戒芯片".into()]).expect("应有 context");
     let value: Value = serde_json::from_str(&context).expect("应是合法 JSON");
     assert_eq!(value["hotwords"][0]["word"], "玄戒芯片");
@@ -77,7 +77,7 @@ fn 术语表编码为corpus_context() {
 
 /// 能力声明：服务端断句、不需要本地 VAD、16 kHz。
 #[test]
-fn 能力声明为服务端断句() {
+fn capabilities_are_server_endpoint() {
     let caps = VolcengineProvider::CAPABILITIES;
     assert_eq!(caps.endpoint_kind, EndpointKind::ServerEndpoint);
     assert!(!caps.needs_local_vad, "服务端断句不需要本地 VAD");
@@ -86,7 +86,7 @@ fn 能力声明为服务端断句() {
 
 /// 首次全量请求的内容：模型名、音频参数、断句参数、热词。
 #[test]
-fn 首次请求内容正确() {
+fn first_request_payload_is_correct() {
     let config = VolcengineConfig {
         base_url: String::new(),
         api_key: "k".into(),
@@ -114,7 +114,7 @@ fn 首次请求内容正确() {
 
 /// 错误码映射：空音频 → 没有结果；等包超时 → 超时；其余 → 协议错误（带细节）。
 #[test]
-fn 错误码映射到字典码() {
+fn error_code_maps_to_dictionary_key() {
     assert_eq!(map_error_code(45000002, "empty audio"), "cloud.noResult");
     assert_eq!(map_error_code(45000081, "timeout"), "cloud.timeout");
     let other = map_error_code(45000151, "bad format");
@@ -130,7 +130,7 @@ fn 错误码映射到字典码() {
 /// **没有环境变量就跳过**（打印一行「跳过：未设置…」，不打印 key）。
 /// key 只从环境变量读 —— 不写进仓库、不进日志、不进断言消息。
 #[test]
-fn 真服务冒烟() {
+fn live_smoke() {
     let Ok(key) = std::env::var("VOICE_NOTES_VOLCENGINE_KEY") else {
         println!("跳过：未设置 VOICE_NOTES_VOLCENGINE_KEY");
         return;
@@ -223,7 +223,7 @@ fn 真服务冒烟() {
 /// 那两个码 `map_error_code` 根本不看 `message`，只断言「不含 key」会**恒真**
 /// （凭据压根没进过详情）。
 #[test]
-fn 服务端错误消息里的凭据要脱敏() {
+fn server_error_message_redacts_secret() {
     let key = "sk-secret-123";
     let detail = error_detail(45000151, "上传失败：sk-secret-123", key);
     assert!(

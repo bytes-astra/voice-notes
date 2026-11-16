@@ -358,7 +358,7 @@ fn clean_cloud_keywords_drops_protocol_illegal_chars() {
 /// 服务端报错时提交槽必须被解开：不解决它，后面所有 final 都会被扣住
 /// （转写里静默少了后文），收尾还要白等 10 秒。
 #[test]
-fn 报错解开队首的提交槽() {
+fn error_releases_the_head_commit_slot() {
     let mut tracker = CommitTracker::default();
     tracker.commit();
     tracker.committed(Some("a".into()));

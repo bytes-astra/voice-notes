@@ -324,7 +324,7 @@ fn invalid_capability_combination_is_rejected() {
 /// 区间按 `item_id` 绑定（不是按到达顺序）—— 服务端先回后一轮的 completed
 /// 是协议允许的。
 #[test]
-fn 乱序final不串位() {
+fn out_of_order_final_keeps_its_span() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -377,7 +377,7 @@ fn 乱序final不串位() {
 /// 失败的 item 没有回执时（回执晚到或没到），后面的句子也不能串位：
 /// 失败事件自带 item_id，回执随后照常补上。
 #[test]
-fn 失败item无回执不串位() {
+fn failed_item_without_ack_keeps_spans_aligned() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -421,7 +421,7 @@ fn 失败item无回执不串位() {
 
 /// 上传丢包要留下缺口标记，并记下它发生在哪一秒。
 #[test]
-fn 上传丢包记下缺口位置() {
+fn upload_drop_records_gap_position() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     // 第一次发送就丢 1 秒。
     state.lock().unwrap().dropped_reply = 16_000;
@@ -442,7 +442,7 @@ fn 上传丢包记下缺口位置() {
 /// 提交失败之后又喂了音频，收尾那条 final 的区间要覆盖到最后 ——
 /// 服务端把两段音频合成一条结果，区间也必须合成一段。
 #[test]
-fn 提交失败后收尾区间覆盖到最后() {
+fn failed_commit_merges_span_into_the_last_one() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     {
         let mut guard = state.lock().unwrap();
@@ -474,7 +474,7 @@ fn 提交失败后收尾区间覆盖到最后() {
 
 /// 能力表与 provider 实例自报的值必须一致（两处漂移会让状态与行为分叉）。
 #[test]
-fn 能力表与实例一致() {
+fn capability_table_matches_instances() {
     for id in crate::settings::CLOUD_PROVIDERS {
         let caps = provider_capabilities(id).unwrap_or_else(|| panic!("{id} 应有能力项"));
         let provider = create_provider(&crate::settings::Settings {
@@ -488,7 +488,7 @@ fn 能力表与实例一致() {
 
 /// 未知 provider：没有能力项，也建不出 provider。
 #[test]
-fn 未知provider建不出来() {
+fn unknown_provider_cannot_be_created() {
     assert!(provider_capabilities("不存在的服务").is_none());
     let settings = crate::settings::Settings {
         cloud_provider: "不存在的服务".into(),
@@ -499,7 +499,7 @@ fn 未知provider建不出来() {
 
 /// 能力声明不支持术语表时，一个词都不带（系统不得向它发送术语表）。
 #[test]
-fn 能力不支持术语表时不带词() {
+fn no_keywords_when_capability_says_unsupported() {
     let settings = crate::settings::Settings {
         hotwords: vec!["玄戒芯片".into()],
         ..Default::default()
@@ -519,7 +519,7 @@ fn 能力不支持术语表时不带词() {
 /// 连续丢包要并成一条缺口：网络持续背压时逐条上报会刷出几百个
 /// [[gap:1]]，而且每条都声称丢了 1 秒（累计时长自相矛盾）。
 #[test]
-fn 连续丢包并成一条缺口() {
+fn consecutive_drops_merge_into_one_gap() {
     let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -545,7 +545,7 @@ fn 连续丢包并成一条缺口() {
 ///
 /// 这是火山的真实形态（60 ms 推送块攒成 200 ms 的包）。
 #[test]
-fn 攒包不算投递丢包段不断() {
+fn buffering_is_not_delivery_so_gap_stays_open() {
     let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
     {
         let mut guard = state.lock().unwrap();
@@ -569,7 +569,7 @@ fn 攒包不算投递丢包段不断() {
 
 /// 丢 → 成功发送 → 丢：必须是**两条**缺口（中间的投递把段断开了）。
 #[test]
-fn 投递成功后丢包另起一段() {
+fn delivery_closes_gap_and_next_drop_opens_a_new_one() {
     let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -594,7 +594,7 @@ fn 投递成功后丢包另起一段() {
 /// 最后一句没定稿时（超时 / 断连），实时行上已经显示的文字不能凭空消失：
 /// 收尾要按 partial 兜底落成句子。
 #[test]
-fn 收尾把未定的partial落成句子() {
+fn finish_turns_unfinalized_partial_into_sentence() {
     let (provider, state) = MockProvider::new(EndpointKind::ClientCommit, 16000);
     let mut session = CloudStreamingSession::new(Box::new(provider));
     session.connect().unwrap();
@@ -637,7 +637,7 @@ fn sanitize_leaves_text_without_secret_alone() {
 
 /// 8k 模型必须被拒：`target_sample_rate` 是静态常量 16000，8k 模型要求 8000。
 #[test]
-fn 阿里的_8k_模型被拒绝且错误里带模型名() {
+fn aliyun_8k_model_is_rejected_with_model_name() {
     let settings = crate::settings::Settings {
         cloud_provider: "aliyun".into(),
         cloud_model: "fun-asr-flash-8k-realtime".into(),
@@ -653,7 +653,7 @@ fn 阿里的_8k_模型被拒绝且错误里带模型名() {
 
 /// 16k 的阿里模型能建出来（默认模型名也走这条）。
 #[test]
-fn 阿里的_16k_模型能建出来() {
+fn aliyun_16k_model_builds() {
     for model in ["", "fun-asr-realtime", "fun-asr-realtime-2026-02-28"] {
         let settings = crate::settings::Settings {
             cloud_provider: "aliyun".into(),

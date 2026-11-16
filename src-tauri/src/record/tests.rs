@@ -825,7 +825,7 @@ fn cloud_core_does_not_double_count_upload_drops() {
 /// 起点 —— 正好是第一句的终点。收尾把这段缺口落账时，它必须排在第一句后面，
 /// 而不是被并进第一句里（那会让用户以为那句话多说了半秒）。
 #[test]
-fn 云端收尾的尾部缺口排在最后一句之后() {
+fn cloud_tail_gap_follows_last_sentence() {
     use crate::asr::cloud::mock::MockProvider;
     use crate::asr::cloud::{CloudStreamingSession, EndpointKind};
 
@@ -909,7 +909,7 @@ fn 云端收尾的尾部缺口排在最后一句之后() {
 
 /// 门控决策：客户端提交族必须有本地 VAD；服务端断句族一律不门控。
 #[test]
-fn 门控按能力决定() {
+fn gate_follows_capabilities() {
     use crate::asr::cloud::{Capabilities, EndpointKind, PartialSemantics};
     let client_commit = Capabilities {
         endpoint_kind: EndpointKind::ClientCommit,
@@ -941,7 +941,7 @@ fn 门控按能力决定() {
 /// 现有两个云端集成测试用的就是服务端断句 mock（`vad_config=None`），
 /// 这条把「静音照上传」明确断言出来：门控生效时静音会被丢掉。
 #[test]
-fn 服务端断句族静音照上传() {
+fn server_endpoint_uploads_silence() {
     use crate::asr::cloud::mock::MockProvider;
     use crate::asr::cloud::{CloudStreamingSession, EndpointKind};
 

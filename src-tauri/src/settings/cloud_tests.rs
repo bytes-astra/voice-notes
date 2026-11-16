@@ -36,7 +36,7 @@ fn cloud_config_none_keeps_key_empty_clears() {
 
 /// 云端服务与资源标识可随配置一起保存；非法 provider 不改。
 #[test]
-fn 云端配置保存服务与资源标识() {
+fn cloud_config_saves_provider_and_resource_id() {
     let mut settings = Settings::default();
     apply_cloud_config(
         &mut settings,
