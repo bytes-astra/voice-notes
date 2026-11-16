@@ -216,13 +216,16 @@ fn 真服务冒烟() {
 
 /// 服务端错误消息里的凭据要脱敏。
 ///
+/// 走 `error_detail` —— 那就是**生产路径上的那个函数**（错误帧 → 错误详情），
+/// 删掉它里面的 `sanitize` 调用，这条守卫就会红。
+///
 /// **必须用 `_` 分支的错误码**（如 `45000151`）—— `45000002` / `45000081`
-/// 那两个码 `map_error_code` 根本不看 `message`，拿它们断言会**恒真**
-/// （把 `sanitize` 调用删掉也照样过）。
+/// 那两个码 `map_error_code` 根本不看 `message`，只断言「不含 key」会**恒真**
+/// （凭据压根没进过详情）。
 #[test]
 fn 服务端错误消息里的凭据要脱敏() {
     let key = "sk-secret-123";
-    let detail = map_error_code(45000151, &sanitize("上传失败：sk-secret-123", key));
+    let detail = error_detail(45000151, "上传失败：sk-secret-123", key);
     assert!(
         detail.starts_with("cloud.protocolError"),
         "错误详情要带上字典码：{}",

@@ -35,6 +35,9 @@ pub struct MockState {
     /// **有计划时只看计划**，不看 `dropped_reply`；没有计划才用后者。
     pub drop_plan: Option<Vec<usize>>,
     /// 已经发过几次音频（测试据此驱动下一次动作）。
+    ///
+    /// 注意：**收尾时重采样器冲尾巴的那次发送也算在内**（16 kHz 的 provider
+    /// 没有重采样器，不受影响）。
     pub sends: usize,
     /// 模拟「返回 0 但其实没投递」（火山攒包时的形态）。
     pub not_delivered: bool,

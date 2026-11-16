@@ -395,8 +395,7 @@ async fn run(
                         }
                     }
                     Ok(ServerFrame::Error { code, message }) => {
-                        let message = sanitize(&message, &config.api_key);
-                        let error = map_error_code(code, &message);
+                        let error = error_detail(code, &message, &config.api_key);
                         let _ = errors.send(error);
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
@@ -532,6 +531,15 @@ fn sanitize(text: &str, secret: &str) -> String {
         return text.to_string();
     }
     text.replace(secret, "***")
+}
+
+/// 服务端错误帧 → 干净的错误详情。
+///
+/// **凭据先脱敏再进错误详情** —— 顺序不能反：先映射成字典码再脱敏，细节里
+/// 的凭据就漏出去了。抽成函数是为了让单测能直接覆盖这条生产路径（删掉这里的
+/// `sanitize` 调用，守卫就会红）。
+fn error_detail(code: u32, message: &str, api_key: &str) -> String {
+    map_error_code(code, &sanitize(message, api_key))
 }
 
 #[cfg(test)]

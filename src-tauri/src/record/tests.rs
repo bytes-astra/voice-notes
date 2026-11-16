@@ -851,7 +851,13 @@ fn 云端收尾的尾部缺口排在最后一句之后() {
     let sender = state.clone();
     std::thread::spawn(move || {
         // 第二次上传之后停：那时缺口还开着（没被成功投递闭合），收尾才落账。
+        // **带超时**：万一第二次上传永远不发生，这里要停下来让用例**失败**，
+        // 而不是永远挂着（cargo 的单测没有超时，只能等 CI job 超时）。
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while sender.lock().unwrap().sends < 2 {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
         stopper.store(true, Ordering::SeqCst);
@@ -886,6 +892,7 @@ fn 云端收尾的尾部缺口排在最后一句之后() {
         .iter()
         .find(|segment| segment.text.contains("[[gap:"))
         .expect("收尾的尾部缺口要在");
+    // 缺口是一个时刻，不是一段区间（构造上必然成立，写出来是为了说明口径）。
     assert_eq!(gap.start, gap.end, "缺口是一个时刻，不是一段区间");
     assert!(
         gap.start >= sentence.end,
