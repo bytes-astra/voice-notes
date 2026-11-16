@@ -666,3 +666,171 @@ fn aliyun_16k_model_builds() {
         );
     }
 }
+
+// ── 复现用：同一 drain 批次里 Final 与 Partial 的先后顺序 ──────────────
+
+/// 取最终转写里的句子文本（按本地时间轴排好序）。
+fn segment_texts(transcript: Transcript) -> Vec<String> {
+    transcript
+        .segments
+        .into_iter()
+        .map(|segment| segment.text)
+        .collect()
+}
+
+/// 复现：同一个 drain 批次里先到 Final、后到 Partial。
+///
+/// 服务端断句族不调 `force_end`，收尾时 `finish()` 才把区间推进 `pending`。
+/// `drain()` 处理 Final 时先 `self.partial.clear()`，随后到达的 Partial 又把
+/// `self.partial` 填上；`finish()` 末尾的兜底（「最后一句还没定稿」）于是再落
+/// 一条 Segment。
+///
+/// 这条断言的是**当前实际行为**（两条句子），用来复现疑似缺陷。
+#[test]
+fn final_then_partial_in_one_batch_yields_extra_fallback_segment() {
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    // 同一个 drain 批次：Final 先入队，Partial 后入队。
+    emit(
+        &state,
+        CloudEvent::Final {
+            item_id: None,
+            text: "完整的一句".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    emit(&state, CloudEvent::Partial("说了一半".into()));
+    session.finish();
+    let texts = segment_texts(session.transcript());
+    assert_eq!(
+        texts,
+        vec!["完整的一句".to_string(), "说了一半".to_string()],
+        "Final 之后的 Partial 被 finish 兜底成了第二条句子"
+    );
+}
+
+/// 常态顺序（同一批次里 Partial 先、Final 后）：Final 清掉 partial，
+/// 不会在 finish 时多出兜底句子。
+#[test]
+fn partial_then_final_in_one_batch_yields_one_segment() {
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    emit(&state, CloudEvent::Partial("说了一半".into()));
+    emit(
+        &state,
+        CloudEvent::Final {
+            item_id: None,
+            text: "完整的一句".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    session.finish();
+    let texts = segment_texts(session.transcript());
+    assert_eq!(
+        texts,
+        vec!["完整的一句".to_string()],
+        "Partial 先到、Final 后到时不能多出重复句"
+    );
+}
+
+/// 走真实的 `AliyunMapper`：服务端直接开新句时，映射器先发上一句的 Final、
+/// 再发新句的 Partial —— 正是「Final 先、Partial 后」。
+///
+/// 这里两条文本属于**不同句子**，所以 finish 的兜底落的是新句的实时文本，
+/// 不是重复句。
+#[test]
+fn aliyun_new_sentence_partial_after_final_is_not_a_duplicate() {
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    let sentence = |id: i64, end: bool, text: &str| aliyun::Sentence {
+        id: Some(id),
+        begin: false,
+        end,
+        heartbeat: false,
+        text: text.into(),
+    };
+    let mut mapper = aliyun::AliyunMapper::new();
+    for event in mapper.map_sentence(sentence(1, false, "第一句")) {
+        emit(&state, event);
+    }
+    // 服务端没给第一句的 end，直接开新句：映射器先定稿第一句，再给新句 partial。
+    for event in mapper.map_sentence(sentence(2, false, "第二句半句")) {
+        emit(&state, event);
+    }
+    session.finish();
+    let texts = segment_texts(session.transcript());
+    assert_eq!(
+        texts,
+        vec!["第一句".to_string(), "第二句半句".to_string()],
+        "新句的 partial 被兜底落成句子（是另一句，不是重复）"
+    );
+}
+
+/// 只有在**同一句**的迟到 Partial 也到达会话层时，兜底才会把已定稿的句子
+/// 原样再落一遍。阿里的映射器用 `finalized` 把这种事件挡在 provider 内部
+/// （见 `aliyun/tests.rs` 的 `finalized_sentence_ignores_later_events`），
+/// 这里在会话层直接造出这个形态，确认会话层自身没有这层护栏。
+#[test]
+fn stale_partial_for_a_finalized_sentence_would_be_duplicated() {
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    emit(
+        &state,
+        CloudEvent::Final {
+            item_id: None,
+            text: "完整的一句".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    emit(&state, CloudEvent::Partial("完整的一句".into()));
+    session.finish();
+    let texts = segment_texts(session.transcript());
+    assert_eq!(
+        texts,
+        vec!["完整的一句".to_string(), "完整的一句".to_string()],
+        "同句迟到 partial 会被 finish 兜底成重复句（会话层无护栏）"
+    );
+}
+
+/// 映射器侧护栏：同一句定稿之后，服务端再补一条 Partial，映射器直接丢弃，
+/// 不会把它送进会话层 —— 这是「重复句」在生产路径上到不了会话层的原因。
+#[test]
+fn aliyun_mapper_drops_late_partial_for_finalized_sentence() {
+    let sentence = |id: i64, end: bool, text: &str| aliyun::Sentence {
+        id: Some(id),
+        begin: false,
+        end,
+        heartbeat: false,
+        text: text.into(),
+    };
+    let mut mapper = aliyun::AliyunMapper::new();
+    let first = mapper.map_sentence(sentence(1, false, "完整的一句"));
+    assert!(
+        matches!(first.first(), Some(CloudEvent::Partial(_))),
+        "首条应是 Partial：{first:?}"
+    );
+    let finalized = mapper.map_sentence(sentence(1, true, "完整的一句"));
+    assert!(
+        finalized
+            .iter()
+            .any(|event| matches!(event, CloudEvent::Final { .. })),
+        "end 要产一条 Final：{finalized:?}"
+    );
+    let late = mapper.map_sentence(sentence(1, false, "完整的一句"));
+    assert!(late.is_empty(), "定稿后的同句 partial 必须被丢弃：{late:?}");
+}

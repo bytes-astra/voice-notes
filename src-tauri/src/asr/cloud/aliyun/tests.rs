@@ -151,7 +151,7 @@ fn decodes_all_four_server_events() {
     let result = r#"{"header":{"event":"result-generated"},"payload":{"output":{"sentence":{"sentence_id":1,"sentence_begin":false,"sentence_end":true,"begin_time":170,"end_time":920,"text":"好，我知道了","heartbeat":false}},"usage":{"duration":3}}}"#;
     match decode_server_event(result).unwrap() {
         ServerEvent::Sentence(sentence) => {
-            assert_eq!(sentence.id, 1);
+            assert_eq!(sentence.id, Some(1));
             assert!(!sentence.begin);
             assert!(sentence.end);
             assert!(!sentence.heartbeat);
@@ -179,9 +179,14 @@ fn non_json_payload_reports_protocol_error() {
 // ── 结果映射（有状态） ──────────────────────────────────────────────
 
 fn sentence(id: i64, end: bool, text: &str) -> Sentence {
+    sentence_with(Some(id), false, end, text)
+}
+
+/// 造一条句子：`id` 为 `None` 表示服务端没给 `sentence_id`。
+fn sentence_with(id: Option<i64>, begin: bool, end: bool, text: &str) -> Sentence {
     Sentence {
         id,
-        begin: false,
+        begin,
         end,
         heartbeat: false,
         text: text.into(),
@@ -263,7 +268,7 @@ fn heartbeat_is_ignored_and_does_not_finalize() {
     mapper.map_sentence(sentence(1, false, "第一句"));
     // 心跳的 sentence_id 固定为 0：若先判「新 id」就会把第一句提前定稿。
     let beat = mapper.map_sentence(Sentence {
-        id: 0,
+        id: Some(0),
         begin: false,
         end: false,
         heartbeat: true,
@@ -670,4 +675,60 @@ fn close_without_task_finished_reports_disconnected() {
     server.join().unwrap();
 
     assert!(error.starts_with("cloud.disconnected"), "{error}");
+}
+
+// ── 缺 sentence_id 的容错 ────────────────────────────────────────────
+
+/// 服务端**没给** `sentence_id` 时，两条不同的句子不能被当成同一句 ——
+/// 否则第一句定稿后 id 进了去重集合，第二句会被静默丢掉。
+#[test]
+fn missing_sentence_id_does_not_swallow_the_next_sentence() {
+    let mut mapper = AliyunMapper::new();
+    // 第一句：没有 id，靠 sentence_begin 标记新句。
+    let first = mapper.map_sentence(sentence_with(None, true, false, "第一句"));
+    assert_eq!(partials(&first), vec!["第一句".to_string()]);
+    let first_end = mapper.map_sentence(sentence_with(None, false, true, "第一句"));
+    assert_eq!(finals(&first_end), vec!["第一句".to_string()]);
+
+    // 第二句：同样没有 id，但它带了 sentence_begin → 是新句，不能被吞。
+    let second = mapper.map_sentence(sentence_with(None, true, false, "第二句"));
+    assert_eq!(
+        partials(&second),
+        vec!["第二句".to_string()],
+        "缺 id 的第二句不能被当成重复句丢掉"
+    );
+    let second_end = mapper.map_sentence(sentence_with(None, false, true, "第二句"));
+    assert_eq!(finals(&second_end), vec!["第二句".to_string()]);
+}
+
+/// `id == 0` 但没带 `heartbeat` 标记：0 是心跳的 id，按**缺 id**处理，
+/// 而且不能把正在打开的句子提前定稿。
+#[test]
+fn zero_id_without_heartbeat_is_treated_as_missing_id() {
+    let mut mapper = AliyunMapper::new();
+    mapper.map_sentence(sentence(1, false, "第一句"));
+    // 心跳形状（id=0）但没标 heartbeat：不能提前定稿第一句。
+    let beat = mapper.map_sentence(sentence_with(Some(0), false, false, ""));
+    assert!(
+        finals(&beat).is_empty(),
+        "id=0 的空事件不该把打开的句子定稿：{beat:?}"
+    );
+    // 第一句后面照常能定稿。
+    let end = mapper.map_sentence(sentence(1, true, "第一句"));
+    assert_eq!(finals(&end), vec!["第一句".to_string()]);
+}
+
+/// 缺 id 的句子里，「新句开始」标志负责切句：没有它就当作同一句的快照更新。
+#[test]
+fn missing_id_uses_sentence_begin_to_split() {
+    let mut mapper = AliyunMapper::new();
+    // 没有 sentence_begin → 视为同一句的快照更新（替换不追加）。
+    let first = mapper.map_sentence(sentence_with(None, false, false, "说了一半"));
+    assert_eq!(partials(&first), vec!["说了一半".to_string()]);
+    let update = mapper.map_sentence(sentence_with(None, false, false, "说完了"));
+    assert_eq!(partials(&update), vec!["说完了".to_string()]);
+    assert!(
+        finals(&update).is_empty(),
+        "没有 sentence_begin 就不能自己切句：{update:?}"
+    );
 }

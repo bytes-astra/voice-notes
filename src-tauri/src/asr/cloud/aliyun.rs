@@ -17,7 +17,7 @@
 //! 之后要继续收到 `task-finished`（发完就关会丢尾部结果）；`sentence_end=true`
 //! 只表示句子结束，任务结束以 `task-finished` 为准。
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
@@ -93,7 +93,10 @@ enum Command {
 /// 一条服务端 `sentence`。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sentence {
-    pub id: i64,
+    /// 服务端给的句标识。**缺字段时是 `None`** —— 不能拿 0 顶替：官方口径里
+    /// 0 是心跳的 id，两条都缺 id 的句子会共用 0，被当成同一句（第二句被吞）。
+    pub id: Option<i64>,
+    /// 句子的开始标志（服务端显式说「新句开始了」）。
     pub begin: bool,
     pub end: bool,
     pub heartbeat: bool,
@@ -435,7 +438,8 @@ pub fn decode_server_event(raw: &str) -> Result<ServerEvent, String> {
 fn parse_sentence(value: &Value) -> Sentence {
     Sentence {
         // `sentence_id` 是 integer，正常结果从 1 递增，心跳固定 0。
-        id: value.get("sentence_id").and_then(Value::as_i64).unwrap_or(0),
+        // **缺字段时留 None**（不用 0 顶替 —— 0 是心跳的 id）。
+        id: value.get("sentence_id").and_then(Value::as_i64),
         begin: value
             .get("sentence_begin")
             .and_then(Value::as_bool)
@@ -464,11 +468,20 @@ fn parse_sentence(value: &Value) -> Sentence {
 /// 的文字永久消失。
 #[derive(Debug, Default)]
 pub struct AliyunMapper {
-    /// 当前未定稿句：`(sentence_id, 最后一次非空快照)`。
-    open: Option<(i64, String)>,
-    /// 已定稿的句 id：它们的后续事件一律忽略（防重复 Final / 迟到 end
-    /// 把新句的实时行清掉）。
-    finalized: HashSet<i64>,
+    /// 当前未定稿句：`(句 id，最后一次非空快照)`。
+    ///
+    /// **id 可能是 `None`** —— 服务端没给 `sentence_id` 时（见 `Sentence.id`），
+    /// 只能靠 `sentence_begin` 标志与「end」来切句。
+    open: Option<(Option<i64>, String)>,
+    /// 已定稿的句：id → 定稿文本。
+    ///
+    /// 存文本而不只是 id：重复到达的同一句**文本没变**时不该刷 WARN
+    /// （服务端重发同一条 `sentence_end` 是正常的）。
+    ///
+    /// **只有带 id 的句子才进来** —— 缺 id 的句子无法可靠去重（见 `map_sentence`）。
+    finalized: HashMap<i64, String>,
+    /// 本次会话是否已经为「缺 `sentence_id`」记过 WARN（避免刷屏）。
+    warned_missing_id: bool,
 }
 
 impl AliyunMapper {
@@ -476,6 +489,19 @@ impl AliyunMapper {
         Self::default()
     }
 
+    /// 把一条 `sentence` 归一成 `CloudEvent`。
+    ///
+    /// ## 缺 `sentence_id` 怎么办
+    ///
+    /// 官方口径里 `sentence_id` 必有（正常结果从 1 递增，心跳固定 0）。若服务端
+    /// 缺这个字段，两条**不同**的句子会共用同一个 id —— 用它做去重键会把第二句
+    /// 当成重复句**静默丢掉**。所以：
+    ///
+    /// - **只有带 id 的句子才参与 `finalized` 去重**；
+    /// - 缺 id 时靠 `sentence_begin` 判断新句（服务端显式说「新句开始」）；
+    /// - `id == 0` 但没带 `heartbeat` 标记 → 当成缺 id 处理（0 是心跳的 id）；
+    /// - 每次会话首次发现缺 id 时记一条 WARN —— 兼容路径能继续工作，但服务端
+    ///   违约这件事要留在日志里，不能用一个静默兜底换掉另一个静默吞句。
     pub fn map_sentence(&mut self, sentence: Sentence) -> Vec<CloudEvent> {
         let mut events = Vec::new();
         // ① 心跳先判：它的 `sentence_id` 固定为 0，若先判「新 id」会误把
@@ -483,32 +509,62 @@ impl AliyunMapper {
         if sentence.heartbeat {
             return events;
         }
-        // ② 已定稿的句：后续事件一律忽略（文本不同说明服务端改了口径，记 WARN）。
-        if self.finalized.contains(&sentence.id) {
-            if !sentence.text.trim().is_empty() {
-                crate::log::warn("阿里云端：已定稿的句子又收到了新的文本，已忽略");
+        // ② 句标识：缺字段、或「id 是 0 但没标心跳」都按**没有 id**处理。
+        let raw_id = sentence.id.filter(|id| *id != 0);
+        if raw_id.is_none() && !self.warned_missing_id {
+            self.warned_missing_id = true;
+            crate::log::warn(
+                "阿里云端：服务端的句子没有 sentence_id（0 视为心跳），改用 sentence_begin 切句",
+            );
+        }
+        // ③ 已定稿的句：后续事件一律忽略。文本没变不刷 WARN（服务端重发同一条
+        //    end 是正常的）。
+        if let Some(id) = raw_id {
+            if let Some(finalized) = self.finalized.get(&id) {
+                if !sentence.text.trim().is_empty() && finalized != sentence.text.trim() {
+                    crate::log::warn("阿里云端：已定稿的句子又收到了新的文本，已忽略");
+                }
+                return events;
             }
-            return events;
         }
         let text = sentence.text.trim();
-        // ③ 新句开始而上一句还没定稿 → 先按最后快照定稿上一句。
-        if let Some((open_id, open_text)) = self.open.as_ref() {
-            if *open_id != sentence.id {
-                let (id, snapshot) = (*open_id, open_text.clone());
-                self.finalized.insert(id);
-                self.open = None;
+        // ④ 新句开始而上一句还没定稿 → 先按最后快照定稿上一句。
+        //
+        //    带 id：id 变了就是新句。
+        //    缺 id：靠 `sentence_begin`（服务端显式说「新句开始」）。
+        let is_new_sentence = match (&self.open, raw_id) {
+            (None, _) => false,
+            (Some((open_id, _)), Some(id)) => *open_id != Some(id),
+            // 缺 id：只有 `sentence_begin` 才算新句；否则当作同一句的快照更新
+            // （宁可少切一句，也不要把两句话并成一句）。
+            (Some((open_id, _)), None) => open_id.is_none() && sentence.begin,
+        };
+        if is_new_sentence {
+            if let Some((id, snapshot)) = self.open.take() {
+                if let Some(id) = id {
+                    self.finalized.insert(id, snapshot.clone());
+                }
                 events.push(final_event(snapshot));
             }
         }
-        // ④ 空文本：不产 Partial；若这句就此结束，用已有快照定稿（没有就什么都不产）。
+        // ⑤ 空文本：不产 Partial；若这句就此结束，用已有快照定稿（没有就什么都不产）。
         if text.is_empty() {
             if sentence.end {
                 let snapshot = self
                     .open
                     .take()
-                    .filter(|(open_id, _)| *open_id == sentence.id)
+                    .filter(|(open_id, _)| match (open_id, raw_id) {
+                        // 两边都有 id：必须相同。
+                        (Some(a), Some(b)) => *a == b,
+                        // 缺 id 的那一边：无法核对，接受当前打开的句。
+                        (None, None) => true,
+                        // 一边有 id 一边没有：不认为它们是同一句。
+                        _ => false,
+                    })
                     .map(|(_, snapshot)| snapshot);
-                self.finalized.insert(sentence.id);
+                if let Some(id) = raw_id {
+                    self.finalized.insert(id, snapshot.clone().unwrap_or_default());
+                }
                 if let Some(snapshot) = snapshot {
                     events.push(final_event(snapshot));
                 }
@@ -516,12 +572,14 @@ impl AliyunMapper {
             return events;
         }
         if sentence.end {
-            self.finalized.insert(sentence.id);
+            if let Some(id) = raw_id {
+                self.finalized.insert(id, text.to_string());
+            }
             self.open = None;
             events.push(final_event(text.to_string()));
         } else {
             // 整句快照：替换不追加。
-            self.open = Some((sentence.id, text.to_string()));
+            self.open = Some((raw_id, text.to_string()));
             events.push(CloudEvent::Partial(text.to_string()));
         }
         events
