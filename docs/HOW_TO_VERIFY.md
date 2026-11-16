@@ -215,17 +215,17 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 - **会话层单测**（`src-tauri/src/asr/cloud/tests.rs`）：时间轴按 16 kHz 采样数推进（丢掉的音频同样占录音时间）、f32→i16 的 clamp、final→`Segment` 映射、**provider 给的时间戳不覆盖本地轴**、provider 要 24 kHz 时上传前升采样、**空 final 不抢下一句的区间**（时间戳不错位）、断连保留已定稿句子。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib`。
 - **结果与区间配对**：服务端的 final 可能乱序到达，也可能缺一条（识别失败）。会话层按 `item_id` 绑定句子区间（provider 先发 `CommitAck`），不按到达顺序 —— 否则失败点之后每句的时间戳都会错位一格。单测覆盖乱序 final、失败 item 无回执、提交失败后收尾区间合并（`src-tauri/src/asr/cloud/tests.rs` 与 `.../realtime/protocol_tests.rs`）。
 - **协议编解码单测**（`src-tauri/src/asr/cloud/realtime/protocol_tests.rs`）：拿官方的示例帧当输入 —— `conversation.item.input_audio_transcription.delta`（字段 `delta`）与 `.completed`（字段 `transcript`）解成 Partial / Final、`input_audio_buffer.commit` 的回执带 `item_id`（用来给 final 按提交顺序排序）、`session.update` 的编码（`audio/pcm` + 24000、`turn_detection` 为 `null` 时由客户端断句、语言参数是 `languages` 复数）。另有**收尾记账**两组：客户端断句（提交后结果没回来就还在等）、服务端断句（迟到的旧 final 不能抹掉新音频的等待），以及**迟到的 `committed` 回执不再排队**（否则队列永远不空，收尾会一直等）。
-- **集成测试**（`src-tauri/src/record/tests.rs` 的 `cloud_core_keeps_finalized_sentences_when_disconnected`）：走 `run_cloud_streaming_core` 的完整编排，中途断连后已定稿句子仍在。
-- **凭据不外泄**：`Status` 序列化里没有 key 明文（`engine` 的单测）、错误详情里的 key 会被抹成 `***`（`sanitize()`，协议单测）、界面检查断言「密钥不回显」。
+- **集成测试**（`src-tauri/src/record/tests.rs`）：走 `run_cloud_streaming_core` 的完整编排 —— 中途断连后已定稿句子仍在（`cloud_core_keeps_finalized_sentences_when_disconnected`）、上传丢掉的音频不重复计时（`cloud_core_does_not_double_count_upload_drops`）、**收尾的尾部缺口排在最后一句之后**（`云端收尾的尾部缺口排在最后一句之后`：第一次上传回一句话、第二次上传丢 1 秒，断言缺口是一个时刻且不并进最后一句）。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib record::tests::<name>`。
+- **凭据不外泄**：`Status` 序列化里没有 key 明文（`engine` 的单测）、错误详情里的 key 会被抹成 `***`（`sanitize()`，Realtime 与火山各一条协议单测 —— 火山的用会保留 message 的错误码分支，否则断言会恒真）、界面检查断言「密钥不回显」。
 - **能力声明**（`src-tauri/src/asr/cloud.rs` 的 `Capabilities`）：每个 provider 自报能力（句边界方式、是否需要本地 VAD、中间结果语义、是否支持术语表、上传采样率），按 provider id 静态查的表（`provider_capabilities`）与实例自报值必须一致。合法组合只有两种：**客户端提交 + 需要本地 VAD**、**服务端断句 + 不需要本地 VAD** —— 其余组合拒绝建 provider（「缺 VAD」绝不能被当成「改用服务端断句」）。单测覆盖能力表、组合校验、VAD 前置条件与门控决策的四种组合。
 - **中间结果归一器**（`src-tauri/src/asr/cloud/partial.rs`）：各家协议给的中间结果形态不同（增量拼接 / 确认前缀加草稿 / 区间替换），provider 内部归一成「当前未定稿句的累计串」，上层只认这一种语义。归一器按句标识分桶、句定稿时清掉自己的桶；没有句标识的协议走单桶。单测见 `src-tauri/src/asr/cloud/partial/tests.rs`。
 - **服务端断句路径**（`server_endpoint` 族）：不本地门控 —— 静音照上传，服务端靠静音判句尾；句子区间按本地轴兜底（「上一句终点 → 本次定稿到达时已喂入会话的音频终点」）。**已知取舍**：该终点会系统性偏长（服务端延迟 + 尾静音）。
-- **界面检查**（`npm run check:ui`）覆盖云端：配置保存、状态徽标（已配置 / 未配置）、上传确认框、云端模式发的是 `start_cloud_recording`、**当前服务不支持术语表时给出提示**（术语表是本地流式与云端共用的全局设置，只能提示、不得隐藏入口）。
+- **界面检查**（`npm run check:ui`）覆盖云端：配置保存、状态徽标（已配置 / 未配置）、上传确认框、云端模式发的是 `start_cloud_recording`、**当前服务不支持术语表时给出提示**（术语表是本地流式与云端共用的全局设置，只能提示、不得隐藏入口）、**结果框里的实时句子按本地时间轴排序**（三条断言：缺口段先到时句子仍排在缺口前面、同一时刻缺口排在句子前面、时间递增到达时文本逐字不变）。
 
 - **火山（豆包）协议层**（`src-tauri/src/asr/cloud/volcengine/`）：二进制帧编解码按官方文档逐字节核对（4 字节头 + payload size，大端；消息类型 / flags / 序列号）；结果映射用官方示例 JSON（`result.utterances[]` 的 `definite` → 定稿，最后一条未定句 → 实时行；**不用 `result.text`** —— 那是全会话累计）。热词清洗（控制字符丢弃、超上限（100 条）截断）。
 - **火山的真机验证**：用 `VOICE_NOTES_VOLCENGINE_KEY` 环境变量跑 `asr::cloud::volcengine::tests::真服务冒烟`（没设就跳过，**key 不入库、不进日志**）。已验证通过（2026-11-16）：7 条中间结果 + 1 句定稿「开放时间，早上9点至下午5点。」（fixture `tests/fixtures/zh.wav` 的内容）—— 帧编解码、鉴权、中间结果、末包 → 最终响应、整句断句整条链路都对。资源 ID 用 `volc.seedasr.sauc.duration`（豆包 2.0 小时版）—— **只支持模型 2.0**；填了模型 1.0 的资源 ID 会握手 403 `requested resource not granted`。
 
-**云端相关测试基线**：`cargo test --lib` = **224**（其中 `asr::cloud` = 73 = 会话层 24 + Realtime 协议层 27 + 归一器 6 + 火山 16；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
+**云端相关测试基线**：`cargo test --lib` = **227**（其中 `asr::cloud` = 75 = 会话层 24 + Realtime 协议层 27 + 归一器 6 + 火山 18；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 > [!NOTE]
 > 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。
@@ -235,7 +235,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 157 项检查
+npm run check:ui     # 160 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 
