@@ -215,7 +215,7 @@
   **火山与阿里不走归一器**（`partial.rs`）—— 它们的映射器（`map_response` / `AliyunMapper`）直接产出 `CloudEvent::Partial`；归一器目前**只被 Realtime 自建使用**。
   三家的形态都要有守卫：声明的 `partial_semantics` 必须与协议实际形态一致，且上抛的中间结果必须是**当前句的累计文本**（整句替换，不追加）—— 见 `docs/REVIEW-CHECKLIST.md` 的 RC-K1 / RC-K2。
 - **句子时间以本地 16 kHz 时钟为准**：provider 给的时间戳只作可选增强，**不覆盖本地轴**。区间按 item_id 绑定（`CommitAck` / `Final{item_id}`）—— 服务端可能乱序返回，按到达顺序配对会整体错位一格。
-  - **已知取舍（2026-11-17 单独评估过，暂不修）**：服务端断句族在 `finish()` 之后一次性 drain 到多条 final 时，**第一条**占用收尾那段区间，第 2 条起退化为零时长（`commit_at` 已把游标推到 `fed_end`）。触发要「**同一个 drain 批次里 drain 出多条 final**」（收尾时服务端一次性 flush，或两条 final 落在同一次 `poll()` 之间）；客户端提交族不可达（每次 commit 都登记了一段区间）。
+  - **已知取舍（2026-11-17 单独评估过，暂不修）**：服务端断句族在 `finish()` 之后一次性 drain 到多条 final 时，**第一条**占用收尾那段区间，第 2 条起退化为零时长（`commit_at` 已把游标推到 `fed_end`）。触发要「**两条 final 之间没有新音频喂入**」—— 最常见的是收尾时服务端一次性 flush 多句（同一个 drain 批次）；客户端提交族**协议正常时不可达**（每次 commit 登记一段区间、final 与 commit 一一对应；provider 多回一条 final 才会退化）。
     - **今天没有用户可见影响**：结果框不显示逐句时间、导出是纯文本（`export.js`）、落盘不存区间；顺序不乱（按 `start` 稳定排序 + 到达顺序 = 句子顺序）。RC-K4 的守卫守的是**顺序**，不是区间准确性。
     - **什么时候才修**：要导出带时间轴的格式（SRT / VTT）、要在界面显示逐句时间、或要按句跳转 —— 任一成立才动手。届时**选 provider 时间戳**（火山 `utterances[].start_time/end_time`、阿里 `sentence.begin_time/end_time`；**Realtime 没有**），**不选**「本地平分剩余区间」（那条的边界仍是编造的）。评估全文见 OpenSpec change `cloud-server-endpoint-spans`。
     - **实测**（2026-11-17，两家真机，fixture `zh.wav`：5.592 秒，真实语音 0.72~5.10 s，尾部 0.49 s 静音）：
@@ -238,7 +238,7 @@
 - **阿里的模型走白名单**：`qwen-audio-3.1-asr-flash-streaming`（百炼当前首推的实时模型）。协议骨架与通用 ASR 协议相同，但参数与结果结构不同（本模型有 `stash` 草稿、即时热词、方言开关），**白名单之外的模型名一律拒绝**。
 - **服务端断句族的防御性定稿**（阿里最容易回退的一条）：新 `sentence_id` 出现而上一句还没定稿时，**先按最后快照把上一句 emit 成 Final**；已定稿 id 的后续事件**一律忽略**（否则重复/迟到的 `end` 会让会话层产生重复句子，迟到的 `end` 还会 `partial.clear()` 掉新句的实时行）。心跳必须在「新 id」判断**之前**判掉。
 - **断句**：客户端提交族本地门控（静音在本地丢掉、静音时提交）；服务端断句族**不门控**（静音照上传，服务端靠静音判句尾），区间走本地轴兜底（终点偏长是已知取舍）。「末包 / 结束标识」不等于「结果已全回」—— 要等最终响应才收尾。**阿里还要多一条：`sentence_end=true` 只表示句子结束，任务结束以 `task-finished` 为准** —— `finish-task` 之后必须继续收 `result-generated`，发完就关会丢尾部结果；而且残包要在 `finish-task` 之前发出去。
-- **凭据**：只存 settings，**不进日志、不回传前端**（`Status` 只有 `cloudConfigured` 布尔）；错误详情里的 key 要脱敏（`sanitize`）。**云端模块的日志只有一个出口**（`asr/cloud/logging.rs` 的 `warn` / `info`）—— 写入前用该 provider 的凭据脱敏；绕过关口会被源码级守卫抓住（`asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`：云端模块里出现直接的日志调用就红 —— 日志写进文件与 stderr，测试抓不到，唯一能自动发现的办法是读源码）。切换 provider 会清空地址、凭据、模型与资源标识（各家的配置不能混用）—— 这是**有提示的已知取舍**。
+- **凭据**：只存 settings，**不进日志、不回传前端**（`Status` 里没有 key 明文：凭据只有 `cloud_configured` 布尔）；错误详情里的 key 要脱敏（`sanitize`）。**云端模块的日志只许走 `asr/cloud/logging.rs` 的关口**（`warn` / `info` / `code_detail`）—— 写入前用该 provider 的凭据脱敏；绕过关口会被源码级守卫抓住（`asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`：云端模块里出现 `crate::log` 或 `crate::code_detail` 就红 —— **两条路都写日志文件**（`crate::code_detail` 内部就是 `log::error`）却不脱敏，所以云端模块一律用 `logging::code_detail` 先脱敏再委托）。**已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现。切换 provider 会清空地址、凭据、模型与资源标识（各家的配置不能混用）—— 这是**有提示的已知取舍**。
 - **上传丢包要留缺口**：队列满时丢掉的那段音频推进真实录音时间轴并生成 `[[gap:N]]`；**连续丢包并成一条**（逐条上报会刷屏）。provider 要区分「投递了」与「只是攒包」—— 只回一个丢包数不够（`SendOutcome`）。
 - **验证**：协议层单测（帧编解码、结果映射）+ 真服务冒烟（凭据走环境变量，见 HOW_TO_VERIFY）。真 key 不入库、不进日志、不打印。
 
