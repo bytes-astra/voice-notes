@@ -263,6 +263,16 @@ pub fn create_provider(
     }
 }
 
+/// 把凭据从文本里抹掉：日志、错误详情、错误帧里都不该出现它。
+///
+/// 三家 provider 共用（火山与 Realtime 原来各有一份逐字相同的实现）。
+pub(crate) fn sanitize(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        return text.to_string();
+    }
+    text.replace(secret, "***")
+}
+
 /// 术语表：按 provider 能力决定要不要带。
 ///
 /// **纯函数**（可单测）：能力声明不支持请求级术语表时返回空词表 ——

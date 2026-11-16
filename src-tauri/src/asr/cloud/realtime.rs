@@ -31,7 +31,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::partial::{self, PartialUpdate};
-use super::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome};
+use super::{
+    sanitize, Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome,
+};
 
 /// Realtime 服务的默认地址（`intent=transcription` 决定这是转写会话）。
 pub const DEFAULT_BASE_URL: &str = "wss://api.openai.com/v1/realtime?intent=transcription";
@@ -510,14 +512,6 @@ pub(crate) fn validate_realtime_model(model: &str) -> Result<(), String> {
         return Err(crate::code("cloud.unsupportedModel"));
     }
     Ok(())
-}
-
-/// 把凭据从文本里抹掉：日志与错误里都不该出现它。
-fn sanitize(text: &str, secret: &str) -> String {
-    if secret.is_empty() {
-        return text.to_string();
-    }
-    text.replace(secret, "***")
 }
 
 /// 会话配置帧。

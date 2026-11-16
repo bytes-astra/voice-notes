@@ -210,7 +210,7 @@ fn late_committed_receipt_is_not_queued() {
 /// 凭据不能出现在错误详情里。
 #[test]
 fn error_detail_redacts_secret() {
-    let detail = sanitize("failed with key sk-abc123", "sk-abc123");
+    let detail = super::super::sanitize("failed with key sk-abc123", "sk-abc123");
     assert!(!detail.contains("sk-abc123"), "详情里不该有凭据：{detail}");
     assert!(detail.contains("***"));
 }
@@ -342,7 +342,7 @@ fn default_model_never_sends_server_vad() {
 #[test]
 fn server_error_redacts_secret() {
     let message = "401 unauthorized for sk-abc123";
-    let detail = sanitize(message, "sk-abc123");
+    let detail = super::super::sanitize(message, "sk-abc123");
     assert!(!detail.contains("sk-abc123"));
     assert!(detail.contains("401"));
 }

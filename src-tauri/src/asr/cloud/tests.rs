@@ -613,3 +613,24 @@ fn 收尾把未定的partial落成句子() {
         .expect("未定的 partial 要落成句子");
     assert_eq!(segment.text, "说了半句");
 }
+
+/// 共享的凭据脱敏：空凭据原样返回。
+#[test]
+fn sanitize_keeps_text_when_secret_empty() {
+    assert_eq!(sanitize("一些文本", ""), "一些文本");
+}
+
+/// 共享的凭据脱敏：多处出现要全部替换。
+#[test]
+fn sanitize_replaces_every_occurrence() {
+    let out = sanitize("a sk-1 b sk-1 c", "sk-1");
+    assert_eq!(out, "a *** b *** c");
+    assert!(!out.contains("sk-1"));
+}
+
+/// 共享的凭据脱敏：凭据不在文本里时一个字都不动。
+#[test]
+fn sanitize_leaves_text_without_secret_alone() {
+    let text = "上传失败：连接被重置";
+    assert_eq!(sanitize(text, "sk-1"), text);
+}

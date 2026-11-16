@@ -22,7 +22,9 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome};
+use super::{
+    sanitize, Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome,
+};
 
 mod frame;
 use frame::{ServerFrame, FLAG_LAST_NO_SEQUENCE};
@@ -523,14 +525,6 @@ fn send_control(
             }
         }
     }
-}
-
-/// 把凭据从文本里抹掉。
-fn sanitize(text: &str, secret: &str) -> String {
-    if secret.is_empty() {
-        return text.to_string();
-    }
-    text.replace(secret, "***")
 }
 
 /// 服务端错误帧 → 干净的错误详情。
