@@ -184,6 +184,9 @@ const installMock = () => {
           case 'stop_recording':
             if (window.__mockStopGate) await window.__mockStopGate
             if (window.__mockStopError) throw window.__mockStopError
+            // 停止瞬间迟到的句子：前端这时还处在「转写中」，会把它追加到结果框，
+            // 但最终转写以**后端返回的全文**为准 —— 迟到的这句不该混进去。
+            window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: '迟到的一句', start: 30, end: 31 })
             // 跟真后端一致：返回这次会话累积出来的全文
             return { ...clone(result), text: window.__mockTranscript || result.text, warning: window.__mockStopWarning || null }
           case 'save_text':
@@ -721,6 +724,7 @@ check(
   ['第一句', '第二句', '第三句'].every((t) => final.includes(t)),
   final.slice(0, 60)
 )
+check('停止后迟到的句子不混进最终转写', !final.includes('迟到的一句'), final.slice(-60))
 check('停止后回到空闲', (await page.locator('.app').getAttribute('data-phase')) === 'idle')
 check('停止后语言与 ITN 解锁', await page.evaluate(() =>
   [...document.querySelectorAll('#lang-row .chip')].every((chip) => !chip.disabled) &&
