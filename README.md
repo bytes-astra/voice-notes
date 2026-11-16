@@ -109,7 +109,7 @@ CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2
 | 配置项 | 说明 |
 | --- | --- |
 | 云端服务 | 选哪家：**OpenAI Realtime**（逐字实时）、**火山引擎 · 豆包**（服务端断句）或**阿里云百炼 · Fun-ASR**（服务端断句） |
-| 服务地址 | 留空 = 用该服务的默认地址（Realtime：`wss://api.openai.com/v1/realtime?intent=transcription`；火山：`wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`） |
+| 服务地址 | 留空 = 用该服务的默认地址（Realtime：`wss://api.openai.com/v1/realtime?intent=transcription`；火山：`wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`；阿里：`wss://dashscope.aliyuncs.com/api-ws/v1/inference`） |
 | API 密钥 | 填了就保存下来；**保存后不再显示**（界面上只显示「凭据已配置」），随时可以「清除凭据」 |
 | 模型 | 对 OpenAI Realtime（默认 `gpt-live-transcribe`）与阿里云百炼（默认 `fun-asr-realtime`）有效；火山不需要填 |
 | 资源标识 | 只对火山有效（`X-Api-Resource-Id`，留空 = 默认）。只用**豆包流式语音识别模型 2.0**：小时版 `volc.seedasr.sauc.duration` / 并发版 `volc.seedasr.sauc.concurrent` |
@@ -125,8 +125,9 @@ CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2
   - **方言靠模型自动识别**：阿里没有「粤语」这类方言代码，中文模型自己覆盖粤语、吴语、闽南语等；选粤语时实际传的是中文。
   - **`itn` 与标点开关对它不生效**（Fun-ASR 没有这两个参数，由服务端默认策略决定）。
   - **多语种只在「自动」下才用得全**：界面语言只有那 6 个选项，选具体语言时只传那一个；选「自动」才交给服务识别 30 多种语言。
-  - **模型名可以换**（如快照版 `fun-asr-realtime-2026-02-28`，只支持中/英/日）；**8k 模型不支持**（会被拒绝）。模型名填错要等点麦克风开始录音才报错。
+  - **模型名可以换**（如快照版 `fun-asr-realtime-2026-02-28`，只支持中/英/日，**且不支持术语表上下文** —— 官方只对 `fun-asr-realtime` 声明支持）；**8k 模型不支持**（会被拒绝）。模型名填错要等点麦克风开始录音才报错。
   - 服务地址默认是公共地址；要换成业务空间专属域名时，往「服务地址」里填**完整 URL**（`wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`）。
+  - ⚠️ **这一家还没有对真实服务验证过**：协议实现依据的是官方文档（2026-11 核对），已通过协议层单测与本地假服务端验证，但没有用真实凭据跑过端到端。遇到问题请把日志发过来。
 - **结果框按录音时间顺序显示**：同一时刻先显示缺口提示。录音与文件转写的结果框都如此。
 - **中途断连**：已经定稿的句子会保留，连接问题另行提示。
 - 术语表会一起发给服务：Realtime 走 `keywords`（含协议不支持字符的条目会被跳过），火山走 `corpus.context`（应用按 100 条截断，服务端可能再按 token 截一次）；是否生效取决于服务。

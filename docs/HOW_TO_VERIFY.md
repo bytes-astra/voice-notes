@@ -230,7 +230,8 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 - **阿里云百炼（Fun-ASR）协议层**（`src-tauri/src/asr/cloud/aliyun.rs`）：JSON 控制帧 + 裸二进制音频帧（不需要帧编解码模块）。请求组装（`run-task` / `finish-task` / `input.context`）、服务端事件解码、有状态映射 `AliyunMapper`。
   - **映射的四条硬规则**（每条都有单测）：`text` 是整句快照（**替换不追加**）；心跳先判（`sentence_id` 固定 0，否则会误把上一句定稿）；新句出现而上一句未定稿 → **按最后快照防御性定稿**（否则会话层的 Partial 替换语义会让上一句文字永久消失）；已定稿句的后续事件**一律忽略**（防重复 Final，也防迟到的 `end` 把新句的实时行清掉）。
   - **收尾流程有假服务端测试**（`finish_keeps_reading_and_flushes_leftover_packet`）：本地 `TcpListener` + `accept_async` 起一个假 WebSocket 服务端，收到 `finish-task` 后才发两条尾部结果、最后才发 `task-finished`。它守两条规则：**残包要在 `finish-task` 之前发出去**（否则最后 0~99 ms 永不上传、句尾少字）、**`finish-task` 之后要继续收**（发完就关会丢尾部结果）。
-  - **阿里真机冒烟**：`VOICE_NOTES_ALIYUN_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --lib asr::cloud::aliyun::tests::live_smoke -- --nocapture`。跑的时候顺带确认三件官方口径存疑的事：① 不传 `language_hints` 时是否真的自动识别多语种（若实际被限制成中/英，「30 语种」的说法要改）；② 同一句的连续 `text` 是否「越改越完整」而不是只在末尾追加；③ `heartbeat: true` 会不会产生额外事件。**结果记在本节。**
+  - **阿里真机冒烟**：`VOICE_NOTES_ALIYUN_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --lib asr::cloud::aliyun::tests::live_smoke -- --nocapture`。
+    **尚未跑过**（截至 2026-11-16 没有阿里云凭据）—— README 里已标注「未对真实服务验证过」。跑通后把结果记在这里（格式参考下面火山那条）。跑的时候顺带确认三件官方口径存疑的事：① 不传 `language_hints` 时是否真的自动识别多语种（若实际被限制成中/英，「30 语种」的说法要改）；② 同一句的连续 `text` 是否「越改越完整」而不是只在末尾追加；③ `heartbeat: true` 会不会产生额外事件。**结果记在本节。**
   - **官方文档出处**（2026-11-16 核对）：
     - 协议与事件：<https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api>、<https://help.aliyun.com/zh/model-studio/fun-asr-client-events>、<https://help.aliyun.com/zh/model-studio/fun-asr-server-events>
     - 音频规格与「整句快照」口径：<https://help.aliyun.com/zh/model-studio/automatic-speech-recognition>
@@ -238,7 +239,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
     - 术语表（预编译词表，本变更未采用）：<https://www.alibabacloud.com/help/zh/model-studio/vocabulary-http-api>、<https://docs.bailian.console.aliyun.com/zh/model-studio/improve-asr-accuracy>
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（客户端事件页 1300 / Paraformer SDK 页 800）→ **显式设 1300**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按 fun-asr 的「不传 = 自动识别」**；Paraformer 是否有 `sentence_id` → **没有**（本变更只用 fun-asr 的）。
 
-**云端相关测试基线**：`cargo test --lib` = **257**（其中 `asr::cloud` = 105 = 会话层 29 + Realtime 协议层 27 + 归一器 6 + 火山 18 + 阿里 25；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
+**云端相关测试基线**：`cargo test --lib` = **259**（其中 `asr::cloud` = 107 = 会话层 29 + Realtime 协议层 27 + 归一器 6 + 火山 18 + 阿里 27；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 > [!NOTE]
 > 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。

@@ -178,8 +178,17 @@ impl CloudProvider for AliyunProvider {
         // 等 `task-started` 才算就绪：不等就发音频会被服务端丢弃。
         match ready_rx.recv_timeout(Duration::from_secs(15)) {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(crate::code("cloud.connectFailed")),
+            Ok(Err(error)) => {
+                // 失败时把命令通道清掉：留着的话 provider 是「半可用」状态，
+                // 调用方若忽略 Err 继续 send_audio，音频会在 task-started 之前
+                // 发给服务端（违反协议）。
+                self.commands = None;
+                Err(error)
+            }
+            Err(_) => {
+                self.commands = None;
+                Err(crate::code("cloud.connectFailed"))
+            }
         }
     }
 
@@ -565,12 +574,22 @@ async fn run(
     let mut mapper = AliyunMapper::new();
     let mut finishing: Option<Sender<()>> = None;
     let mut started = false;
+    // 就绪之前收到的错误（例如鉴权失败被报成 `task-failed`）：`connect()`
+    // 只能通过 ready 通道知道失败原因，别让它只拿到笼统的 connectFailed。
+    let mut startup_error: Option<String> = None;
     loop {
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 match command {
                     Command::Audio(packet) => {
+                        // 协议要求先 `task-started` 才能发音频。正常路径上
+                        // `connect()` 成功才可能走到这里；这条门是纵深防御
+                        // （调用方忽略 connect 的 Err 时不要发出违约帧）。
+                        if !started {
+                            crate::log::warn("阿里云端：task-started 之前收到音频，已丢弃");
+                            continue;
+                        }
                         if let Err(error) = socket.send(Message::Binary(packet.into())).await {
                             let _ = errors.send(crate::code_detail("cloud.sendFailed", error.to_string()));
                             break;
@@ -628,7 +647,13 @@ async fn run(
                     }
                     Ok(ServerEvent::TaskFailed { code, message }) => {
                         let detail = format!("{code}: {}", sanitize(&message, &config.api_key));
-                        let _ = errors.send(crate::code_detail("cloud.protocolError", detail));
+                        let error = crate::code_detail("cloud.protocolError", detail);
+                        if !started {
+                            startup_error = Some(error.clone());
+                        }
+                        // 详情只进日志（已脱敏），不进界面。
+                        crate::log::warn(format!("阿里云端：{error}"));
+                        let _ = errors.send(error);
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
                     }
@@ -642,9 +667,11 @@ async fn run(
             }
         }
     }
-    // 连上了但一直没等到 task-started：别让 connect() 白等 15 秒才报错。
+    // 连上了但没等到 task-started（连接断了、或先收到了 task-failed）：
+    // 别让 connect() 白等 15 秒，也要把真因带回去。
     if !started {
-        let _ = ready.send(Err(crate::code("cloud.connectFailed")));
+        let error = startup_error.unwrap_or_else(|| crate::code("cloud.connectFailed"));
+        let _ = ready.send(Err(error));
     }
     if let Some(done) = finishing.take() {
         let _ = done.send(());
@@ -669,8 +696,14 @@ async fn connect_socket(
     let (socket, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|error| {
-            // 握手 401/403 也走这里：官方没给出更细的判据，统一映射成鉴权失败
-            // 之外的连接失败会掩盖「key 不对」这个最常见的原因。
+            // 握手阶段的 401 / 403 是**鉴权失败**（key 不对、业务空间没权限），
+            // 与「网络连不上」是两回事 —— 前者的处置是改配置，后者才值得重试。
+            if let tokio_tungstenite::tungstenite::Error::Http(response) = &error {
+                let status = response.status().as_u16();
+                if status == 401 || status == 403 {
+                    return crate::code("cloud.authFailed");
+                }
+            }
             crate::code_detail(
                 "cloud.connectFailed",
                 sanitize(&error.to_string(), &config.api_key),

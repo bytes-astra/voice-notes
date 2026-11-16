@@ -560,3 +560,114 @@ fn live_smoke() {
         "定稿不应全是空的：{finals:?}"
     );
 }
+
+/// `task-started` 之前收到 `task-failed`：`connect()` 要带回**真因**，
+/// 不能只给笼统的 `cloud.connectFailed`。
+///
+/// 真实场景：key 无效或模型没开通时，服务端可能直接回 `task-failed` 而不是
+/// 握手 401 —— 那时用户看到「连接失败」会去查网络，查错方向。
+#[test]
+fn task_failed_before_started_reports_the_real_error() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let server = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // 收到 run-task 就直接回 task-failed（不发 task-started）。
+            while let Some(Ok(message)) = socket.next().await {
+                if matches!(message, Message::Text(_)) {
+                    let failed = json!({
+                        "header": {
+                            "event": "task-failed",
+                            "error_code": "InvalidApiKey",
+                            "error_message": "Invalid API-key provided.",
+                        },
+                        "payload": {},
+                    });
+                    let _ = socket.send(Message::Text(failed.to_string().into())).await;
+                    break;
+                }
+            }
+        });
+    });
+
+    let mut provider = AliyunProvider::new(AliyunConfig {
+        base_url: format!("ws://{addr}"),
+        api_key: "sk-test".into(),
+        model: String::new(),
+        language_hint: None,
+        context_text: None,
+    });
+    let error = provider
+        .connect(Box::new(|_| {}))
+        .expect_err("task-failed 之后不该算连上");
+    server.join().unwrap();
+
+    assert!(error.starts_with("cloud.protocolError"), "{error}");
+    assert!(error.contains("InvalidApiKey"), "要带回服务端给的错误码：{error}");
+}
+
+/// `finish-task` 之后服务端直接关连接（没有 `task-finished`）：
+/// `finish()` 要立刻报 `cloud.disconnected`，而不是等满 10 秒超时。
+#[test]
+fn close_without_task_finished_reports_disconnected() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let server = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(message)) = socket.next().await {
+                let Message::Text(text) = message else { continue };
+                let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                match value["header"]["action"].as_str().unwrap_or("") {
+                    "run-task" => {
+                        let started = json!({
+                            "header": { "event": "task-started", "attributes": {} },
+                            "payload": {},
+                        });
+                        let _ = socket.send(Message::Text(started.to_string().into())).await;
+                    }
+                    "finish-task" => {
+                        // 不发 task-finished，直接关。
+                        let _ = socket.close(None).await;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+    });
+
+    let mut provider = AliyunProvider::new(AliyunConfig {
+        base_url: format!("ws://{addr}"),
+        api_key: "sk-test".into(),
+        model: String::new(),
+        language_hint: None,
+        context_text: None,
+    });
+    provider
+        .connect(Box::new(|_| {}))
+        .expect("应当连上假服务端");
+    let error = provider.finish().expect_err("没有 task-finished 就不算正常结束");
+    server.join().unwrap();
+
+    assert!(error.starts_with("cloud.disconnected"), "{error}");
+}
