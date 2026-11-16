@@ -360,3 +360,130 @@ fn 语言映射按官方支持的_code() {
     // 不在支持列表里的值：宁可不传，也不要传非法值。
     assert_eq!(language_hint("fr"), None);
 }
+
+// ── 假服务端：收尾流程（design D1 的三条硬规则） ────────────────────
+
+/// `finish-task` 之后必须**继续收**尾部结果，直到 `task-finished`；而且
+/// 不足一包的残包要在 `finish-task` **之前**发出去。
+///
+/// 用本地假 WebSocket 服务端跑真实链路（`connect → send_audio → finish`）：
+/// 服务端收到 `finish-task` 后才发两条尾部定稿，最后才发 `task-finished`。
+/// 实现若「发完就关连接/停止读」，第二条定稿必然收不到 → 红。
+#[test]
+fn finish_之后继续收尾部结果且残包先发出去() {
+    use std::sync::{Arc, Mutex};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let leftover_before_finish = Arc::new(Mutex::new(0usize));
+    let counter = leftover_before_finish.clone();
+
+    let server = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(message) = socket.next().await {
+                let Ok(message) = message else { break };
+                match message {
+                    Message::Text(text) => {
+                        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                            continue;
+                        };
+                        match value["header"]["action"].as_str().unwrap_or("") {
+                            "run-task" => {
+                                let started = json!({
+                                    "header": { "event": "task-started", "attributes": {} },
+                                    "payload": {},
+                                });
+                                socket
+                                    .send(Message::Text(started.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                            "finish-task" => {
+                                // 两条尾部结果：只有「继续读」的实现才能都收到。
+                                for (index, text) in ["尾句一", "尾句二"].iter().enumerate() {
+                                    let payload = json!({
+                                        "header": { "event": "result-generated" },
+                                        "payload": { "output": { "sentence": {
+                                            "sentence_id": index as i64 + 1,
+                                            "sentence_begin": false,
+                                            "sentence_end": true,
+                                            "text": text,
+                                            "heartbeat": false,
+                                        } } },
+                                    });
+                                    socket
+                                        .send(Message::Text(payload.to_string().into()))
+                                        .await
+                                        .unwrap();
+                                    tokio::time::sleep(Duration::from_millis(40)).await;
+                                }
+                                let finished = json!({
+                                    "header": { "event": "task-finished", "attributes": {} },
+                                    "payload": { "output": {}, "usage": null },
+                                });
+                                socket
+                                    .send(Message::Text(finished.to_string().into()))
+                                    .await
+                                    .unwrap();
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    // 音频帧：只统计「finish-task 之前」收到了几个。
+                    Message::Binary(_) => {
+                        *counter.lock().unwrap() += 1;
+                    }
+                    _ => {}
+                }
+            }
+        });
+    });
+
+    let mut provider = AliyunProvider::new(AliyunConfig {
+        base_url: format!("ws://{addr}"),
+        api_key: "sk-test".into(),
+        model: String::new(),
+        language_hint: None,
+        context_text: None,
+    });
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    provider
+        .connect(Box::new(move |event| sink.lock().unwrap().push(event)))
+        .expect("应当连上假服务端");
+
+    // 800 个样本 = 1600 字节 < 3200 → 留在缓冲里，收尾时才发（这就是残包）。
+    provider.send_audio(&vec![100i16; 800]).unwrap();
+    provider.finish().expect("收尾应当成功");
+    server.join().unwrap();
+
+    let finals: Vec<String> = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            CloudEvent::Final { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        finals,
+        vec!["尾句一".to_string(), "尾句二".to_string()],
+        "finish-task 之后的尾部结果一条都不能丢"
+    );
+    assert_eq!(
+        *leftover_before_finish.lock().unwrap(),
+        1,
+        "不足一包的残包必须在 finish-task 之前发出去（否则句尾少字）"
+    );
+}
