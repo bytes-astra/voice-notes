@@ -219,6 +219,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 - **协议编解码单测**（`src-tauri/src/asr/cloud/realtime/protocol_tests.rs`）：拿官方的示例帧当输入 —— `conversation.item.input_audio_transcription.delta`（字段 `delta`）与 `.completed`（字段 `transcript`）解成 Partial / Final、`input_audio_buffer.commit` 的回执带 `item_id`（用来给 final 按提交顺序排序）、`session.update` 的编码（`audio/pcm` + 24000、`turn_detection` 为 `null` 时由客户端断句、语言参数是 `languages` 复数）。另有**收尾记账**两组：客户端断句（提交后结果没回来就还在等）、服务端断句（迟到的旧 final 不能抹掉新音频的等待），以及**迟到的 `committed` 回执不再排队**（否则队列永远不空，收尾会一直等）。
 - **集成测试**（`src-tauri/src/record/tests.rs`）：走 `run_cloud_streaming_core` 的完整编排 —— 中途断连后已定稿句子仍在（`cloud_core_keeps_finalized_sentences_when_disconnected`）、上传丢掉的音频不重复计时（`cloud_core_does_not_double_count_upload_drops`）、**收尾的尾部缺口排在最后一句之后**（`cloud_tail_gap_follows_last_sentence`：第一次上传回一句话、第二次上传丢 1 秒，断言缺口是一个时刻且不并进最后一句）。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib record::tests::<name>`。
 - **凭据不外泄**：`Status` 序列化里没有 key 明文（`engine` 的单测）、错误详情里的 key 会被抹成 `***`（`sanitize()`，Realtime 与火山各一条协议单测 —— 火山的用会保留 message 的错误码分支，否则断言会恒真）、界面检查断言「密钥不回显」。
+  - **日志这一半**：云端模块的日志只许走 `asr/cloud/logging.rs` 的**唯一出口**（`warn` / `info`），写入前用该 provider 的凭据脱敏。两条守卫：`asr::cloud::tests::log_choke_point_redacts_the_credential`（关口的脱敏）+ `asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`（**源码级守卫**：运行时读 `src/asr/cloud/` 下各 `.rs` 与 `src/asr/cloud.rs`，出现直接的日志调用就红 —— 日志写进文件与 stderr，测试抓不到返回值，唯一能自动发现「绕过关口」的办法是读源码）。**范围只有云端模块**：`record.rs` 的云端日志只拼字典码，前端那半边靠「key 不回传」。
 - **能力声明**（`src-tauri/src/asr/cloud.rs` 的 `Capabilities`）：每个 provider 自报能力（句边界方式、是否需要本地 VAD、中间结果语义、是否支持术语表、上传采样率），按 provider id 静态查的表（`provider_capabilities`）与实例自报值必须一致。合法组合只有两种：**客户端提交 + 需要本地 VAD**、**服务端断句 + 不需要本地 VAD** —— 其余组合拒绝建 provider（「缺 VAD」绝不能被当成「改用服务端断句」）。单测覆盖能力表、组合校验、VAD 前置条件与门控决策的四种组合。
 - **中间结果归一器**（`src-tauri/src/asr/cloud/partial.rs`）：各家协议给的中间结果形态不同（增量拼接 / 确认前缀加草稿 / 区间替换），provider 内部归一成「当前未定稿句的累计串」，上层只认这一种语义。归一器按句标识分桶、句定稿时清掉自己的桶；没有句标识的协议走单桶。单测见 `src-tauri/src/asr/cloud/partial/tests.rs`。
 - **provider 契约守卫**（各 provider 自己的测试模块）：三家的中间结果形态各有一条守卫，断言两件事 —— ① 上抛的中间结果是当前未定稿句的**累计文本**（句内整体替换，不追加）；② 声明的 `partial_semantics` 与**从样例推导出的**形态一致。三条硬规矩（否则守卫是假的）：**禁 mock provider 当协议样例**（mock 直接注入 `CloudEvent`，没有协议形态）、**期望值必须手写字面量**（从样例里再读一遍就是 `x == x`）、**形态从样例推导而不是只钉常量**（只钉常量的话形态漂移照样过）。样例：火山是两次响应（第二次全量返回、改写最后一条未定句）、Realtime 是两条**同 `item_id`** 的 `.delta`、阿里是同一句的两次「已确认句子 + 草稿」。会话层还有一条零长句顺序守卫（`zero_length_segments_keep_arrival_order`：同批九条 final，首条占区间、后八条零长且同 `start`，文本顺序 = 到达顺序）。清单见 `docs/REVIEW-CHECKLIST.md` 的 RC-K1 / RC-K2 / RC-K4。
@@ -252,7 +253,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   - **计费按 token**（输入 6 元 / 百万、输出 4.5 元 / 百万，北京与新加坡同价），不是按秒。
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（本模型客户端事件页 **800** / 旧的 Paraformer SDK 页 800）→ **显式设 800**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按「不传 = 自动识别」**；`sentence_id` 是否必填 → **必填**（缺了按兼容路径处理并记 WARN）。
 
-**云端相关测试基线**：`cargo test --lib` = **274**（其中 `asr::cloud` = 122 = 会话层 35 + Realtime 协议层 28 + 归一器 6 + 火山 19 + 阿里 34；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
+**云端相关测试基线**：`cargo test --lib` = **276**（其中 `asr::cloud` = 124 = 会话层 37 + Realtime 协议层 28 + 归一器 6 + 火山 19 + 阿里 34；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 > [!NOTE]
 > 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。
