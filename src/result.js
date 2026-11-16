@@ -41,6 +41,9 @@ let liveBaseText = ''
 /// 段列表在 `clearResult` / `showTranscript` 的**入口**清 —— `showTranscript`
 /// 的空转写分支会提前返回，末尾清不到；而 `setResultView` 是增量追加的路径，
 /// 不能在那里清。
+///
+/// 载入历史（`src/history.js`）**不**清段列表：它只在空闲时发生，而空闲时
+/// 事件闸门挡着所有段；下一次录音 / 文件转写都会 `clearResult` 重置。
 function resetLiveSegments() {
   liveSegments = []
   liveOrder = 0
@@ -194,17 +197,21 @@ export function appendSegment(text, start, end) {
   }
   liveSegments.push(seg)
   const gap = isGapMarker(piece)
+  // 退化标记在**这一段之前**是什么样，判定快路径时要看旧值：
+  // 已经退化了的话，渲染顺序就是到达顺序 —— 新段直接接在末尾即可（O(1)）。
+  const wasDegraded = liveDegraded
   if (seg.start === null) liveDegraded = true
   // 能不能直接追加到末尾（顺序不会变）？
-  // - 退化了（出现过没有时间的段）：不行，整个会话按到达顺序。
+  // - 已经退化了：可以 —— 整个会话按到达顺序渲染，追加正是到达顺序。
+  // - 这一段才让会话退化：不行 —— 要整段重排一次（切成到达顺序）。
   // - 起点比已渲染的终点还晚：可以。
   // - 起点相同、不是缺口、且那个时间点上没有缺口：可以（同时间点按到达顺序）。
   // 其余都要重排 —— 同一 start 的缺口若直接追加，会排到句子**后面**，
   // 正好是这条规则要防的反向顺序。
   const canAppend =
-    !liveDegraded &&
-    seg.start !== null &&
-    (seg.start > liveMaxStart || (seg.start === liveMaxStart && !gap && !liveGapAtMax))
+    wasDegraded ||
+    (seg.start !== null &&
+      (seg.start > liveMaxStart || (seg.start === liveMaxStart && !gap && !liveGapAtMax)))
   if (seg.start !== null) {
     if (seg.start > liveMaxStart) {
       liveMaxStart = seg.start

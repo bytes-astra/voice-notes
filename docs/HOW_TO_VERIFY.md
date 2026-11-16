@@ -235,7 +235,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 161 项检查
+npm run check:ui     # 163 项检查
 npm run shots        # 重出 README 9 张截图
 ```
 

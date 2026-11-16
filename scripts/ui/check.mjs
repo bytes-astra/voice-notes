@@ -689,11 +689,40 @@ check(
   sameStart.slice(-60)
 )
 
+// ②' 同一 start、缺口**先**到（新 max 处）：缺口仍然排在句子前面。
+await emitSegment('[[gap:22]]', 22, 22)
+await page.waitForTimeout(60)
+await emitSegment('同刻先缺口', 22, 22)
+await page.waitForTimeout(120)
+const gapFirst = await page.locator('#text').inputValue()
+const atGap22 = gapFirst.indexOf('约 22 秒未识别')
+const atSameFirst = gapFirst.indexOf('同刻先缺口')
+check(
+  '同一时刻缺口先到时也在句子前面',
+  atSameFirst >= 0 && atGap22 >= 0 && atGap22 < atSameFirst,
+  gapFirst.slice(-60)
+)
+
+// ②'' 普通句子乱序到达（与缺口无关）：起点早的排前面。
+await emitSegment('乱序在后', 21, 22)
+await page.waitForTimeout(60)
+await emitSegment('乱序在前', 20, 21)
+await page.waitForTimeout(120)
+const swapped = await page.locator('#text').inputValue()
+const atBefore = swapped.indexOf('乱序在前')
+const atAfter = swapped.indexOf('乱序在后')
+check(
+  '乱序到达的句子按起点排',
+  atBefore >= 0 && atAfter >= 0 && atBefore < atAfter,
+  swapped.slice(-60)
+)
+
 // ③ 本地句子按时间递增到达：结果框的完整文本与改动前逐字相同。
 const before = await page.locator('#text').inputValue()
-await emitSegment('递增甲', 10, 11)
+// 起点要大于前面用过的最大起点（22），否则会走重排路径而不是追加路径。
+await emitSegment('递增甲', 30, 31)
 await page.waitForTimeout(60)
-await emitSegment('递增乙', 11, 12)
+await emitSegment('递增乙', 31, 32)
 await page.waitForTimeout(120)
 const after = await page.locator('#text').inputValue()
 check('时间递增到达时文本逐字不变', after === `${before}递增甲递增乙`, after.slice(-60))
