@@ -1,4 +1,5 @@
-//! 阿里云百炼（DashScope / Model Studio）实时语音识别 `fun-asr-realtime`。
+//! 阿里云百炼（DashScope / Model Studio）实时语音识别
+//! `qwen-audio-3.1-asr-flash-streaming`。
 //!
 //! 协议（官方文档 2026-11 核对）：**JSON 文本帧做控制 + 裸二进制帧做音频**。
 //! 与火山的区别是没有自研二进制协议头 —— `Message::Text` / `Message::Binary`
@@ -42,10 +43,14 @@ pub const SUPPORTED_MODELS: [&str; 1] = [DEFAULT_MODEL];
 pub const MAX_VOCABULARY: usize = 2000;
 /// 即时热词的默认权重（官方建议从 4 起调）。
 pub const DEFAULT_HOTWORD_WEIGHT: i32 = 4;
+/// 热词文本上限（含非 ASCII 时，ASCII 与非 ASCII 合计的字符数）。
+const MAX_HOTWORD_CHARS: usize = 15;
+/// 纯 ASCII 热词的片段上限（按空格切分）。
+const MAX_HOTWORD_ASCII_PARTS: usize = 7;
 /// 发包节奏：官方建议每包 100 ms 左右。16 kHz × 16 bit × 0.1 s = 3200 字节
 /// （官方 WebSocket 接入示例就是 3200 字节一包）。
 pub const AUDIO_PACKET_BYTES: usize = 3200;
-/// 断句静音阈值（毫秒）。本模型官方默认 **800**（Fun-ASR 是 1300），
+/// 断句静音阈值（毫秒）。本模型官方默认 **800**，
 /// **显式设**，不依赖默认值。
 const MAX_SENTENCE_SILENCE_MS: u32 = 800;
 /// 保留方言表达。官方默认 `false`（把方言转写为普通话文本）—— 我们是录音工具，
@@ -312,7 +317,8 @@ fn send_control(
 /// - `en` / `ja` / `ko` → 同名 code
 /// - 其它 → 不传（宁可让模型自动判断，也不要传一个非法值）
 ///
-/// 只返回一个值：官方说「设置多个时仅第一个生效」，传多个是误导。
+/// 只返回一个值：官方说「最多支持设置 4 个值，超出时仅前 4 个生效」，
+/// 我们只给一个，别传一串。
 pub fn language_hint(language: &str) -> Option<String> {
     match language.trim() {
         "zh" => Some("zh".into()),
@@ -390,21 +396,39 @@ pub fn encode_finish_task(task_id: &str) -> String {
 /// 权重统一取 4（官方建议从 4 起调；界面没有权重输入，先给一个中间值）。
 /// 超上限时**整条丢弃**（不截半个词），返回被忽略的条数。
 pub fn build_vocabulary(words: &[String]) -> (Vec<(String, i32)>, usize) {
-    let usable: Vec<&str> = words
-        .iter()
-        .map(|word| word.trim())
-        .filter(|word| !word.is_empty())
-        .collect();
-    let mut vocabulary: Vec<(String, i32)> = usable
-        .iter()
-        .map(|word| ((*word).to_string(), DEFAULT_HOTWORD_WEIGHT))
-        .collect();
+    let mut vocabulary: Vec<(String, i32)> = Vec::new();
     let mut ignored = 0usize;
+    for word in words {
+        let word = word.trim();
+        if word.is_empty() {
+            continue;
+        }
+        // 官方热词文本规范：含非 ASCII 字符时合计不超过 15 个字符；纯 ASCII
+        // 按空格切分不超过 7 个片段。超了服务端可能整条作废 → 直接丢掉。
+        if !hotword_text_fits(word) {
+            ignored += 1;
+            continue;
+        }
+        vocabulary.push((word.to_string(), DEFAULT_HOTWORD_WEIGHT));
+    }
     if vocabulary.len() > MAX_VOCABULARY {
-        ignored = vocabulary.len() - MAX_VOCABULARY;
+        ignored += vocabulary.len() - MAX_VOCABULARY;
         vocabulary.truncate(MAX_VOCABULARY);
     }
     (vocabulary, ignored)
+}
+
+/// 热词文本是否符合官方长度规范。
+///
+/// 官方「热词文本规范」：含非 ASCII 字符时，ASCII 与非 ASCII 合计不超过
+/// **15 个字符**（空格计入）；仅 ASCII 时，按空格切分不超过 **7 个片段**。
+fn hotword_text_fits(word: &str) -> bool {
+    let has_non_ascii = !word.is_ascii();
+    if has_non_ascii {
+        word.chars().count() <= MAX_HOTWORD_CHARS
+    } else {
+        word.split_whitespace().count() <= MAX_HOTWORD_ASCII_PARTS
+    }
 }
 
 /// 解码一条服务端文本帧。
@@ -479,11 +503,18 @@ fn parse_sentence(value: &Value) -> Sentence {
 /// 的文字永久消失。
 #[derive(Debug, Default)]
 pub struct AliyunMapper {
-    /// 当前未定稿句：`(句 id，最后一次上屏的文本)`。
+    /// 当前未定稿句：`(已确认句的 id, 已确认文本快照)`。
     ///
-    /// **id 可能是 `None`** —— 服务端没给 `sentence_id` 时（见 `Sentence.id`），
-    /// 只能靠「句结束」与草稿来切句。
+    /// **键必须是「快照文本所属的那一句」的 id** —— 草稿属于下一句，混用会导致
+    /// 下一个事件被误判成「新句」→ 提前定稿 + 把下一句的 id 写进 `finalized`
+    /// → 下一句整句被吞。
     open: Option<(Option<i64>, String)>,
+    /// 当前草稿：`(草稿所属句的 id, 草稿文本)`。
+    ///
+    /// 草稿可能是**下一句**的（官方示例：句 1 结束、`stash.sentence_id = 2`），
+    /// 也可能是**本句**的未确认部分；两种读法都要能工作，所以草稿单独记，
+    /// 不与已确认文本揉在一起。
+    draft: Option<(Option<i64>, String)>,
     /// 已定稿的句：id → 定稿文本。
     ///
     /// 存文本而不只是 id：重复到达的同一句**文本没变**时不该刷 WARN
@@ -504,12 +535,12 @@ impl AliyunMapper {
     ///
     /// ## 结果结构：已确认句子 + 草稿
     ///
-    /// 本模型返回 `sentence`（已确认的句子，`sentence_end` 表示它结束了）与
-    /// `stash`（还在变的草稿，属于下一句的 `sentence_id`）。所以：
+    /// 服务端返回 `sentence`（已确认的句子，`sentence_end` 表示它结束了）与
+    /// `stash`（草稿）。所以：
     ///
-    /// - 实时行文本 = `sentence.text` + `stash.text`（确认前缀 + 草稿）；
-    /// - `sentence_end == true` → 该句定稿，用 `sentence.text`；
-    ///   随后的 `stash` 是**下一句**的草稿，转成新的实时行。
+    /// - 实时行文本 = 已确认文本 + 草稿；
+    /// - `sentence_end == true` → 该句定稿，用**本句**的已确认文本（没有就用
+    ///   本句的快照）；随后到达的草稿属于**下一句**，转成新的实时行。
     ///
     /// ## 缺 `sentence_id` 怎么办
     ///
@@ -547,60 +578,91 @@ impl AliyunMapper {
                 return events;
             }
         }
-        let confirmed = sentence.text.trim();
-        let draft = sentence.draft.trim();
-        // ④ 句 id 变了 → 上一句没被结束就开了新句：先按最后快照定稿它
+        // 用原文（不 trim）拼接 —— trim 只用来判空：英文的词间空格不能被吃掉。
+        let confirmed = sentence.text.as_str();
+        let draft = sentence.draft.as_str();
+        let confirmed_empty = confirmed.trim().is_empty();
+        let draft_empty = draft.trim().is_empty();
+
+        // ④ 已确认文本的句 id 变了 → 上一句没结束就开了新句：先按快照定稿它
         //    （否则会话层的 Partial 替换语义会让上一句的文字永久消失）。
-        if let Some((open_id, snapshot)) = self.open.as_ref() {
-            let changed = match (open_id, raw_id) {
-                (Some(a), Some(b)) => *a != b,
-                // 缺 id 的那一边：无法核对，不自己切句（宁可少切，也不要把两句并成一句）。
-                (None, None) => false,
-                _ => false,
+        if !confirmed_empty {
+            let differs = match (&self.open, raw_id) {
+                (None, _) => false,
+                // 两边都有 id：id 不同就是新句。
+                (Some((open_id, _)), Some(id)) => *open_id != Some(id),
+                // 一边有 id 一边没有：无法核对是不是同一句 → 当新句
+                //（宁可多切一句，也不要把上一句的文本丢掉）。
+                (Some((open_id, _)), None) => open_id.is_some(),
             };
-            if changed && !snapshot.trim().is_empty() {
-                let (id, snapshot) = (*open_id, snapshot.clone());
-                self.open = None;
-                if let Some(id) = id {
-                    self.finalized.insert(id, snapshot.clone());
+            if differs {
+                if let Some((open_id, snapshot)) = self.open.take() {
+                    if !snapshot.trim().is_empty() {
+                        if let Some(id) = open_id {
+                            self.finalized.insert(id, snapshot.clone());
+                        }
+                        events.push(final_event(snapshot));
+                    }
                 }
-                events.push(final_event(snapshot));
             }
+            // 本句的旧草稿作废（它已被这句的已确认文本取代）。
+            if self.draft.as_ref().and_then(|(id, _)| *id) == raw_id && raw_id.is_some() {
+                self.draft = None;
+            }
+            self.open = Some((raw_id, confirmed.to_string()));
         }
+
+        // ⑤ 草稿：可能是下一句的，也可能是本句未确认的部分 —— 两种读法都要能
+        //    工作，所以单独记。
+        if !draft_empty {
+            self.draft = Some((sentence.draft_id, draft.to_string()));
+        }
+
         if sentence.end {
-            // ⑤ 句结束 → 定稿。服务端没给文本时用最后快照（别把说过的字丢掉）。
-            let final_text: String = if !confirmed.is_empty() {
+            // ⑥ 句结束 → 定稿。服务端没给文本时用**本句**的快照（别的句子的
+            //    草稿不能拿来当本句的定稿）。
+            let final_text = if !confirmed_empty {
                 confirmed.to_string()
             } else {
-                self.open.take().map(|(_, snapshot)| snapshot).unwrap_or_default()
+                match &self.open {
+                    Some((open_id, snapshot)) if same_sentence(*open_id, raw_id) => snapshot.clone(),
+                    _ => String::new(),
+                }
             };
+            self.open = None;
             if let Some(id) = raw_id {
                 self.finalized.insert(id, final_text.clone());
             }
             if !final_text.trim().is_empty() {
                 events.push(final_event(final_text));
-            } else {
-                self.open = None;
             }
-            // ⑥ `stash` 是**下一句**的草稿：转成新的实时行。
-            if !draft.is_empty() {
-                self.open = Some((sentence.draft_id, draft.to_string()));
-                events.push(CloudEvent::Partial(draft.to_string()));
-            } else {
-                self.open = None;
+            // 本句的草稿作废；**下一句的草稿要留下**（官方示例：句 1 结束时
+            // `stash.sentence_id = 2`，那是句 2 的草稿）。
+            if self.draft.as_ref().and_then(|(id, _)| *id) == raw_id && raw_id.is_some() {
+                self.draft = None;
             }
-            return events;
         }
-        // ⑦ 还没结束：实时行 = 已确认的前缀 + 草稿。
-        let partial = format!("{confirmed}{draft}");
-        if partial.trim().is_empty() {
-            return events;
+
+        // ⑦ 实时行 = 已确认文本 + 草稿。
+        let live = format!(
+            "{}{}",
+            self.open.as_ref().map(|(_, text)| text.as_str()).unwrap_or(""),
+            self.draft.as_ref().map(|(_, text)| text.as_str()).unwrap_or("")
+        );
+        if !live.trim().is_empty() {
+            events.push(CloudEvent::Partial(live));
         }
-        // 草稿属于下一句时，「当前句」以草稿的 id 为准。
-        let owner = if draft.is_empty() { raw_id } else { sentence.draft_id };
-        self.open = Some((owner, partial.clone()));
-        events.push(CloudEvent::Partial(partial));
         events
+    }
+}
+
+/// 两个句标识是不是同一句：都缺 id 时算同一句（无从核对）；一边缺 id 时
+/// **不算**同一句（不能拿别的句子的快照当本句的定稿）。
+fn same_sentence(open_id: Option<i64>, id: Option<i64>) -> bool {
+    match (open_id, id) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -718,6 +780,9 @@ async fn run(
                         }
                     }
                     Ok(ServerEvent::TaskFinished) => {
+                        // 3.1 按 token 计费：把这次任务的用量记下来（只读最终累计值，
+                        // **不要**把各 result-generated 的 usage 相加）。
+                        log_usage(&raw);
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
                     }
@@ -752,6 +817,27 @@ async fn run(
     if let Some(done) = finishing.take() {
         let _ = done.send(());
     }
+}
+
+/// 记一条任务用量的日志（只读 `task-finished` 的最终累计值）。
+fn log_usage(raw: &str) {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return;
+    };
+    let usage = value
+        .get("payload")
+        .and_then(|payload| payload.get("usage"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    if usage.is_null() {
+        return;
+    }
+    let duration = usage.get("duration").and_then(Value::as_i64).unwrap_or(0);
+    let input = usage.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
+    let output = usage.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
+    crate::log::info(format!(
+        "阿里云端：任务完成 时长 {duration}s，输入 {input} token，输出 {output} token"
+    ));
 }
 
 /// 连上阿里：`Authorization: Bearer <key>`（凭据只进请求头）。

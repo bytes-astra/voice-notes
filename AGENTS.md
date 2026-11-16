@@ -200,7 +200,7 @@
 
 第三个引擎（`mode = "cloud"`），**显式 opt-in**：音频会上传，默认仍走本地；本地两条路径的行为一个字都不许改。
 
-- **provider 可插拔**：`CloudProvider` trait（`src-tauri/src/asr/cloud.rs`）只管协议 —— 建连、喂音频、提交、收尾。协议差异（帧格式、鉴权、partial 语义、术语表格式）全部关在 provider 内部：`realtime.rs`（OpenAI Realtime，JSON 帧）、`volcengine.rs`（火山 / 豆包，自研二进制帧）、`aliyun.rs`（阿里云百炼 Fun-ASR，JSON 控制帧 + 裸二进制音频帧）。
+- **provider 可插拔**：`CloudProvider` trait（`src-tauri/src/asr/cloud.rs`）只管协议 —— 建连、喂音频、提交、收尾。协议差异（帧格式、鉴权、partial 语义、术语表格式）全部关在 provider 内部：`realtime.rs`（OpenAI Realtime，JSON 帧）、`volcengine.rs`（火山 / 豆包，自研二进制帧）、`aliyun.rs`（阿里云百炼 Qwen-Audio，JSON 控制帧 + 裸二进制音频帧）。
   **加一家的实际清单**（不只是「加个文件」）：provider 文件 + `provider_capabilities` 表项 + `create_provider` 分支 + `settings::CLOUD_PROVIDERS` + 前端 `cloudProviderItems()` 与 locale 文案 + 字段可见性条件 + 协议层单测 + 界面断言。
 - **能力声明**：`Capabilities`（句边界方式 / 是否需要本地 VAD / 中间结果语义 / 是否支持术语表 / 上传采样率）由 provider 自报，按 id 静态查的表（`provider_capabilities`）与实例**同源**（表项就是实现自报的那个常量，别手写第二份）。合法组合只有两种：客户端提交 + 需要本地 VAD；服务端断句 + 不需要本地 VAD。**「缺 VAD」不是「改用服务端断句」** —— 那是另一个能力，混起来会让客户端提交族静默退化。
 - **中间结果统一为「当前未定稿句的累计串」**：各家协议形态不同（增量拼接 / 确认前缀加草稿 / 区间替换），在 provider 内部归一，上层只认这一种。归一器（`partial.rs`）目前**只有 Realtime 自建** —— 火山的 `map_response` 直接产出 partial，不经过归一器。归一器按句标识分桶；**没有句标识的协议（服务端断句族）走单桶**，不支持跨句交错。
@@ -210,9 +210,9 @@
   本地两条路径**同样受影响**：采集丢包时缺口段也可能先于它所属的句子发出（`record.rs` 的 `run_offline` / `run_streaming_core`），这时界面会重排成「句子 → 缺口」—— 与最终转写一致，是修正不是回归（触发条件罕见：采集队列超 60 秒未消费）。
 - **阿里云百炼走即时热词**：`parameters.vocabulary` 键值对（词 → 权重 1–5，50 是超级热词且 ≤50 个），**请求级直传、最多 2000 条**，不需要预建词表。它比火山的 `corpus.context`（100 条、无权重）更强 —— 术语表不是各家都一个水平。
 - **阿里的结果结构是「已确认句子 + 草稿」**：`sentence.text` 是已确认部分，`stash.text` 是还在变的草稿（属于下一句的 `sentence_id`）。实时行文本 = 两者拼接；句结束时用 `sentence.text` 定稿，随后的 `stash` 是下一句的草稿。
-- **阿里的模型走白名单**（`qwen-audio-3.1-asr-flash-streaming`）：协议骨架与 Fun-ASR 相同，但参数与结果结构不同，不按「名字随便填」处理。
+- **阿里的模型走白名单**（`qwen-audio-3.1-asr-flash-streaming`）：协议骨架与旧的 Fun-ASR 相同，但参数与结果结构不同，不按「名字随便填」处理。
 - **阿里的 `sentence_id` 不进 `item_id`**：服务端断句族不产生 `CommitAck` → `by_id` 永远为空，`Final` 会回落 `pending.pop_front()` 再回落本地轴。传不传 `item_id` 行为完全一样。（别写成「`pending` 始终为空」—— `finish()` 会 push 一段未提交区间。）
-- **阿里 8k 模型被拒**：`Capabilities.target_sample_rate` 是静态常量 16000，而 8k 模型要求 8000。`create_provider` 按已知前缀 `fun-asr-flash-8k-realtime` 拒绝（不用「含 8k」子串，会误拒未来的模型名）。
+- **阿里的模型走白名单**：`qwen-audio-3.1-asr-flash-streaming`（百炼当前首推的实时模型）。协议骨架与旧的 Fun-ASR 相同，但参数与结果结构不同（本模型有 `stash` 草稿、即时热词、方言开关），**白名单之外的模型名一律拒绝**。
 - **服务端断句族的防御性定稿**（阿里最容易回退的一条）：新 `sentence_id` 出现而上一句还没定稿时，**先按最后快照把上一句 emit 成 Final**；已定稿 id 的后续事件**一律忽略**（否则重复/迟到的 `end` 会让会话层产生重复句子，迟到的 `end` 还会 `partial.clear()` 掉新句的实时行）。心跳必须在「新 id」判断**之前**判掉。
 - **断句**：客户端提交族本地门控（静音在本地丢掉、静音时提交）；服务端断句族**不门控**（静音照上传，服务端靠静音判句尾），区间走本地轴兜底（终点偏长是已知取舍）。「末包 / 结束标识」不等于「结果已全回」—— 要等最终响应才收尾。**阿里还要多一条：`sentence_end=true` 只表示句子结束，任务结束以 `task-finished` 为准** —— `finish-task` 之后必须继续收 `result-generated`，发完就关会丢尾部结果；而且残包要在 `finish-task` 之前发出去。
 - **凭据**：只存 settings，**不进日志、不回传前端**（`Status` 只有 `cloudConfigured` 布尔）；错误详情里的 key 要脱敏（`sanitize`）。切换 provider 会清空地址、凭据、模型与资源标识（各家的配置不能混用）—— 这是**有提示的已知取舍**。

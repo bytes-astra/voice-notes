@@ -244,7 +244,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.cloudProvider': '云端服务',
   'settings.cloudProviderRealtime': 'OpenAI Realtime（逐字实时）',
   'settings.cloudProviderVolcengine': '火山引擎 · 豆包（服务端断句）',
-  'settings.cloudProviderAliyun': '阿里云百炼 · Fun-ASR',
+  'settings.cloudProviderAliyun': '阿里云百炼 · Qwen-Audio',
   'settings.cloudResourceId': '资源标识',
   'settings.cloudResourceIdPlaceholder': '留空 = 用服务默认资源标识',
   'settings.cloudBaseUrl': '服务地址',

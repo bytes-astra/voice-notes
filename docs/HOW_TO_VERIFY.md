@@ -227,7 +227,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 - **火山（豆包）协议层**（`src-tauri/src/asr/cloud/volcengine/`）：二进制帧编解码按官方文档逐字节核对（4 字节头 + payload size，大端；消息类型 / flags / 序列号）；结果映射用官方示例 JSON（`result.utterances[]` 的 `definite` → 定稿，最后一条未定句 → 实时行；**不用 `result.text`** —— 那是全会话累计）。热词清洗（控制字符丢弃、超上限（100 条）截断）。
 - **火山的真机验证**：用 `VOICE_NOTES_VOLCENGINE_KEY` 环境变量跑 `asr::cloud::volcengine::tests::live_smoke`（没设就跳过，**key 不入库、不进日志**）。已验证通过（2026-11-16）：7 条中间结果 + 1 句定稿「开放时间，早上9点至下午5点。」（fixture `tests/fixtures/zh.wav` 的内容）—— 帧编解码、鉴权、中间结果、末包 → 最终响应、整句断句整条链路都对。资源 ID 用 `volc.seedasr.sauc.duration`（豆包 2.0 小时版）—— **只支持模型 2.0**；填了模型 1.0 的资源 ID 会握手 403 `requested resource not granted`。
 
-- **阿里云百炼（Fun-ASR）协议层**（`src-tauri/src/asr/cloud/aliyun.rs`）：JSON 控制帧 + 裸二进制音频帧（不需要帧编解码模块）。请求组装（`run-task` / `finish-task` / `input.context`）、服务端事件解码、有状态映射 `AliyunMapper`。
+- **阿里云百炼（Qwen-Audio 3.1 实时流式）协议层**（`src-tauri/src/asr/cloud/aliyun.rs`）：JSON 控制帧 + 裸二进制音频帧（不需要帧编解码模块）。请求组装（`run-task` / `finish-task`）、服务端事件解码、有状态映射 `AliyunMapper`（已确认句子与草稿分开记）。
   - **映射的四条硬规则**（每条都有单测）：`text` 是整句快照（**替换不追加**）；心跳先判（`sentence_id` 固定 0，否则会误把上一句定稿）；新句出现而上一句未定稿 → **按最后快照防御性定稿**（否则会话层的 Partial 替换语义会让上一句文字永久消失）；已定稿句的后续事件**一律忽略**（防重复 Final，也防迟到的 `end` 把新句的实时行清掉）。
   - **收尾流程有假服务端测试**（`finish_keeps_reading_and_flushes_leftover_packet`）：本地 `TcpListener` + `accept_async` 起一个假 WebSocket 服务端，收到 `finish-task` 后才发两条尾部结果、最后才发 `task-finished`。它守两条规则：**残包要在 `finish-task` 之前发出去**（否则最后 0~99 ms 永不上传、句尾少字）、**`finish-task` 之后要继续收**（发完就关会丢尾部结果）。
   - **阿里真机冒烟**：`VOICE_NOTES_ALIYUN_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --lib asr::cloud::aliyun::tests::live_smoke -- --nocapture`。
@@ -243,15 +243,15 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 
 **注意服务端的识别结果有随机性**：同一段音频两次运行，定稿文本不同（一次「开放时间：早上9点至下午5点。」带冒号，一次「开放时间早上9点至下午5点。」不带）—— 排查识别差异时别把这个当 bug。
   - **官方文档出处**（2026-11-16 核对）：
-    - 协议与事件：<https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api>、<https://help.aliyun.com/zh/model-studio/fun-asr-client-events>、<https://help.aliyun.com/zh/model-studio/fun-asr-server-events>
+    - 协议与事件：<https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-websocket-api>、<https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events>、<https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events>
     - 音频规格与「整句快照」口径：<https://help.aliyun.com/zh/model-studio/automatic-speech-recognition>
-    - 模型与语种：<https://help.aliyun.com/zh/model-studio/asr-model>、<https://help.aliyun.com/zh/model-studio/fun-asr-realtime>
+    - 模型与语种：<https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-audio-3-1-asr-flash-streaming>、<https://help.aliyun.com/zh/model-studio/asr-model>
     - 术语表（预编译词表，本变更未采用）：<https://www.alibabacloud.com/help/zh/model-studio/vocabulary-http-api>、<https://docs.bailian.console.aliyun.com/zh/model-studio/improve-asr-accuracy>
-  - **模型白名单**：只支持 `qwen-audio-3.1-asr-flash-streaming`。协议骨架与 Fun-ASR 相同，但参数与结果结构不同（本模型有 `stash` 草稿、即时热词、方言开关），不按「名字随便填」处理。
+  - **模型白名单**：只支持 `qwen-audio-3.1-asr-flash-streaming`。协议骨架与旧的 Fun-ASR 相同，但参数与结果结构不同（本模型有 `stash` 草稿、即时热词、方言开关），不按「名字随便填」处理。
   - **计费按 token**（输入 6 元 / 百万、输出 4.5 元 / 百万，北京与新加坡同价），不是按秒。
-  - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（客户端事件页 1300 / Paraformer SDK 页 800）→ **显式设 1300**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按 fun-asr 的「不传 = 自动识别」**；Paraformer 是否有 `sentence_id` → **没有**（本变更只用 fun-asr 的）。
+  - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（本模型客户端事件页 **800** / 旧的 Paraformer SDK 页 800）→ **显式设 800**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按「不传 = 自动识别」**；`sentence_id` 是否必填 → **必填**（缺了按兼容路径处理并记 WARN）。
 
-**云端相关测试基线**：`cargo test --lib` = **267**（其中 `asr::cloud` = 115 = 会话层 34 + Realtime 协议层 27 + 归一器 6 + 火山 18 + 阿里 30；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
+**云端相关测试基线**：`cargo test --lib` = **271**（其中 `asr::cloud` = 119 = 会话层 34 + Realtime 协议层 27 + 归一器 6 + 火山 18 + 阿里 34；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 > [!NOTE]
 > 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。

@@ -14,7 +14,7 @@ pub const MAX_HOTWORDS: usize = 100;
 pub const MAX_HOTWORD_CHARS: usize = 32;
 pub const MODES: [&str; 3] = ["offline", "streaming", "cloud"];
 /// 云端 provider 取值（`cloud_provider`）。默认 `realtime`（Realtime JSON 族）。
-/// 另两家：`volcengine`（火山 / 豆包，自研二进制帧）、`aliyun`（阿里云百炼 Fun-ASR）。
+/// 另两家：`volcengine`（火山 / 豆包，自研二进制帧）、`aliyun`（阿里云百炼 Qwen-Audio）。
 pub const CLOUD_PROVIDERS: [&str; 3] = ["realtime", "volcengine", "aliyun"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

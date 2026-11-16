@@ -16,7 +16,7 @@ use sherpa_onnx::LinearResampler;
 use super::{AsrSession, Segment, StreamEvent, Timeline, Transcript, SAMPLE_RATE};
 
 // provider 的实现：`realtime.rs`（OpenAI Realtime JSON 族）、`volcengine.rs`
-// （火山 / 豆包，自研二进制帧协议）、`aliyun.rs`（阿里云百炼 fun-asr-realtime，
+// （火山 / 豆包，自研二进制帧协议）、`aliyun.rs`（阿里云百炼 Qwen-Audio，
 // JSON 控制帧 + 裸二进制音频帧）。
 pub mod aliyun;
 pub mod realtime;

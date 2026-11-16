@@ -1,4 +1,4 @@
-//! 阿里 `fun-asr-realtime` 的协议层单测：请求组装、事件解码、结果映射。
+//! 阿里 `qwen-audio-3.1-asr-flash-streaming` 的协议层单测：请求组装、事件解码、结果映射。
 
 use super::*;
 
@@ -339,7 +339,7 @@ fn language_hint_maps_supported_codes() {
     assert_eq!(language_hint("auto"), None);
     assert_eq!(language_hint(""), None);
     assert_eq!(language_hint("zh").as_deref(), Some("zh"));
-    // 粤语：阿里 fun-asr 的 language_hints 里没有 yue，靠 zh 模型自动识别。
+    // 粤语：阿里的 language_hints 里没有 yue，靠 zh 模型自动识别。
     assert_eq!(language_hint("yue").as_deref(), Some("zh"));
     assert_eq!(language_hint("en").as_deref(), Some("en"));
     assert_eq!(language_hint("ja").as_deref(), Some("ja"));
@@ -714,4 +714,112 @@ fn missing_id_uses_sentence_begin_to_split() {
         finals(&update).is_empty(),
         "缺 id 时不能自己切句：{update:?}"
     );
+}
+
+// ── 「已确认句子 + 草稿」的结果结构 ────────────────────────────────────
+
+/// 句中就带草稿（草稿属于**下一句**）时：
+///
+/// - 不能提前定稿（那句还没结束）；
+/// - 下一句的 id 不能被写进「已定稿」集合 —— 否则下一句整句被吞。
+#[test]
+fn draft_in_middle_does_not_finalize_early_or_swallow_next_sentence() {
+    let mut mapper = AliyunMapper::new();
+    // 句 1 还没结束，草稿已经是句 2 的了。
+    let first = mapper.map_sentence(sentence_with(Some(1), false, "你好", "世界", Some(2)));
+    assert_eq!(partials(&first), vec!["你好世界".to_string()]);
+    assert!(finals(&first).is_empty(), "句还没结束不能定稿：{first:?}");
+
+    // 句 1 继续：草稿还是句 2 的。
+    let second = mapper.map_sentence(sentence_with(Some(1), false, "你好世界", "再见", Some(2)));
+    assert_eq!(partials(&second), vec!["你好世界再见".to_string()]);
+    assert!(
+        finals(&second).is_empty(),
+        "草稿的 id 与已确认句不同，不能被当成新句而提前定稿：{second:?}"
+    );
+
+    // 句 1 结束 → 只定稿句 1 一次，文本是已确认部分（不含草稿）。
+    let end = mapper.map_sentence(sentence_with(Some(1), true, "你好世界。", "", None));
+    assert_eq!(finals(&end), vec!["你好世界。".to_string()]);
+
+    // 句 2 的真实事件**必须**还能出字（没被写进「已定稿」集合）。
+    let third = mapper.map_sentence(sentence_with(Some(2), false, "再见下一句", "", None));
+    assert_eq!(partials(&third), vec!["再见下一句".to_string()]);
+    let fourth = mapper.map_sentence(sentence_with(Some(2), true, "再见下一句完", "", None));
+    assert_eq!(finals(&fourth), vec!["再见下一句完".to_string()]);
+}
+
+/// 句结束但服务端没给已确认文本（内容还在草稿里）：不能拿**下一句的草稿**
+/// 当本句的定稿发出去，也不能把下一句的 id 写进「已定稿」。
+#[test]
+fn end_without_confirmed_text_does_not_finalize_the_next_draft() {
+    let mut mapper = AliyunMapper::new();
+    // 句 1 没有已确认文本，只有句 2 的草稿。
+    let first = mapper.map_sentence(sentence_with(Some(1), false, "", "下一句草稿", Some(2)));
+    assert_eq!(partials(&first), vec!["下一句草稿".to_string()]);
+
+    // 句 1 结束，仍没有文本 → 不产 Final（没有可定稿的内容）。
+    let end = mapper.map_sentence(sentence_with(Some(1), true, "", "", None));
+    assert!(
+        finals(&end).is_empty(),
+        "没有已确认文本就不该定稿，更不能拿下一句的草稿：{end:?}"
+    );
+
+    // 句 2 的真实事件必须还能出字。
+    let third = mapper.map_sentence(sentence_with(Some(2), false, "下一句确认", "", None));
+    assert_eq!(partials(&third), vec!["下一句确认".to_string()]);
+    let fourth = mapper.map_sentence(sentence_with(Some(2), true, "下一句确认完", "", None));
+    assert_eq!(finals(&fourth), vec!["下一句确认完".to_string()]);
+}
+
+/// 草稿所属的句子在句中就换了（草稿 id 变了）：不能拿新草稿提前定稿。
+#[test]
+fn changing_draft_id_does_not_finalize_the_draft() {
+    let mut mapper = AliyunMapper::new();
+    let first = mapper.map_sentence(sentence_with(Some(1), true, "第一句", "草二", Some(2)));
+    assert_eq!(finals(&first), vec!["第一句".to_string()]);
+    assert_eq!(partials(&first), vec!["草二".to_string()]);
+
+    // 句 2 的事件里带的是句 3 的草稿。
+    let second = mapper.map_sentence(sentence_with(Some(2), false, "", "草三", Some(3)));
+    assert_eq!(partials(&second), vec!["草三".to_string()]);
+    assert!(
+        finals(&second).is_empty(),
+        "草三属于句 3，不能在句 2 还没结束时把它定稿：{second:?}"
+    );
+
+    // 句 2 正常结束 → 只有它自己的定稿。
+    let third = mapper.map_sentence(sentence_with(Some(2), true, "第二句", "", None));
+    assert_eq!(finals(&third), vec!["第二句".to_string()]);
+}
+
+/// 英文的词间空格不能被吃掉：trim 只用来判空，拼接用原文。
+#[test]
+fn english_word_spacing_is_preserved() {
+    let mut mapper = AliyunMapper::new();
+    let events = mapper.map_sentence(sentence_with(Some(1), false, "hello ", "world", None));
+    assert_eq!(partials(&events), vec!["hello world".to_string()]);
+}
+
+/// 热词文本长度按官方规范过滤：含非 ASCII 合计 ≤15 字符；纯 ASCII ≤7 片段。
+#[test]
+fn overlong_hotwords_are_dropped() {
+    let long_cn = "玄".repeat(16);
+    let (vocabulary, ignored) = build_vocabulary(&[long_cn]);
+    assert!(vocabulary.is_empty(), "16 个中文字超出 15 字符上限");
+    assert_eq!(ignored, 1);
+
+    // 15 个中文字正好放得下。
+    let (vocabulary, ignored) = build_vocabulary(&["玄".repeat(15)]);
+    assert_eq!(vocabulary.len(), 1);
+    assert_eq!(ignored, 0);
+
+    // 纯 ASCII：按空格切分，8 个片段太多。
+    let (vocabulary, ignored) = build_vocabulary(&["a b c d e f g h".to_string()]);
+    assert!(vocabulary.is_empty());
+    assert_eq!(ignored, 1);
+
+    let (vocabulary, ignored) = build_vocabulary(&["a b c d e f g".to_string()]);
+    assert_eq!(vocabulary.len(), 1);
+    assert_eq!(ignored, 0);
 }

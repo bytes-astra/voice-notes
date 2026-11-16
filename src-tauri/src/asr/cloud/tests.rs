@@ -635,29 +635,13 @@ fn sanitize_leaves_text_without_secret_alone() {
     assert_eq!(sanitize(text, "sk-1"), text);
 }
 
-/// 8k 模型必须被拒：`target_sample_rate` 是静态常量 16000，8k 模型要求 8000。
-#[test]
-fn aliyun_8k_model_is_rejected_with_model_name() {
-    let settings = crate::settings::Settings {
-        cloud_provider: "aliyun".into(),
-        cloud_model: "fun-asr-flash-8k-realtime".into(),
-        ..Default::default()
-    };
-    let error = match create_provider(&settings) {
-        Ok(_) => panic!("8k 模型不该建出来"),
-        Err(error) => error,
-    };
-    assert!(error.starts_with("cloud.unsupportedModel"), "{error}");
-    assert!(error.contains("fun-asr-flash-8k-realtime"), "错误里要带模型名：{error}");
-}
-
 /// 阿里只支持白名单里的模型：协议骨架相同但参数与结果结构不同
 /// （本模型有 stash 草稿、即时热词、方言开关），不按「名字随便填」处理。
 #[test]
 fn aliyun_rejects_models_outside_the_whitelist() {
     let settings = crate::settings::Settings {
         cloud_provider: "aliyun".into(),
-        cloud_model: "fun-asr-realtime".into(),
+        cloud_model: "some-other-asr-model".into(),
         ..Default::default()
     };
     let error = match create_provider(&settings) {
