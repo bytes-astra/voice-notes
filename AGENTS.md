@@ -203,7 +203,17 @@
 - **provider 可插拔**：`CloudProvider` trait（`src-tauri/src/asr/cloud.rs`）只管协议 —— 建连、喂音频、提交、收尾。协议差异（帧格式、鉴权、partial 语义、术语表格式）全部关在 provider 内部：`realtime.rs`（OpenAI Realtime，JSON 帧）、`volcengine.rs`（火山 / 豆包，自研二进制帧）、`aliyun.rs`（阿里云百炼 Qwen-Audio，JSON 控制帧 + 裸二进制音频帧）。
   **加一家的实际清单**（不只是「加个文件」）：provider 文件 + `provider_capabilities` 表项 + `create_provider` 分支 + `settings::CLOUD_PROVIDERS` + 前端 `cloudProviderItems()` 与 locale 文案 + 字段可见性条件 + 协议层单测 + 界面断言。
 - **能力声明**：`Capabilities`（句边界方式 / 是否需要本地 VAD / 中间结果语义 / 是否支持术语表 / 上传采样率）由 provider 自报，按 id 静态查的表（`provider_capabilities`）与实例**同源**（表项就是实现自报的那个常量，别手写第二份）。合法组合只有两种：客户端提交 + 需要本地 VAD；服务端断句 + 不需要本地 VAD。**「缺 VAD」不是「改用服务端断句」** —— 那是另一个能力，混起来会让客户端提交族静默退化。
-- **中间结果统一为「当前未定稿句的累计串」**：各家协议形态不同（增量拼接 / 确认前缀加草稿 / 区间替换），在 provider 内部归一，上层只认这一种。归一器（`partial.rs`）目前**只有 Realtime 自建** —— 火山的 `map_response` 直接产出 partial，不经过归一器。归一器按句标识分桶；**没有句标识的协议（服务端断句族）走单桶**，不支持跨句交错。
+- **中间结果统一为「当前未定稿句的累计串」**：各家协议形态不同，在 provider 内部归一，上层只认这一种。归一器按句标识分桶；**没有句标识的协议（服务端断句族）走单桶**，不支持跨句交错。
+
+  | 协议形态 | 归一档 | 已知实例 |
+  | --- | --- | --- |
+  | 增量拼接（每次追加一段） | `Delta` | OpenAI Realtime 的 `.delta`、商汤 SenseAudio 的 `.delta` |
+  | 确认前缀 + 草稿（整体替换成「确认前缀 + 草稿」） | `Preview` | 火山（**确认前缀为空、整句就是草稿**）、阿里 `qwen-audio-3.1-asr-flash-streaming`（`sentence.text` + `stash`）、腾讯 `voice_text_str`、百度 `MID_TEXT` |
+  | 区间替换（改写已识别片段的某一段） | `Range` | 讯飞 IAT 的 `pgs=rpl` + `rg=[start,end]` |
+
+  本仓库接了**三家**：OpenAI Realtime、火山、阿里；其余是协议形态的调研实例。
+  **火山与阿里不走归一器**（`partial.rs`）—— 它们的映射器（`map_response` / `AliyunMapper`）直接产出 `CloudEvent::Partial`；归一器目前**只被 Realtime 自建使用**。
+  三家的形态都要有守卫：声明的 `partial_semantics` 必须与协议实际形态一致，且上抛的中间结果必须是**当前句的累计文本**（整句替换，不追加）—— 见 `docs/REVIEW-CHECKLIST.md` 的 RC-K1 / RC-K2。
 - **句子时间以本地 16 kHz 时钟为准**：provider 给的时间戳只作可选增强，**不覆盖本地轴**。区间按 item_id 绑定（`CommitAck` / `Final{item_id}`）—— 服务端可能乱序返回，按到达顺序配对会整体错位一格。
   - **已知取舍**：服务端断句族在 `finish()` 之后一次性 drain 到多条 final 时，**第一条**占用收尾那段区间，第 2 条起退化为零时长（`commit_at` 已把游标推到 `fed_end`）。文本不丢、顺序不乱（转写按 `start` 稳定排序），但那些句子的起止时间不准。触发要「停止瞬间服务端 flush 出多条未定稿句」，阿里的批量接收让它比火山更容易碰上。修法要么改区间分配策略（影响所有 provider），要么在零长度时用 provider 时间戳兜底（与「不覆盖本地轴」冲突）—— 两条都要单独评估，**暂不修**。
 - **结果框里的实时句子按本地时间轴呈现**：排序键只有 `start`，同一 `start` 时**缺口标记在前**（与「缺口标记」节那条规则**文档口径同源** —— 前后端各一份实现，`check:join` 不比对它），其余按到达顺序。后端最终转写本来就按 `start` 排序，前端要跟上 —— 否则云端丢包时缺口段先于它所属的句子到达，界面顺序会和最终结果相反。用户手动改过结果框之后一律**追加到末尾**，不重排用户文本。

@@ -6,13 +6,13 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**75 条**不变量、10 组（A–J）—— ✅ 75 条有守卫，⚠️ / ❌ 各 0 条。
+**当前规模**：**83 条**不变量、11 组（A–K）—— ✅ 82 条有守卫，⚠️ 1 条，❌ 0 条。
 
-> **云端模式还没有条目**：云端的专属不变量（provider 契约、中间结果语义、结果框顺序、凭据脱敏……）规划在 OpenSpec change `cloud-contract-guards` 里，**尚未实施** —— 本清单的 75 条**不含**云端。下一轮复审别把「清单全绿」当成「云端也审过了」。
+> **云端条目在 K 组**（2026-11-17 落地）：provider 契约、中间结果语义、结果框顺序、凭据脱敏、零长句顺序、上传丢包缺口。唯一还薄弱的是 **RC-K6 的日志那半边**（凭据不出现**在日志里**）—— 错误详情与状态回传都有守卫，日志没有。
 2026-11-14 修复 RC-B6 的门控收尾与预录时间轴问题，作业面 1 → 0；真模型守卫在本地运行。
 
 （历史口径：5 份旧 review plan 一共提出 **26** 个 focus 项 —— 那是「轮次」的粒度；
-本文档把它们展开成 **75** 条可逐条核对的条目。两个数各指什么，不要混用。）
+本文档把它们展开成 **83** 条可逐条核对的条目。两个数各指什么，不要混用。）
 
 ## 怎么用
 
@@ -190,20 +190,33 @@
 | RC-J2 | 装引擎必须用**当前**设置：读设置与装引擎要在同一把锁内，陈旧判定必须覆盖**所有**影响识别的设置（整段 = 模型目录 / 语言 / ITN，流式 = 热词）。只比语言和 ITN 的话，换了模型目录照样复用旧引擎，新设置被静默吞掉 | `engine.rs` 的 `install_engine`（拿槽锁 → 锁内读设置 → 比身份 → 复用或重建）+ `OfflineEngineKey` / `StreamingEngineKey`；`engine/tests.rs` 设置没变就复用引擎 / 换了模型目录就重建引擎 / 换了语言就重建引擎 / 换了热词就重建流式引擎 / 等锁期间设置改了也要用新设置 | ✅ 2026-11-04 |
 | RC-J3 | async 路径上不许**阻塞式**取引擎锁：引擎加载要好几秒（239 MB / 161 MB / 294 MB），那把锁会被占住；async 命令在执行器线程上死等，整个执行器就卡住（用户看着像界面冻住）。`try_lock()` 不算 | `scripts/check-async.mjs`（沿调用图从 async 函数出发，引擎槽的 `.lock()` 只许出现在 `spawn_blocking` 闭包里）+ 9 条自测（含「把旧的 `shared_engine` 加回真源码会被抓住」）；`load_engine` 直接返回 `Arc<Engine>`，不再有 `shared_engine` 的二次取锁 | ✅ 2026-11-04 |
 
+### K. 云端模式（8 条）
+
+| ID | 不变量 | 守卫 | 状态 |
+| --- | --- | --- | --- |
+| RC-K1 | provider 声明的中间结果语义 SHALL 与协议实际形态一致（`Preview` 允许确认前缀为空）。**声明必须有约束力** —— 只钉住源码里的常量、形态漂移照样过，所以形态要从**协议样例本身**推导再与声明比较 | 三家各一条（真实协议样例，禁 mock）：`asr/cloud/volcengine/tests.rs::partial_is_a_whole_sentence_replacement`、`asr/cloud/realtime/protocol_tests.rs::deltas_accumulate_into_the_sentence_so_far`、`asr/cloud/aliyun/tests.rs::declared_partial_semantics_matches_samples` | ✅ 2026-11-17 |
+| RC-K2 | 上层看到的中间结果 SHALL 是当前未定稿句的累计文本（句内整体替换，不追加）。期望值必须是**手写字面量**，不能从样例里再读一遍（那是 `x == x`） | 同上三家（第二次更新**改写**第一次，「替换」与「追加」的结果才不同）+ `asr/cloud/tests.rs::delta_accumulates_into_partial`（会话层不自己累加） | ✅ 2026-11-17 |
+| RC-K3 | 结果框里的实时句子顺序 SHALL 以本地时间轴为准，与最终转写一致；同 `start` 时缺口在前 | `scripts/ui/check.mjs` 的「缺口先到时句子仍排在缺口前面」/「同一时刻缺口排在句子前面」/「时间递增到达时文本逐字不变」三条断言（**RC-B3 的前端那半边** —— RC-B3 的后端守卫不覆盖 `result.js`；「与最终转写一致」是两条规则同源，界面断言只验实时行） | ✅ 2026-11-16 |
+| RC-K4 | 同批多句的零长区间 SHALL 以**到达顺序**为准（服务端断句族收尾时一次性 drain 出多条 final：首条占收尾那段区间，第 2 条起退化为零长、同 `start`） | `asr/cloud/tests.rs::zero_length_segments_keep_arrival_order`（九条 final 同批到达：首条 `start < end`、后八条零长且同 `start`、文本顺序 = 到达顺序） | ✅ 2026-11-17 |
+| RC-K5 | 上传丢包所占的时间 SHALL 计入真实录音时长，缺口位置 SHALL 在真实录音时间轴上；连续丢包并成一条；**缺口只上报一次** | `asr/cloud/tests.rs::upload_drop_records_gap_position`（缺口位置）、`asr/cloud/tests.rs::consecutive_drops_merge_into_one_gap`（并成一条）、`record/tests.rs::cloud_core_does_not_double_count_upload_drops`（时长不虚增 + `[[gap:1]]` **只出现一次**）、`record/tests.rs::cloud_tail_gap_follows_last_sentence`（收尾尾部缺口排在最后一句之后） | ✅ 2026-11-17 |
+| RC-K6 | 凭据 SHALL NOT 出现在错误详情 / 状态回传 / 日志 | 错误详情：`realtime/protocol_tests.rs::error_detail_redacts_secret`、`realtime/protocol_tests.rs::server_error_redacts_secret`、`volcengine/tests.rs::server_error_message_redacts_secret`（**helper 级守卫**：只钉 `sanitize` / `error_detail` 这两个函数，**不覆盖 run 循环的调用点**）；状态回传：`engine/tests.rs::cloud_status_exposes_bool_not_key`；**日志：没有任何守卫** | ⚠️ 2026-11-17（错误详情 + 状态回传有守卫；日志那半边没有） |
+| RC-K7 | 服务端断句族 SHALL NOT 依赖客户端 commit 定句，也不要求本地 VAD | `asr/cloud/tests.rs::server_endpoint_provider_does_not_commit`、`volcengine/tests.rs::capabilities_are_server_endpoint`、`record/tests.rs::gate_follows_capabilities` | ✅ 2026-11-17（登记既有） |
+| RC-K8 | 有 `item_id` 的 final SHALL 按 `item_id` 绑定，SHALL NOT 按到达顺序配对；**没有 `item_id` 时才按提交顺序（`pending` 队列）兜底**；空 final / 提交失败的区间也必须被消费或合并，不能留给下一句 | `asr/cloud/tests.rs::out_of_order_final_keeps_its_span`、`asr/cloud/tests.rs::failed_item_without_ack_keeps_spans_aligned`（前两条守 id 绑定）、`asr/cloud/tests.rs::empty_final_does_not_steal_next_span`、`asr/cloud/tests.rs::failed_commit_merges_span_into_the_last_one`（后两条守无 id 兜底与区间合并） | ✅ 2026-11-17（登记既有） |
+
 ---
 
 ## 下一轮该审什么
 
-⚠️ + ❌ 共 **0 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条，同日补四条 UI 断言后降到 13 条，
+⚠️ + ❌ 共 **1 条**（2026-11-03 补完四条门禁后从 21 条降到 17 条，同日补四条 UI 断言后降到 13 条，
 再补完原生层与打包后降到 9 条，补完质量门禁后降到 3 条；2026-11-13 复核降级三条回到 6 条，
-2026-11-14 修完 RC-B6 后清零）。
+2026-11-14 修完 RC-B6 后清零；2026-11-17 加了 K 组后回到 1 条 —— **RC-K6 的日志那半边**）。
 
-作业面为零 **不等于**「不用再审了」，只表示没有「已知守卫薄弱 / 未审」的条目。下一轮从这两处起：
+作业面不为零 **不等于**「不用再审了」，只表示没有「已知守卫薄弱 / 未审」的条目。下一轮从这两处起：
 
 1. **找新不变量**：读生产路径（`record.rs` 的收尾、`asr.rs` 的时钟、`engine.rs` 的加载），
    发现清单里没有的约束，追加到本文末尾并给它稳定 ID —— 不要临时另起 Focus 清单。
 2. **全量重审**：代码大改后（改模型、改时间轴、改并发结构），旧守卫可能仍在但已不覆盖新逻辑，
-   按组 A–J 过一遍比只盯增量更可靠。
+   按组 A–K 过一遍比只盯增量更可靠。
 
 ### 已完成（2026-11-04 · 并发三件）
 
@@ -284,6 +297,7 @@ async 路径上不再有第二把引擎锁。
 | 2026-11-14 | RC-B6（自查 4 条提交：句子起点语义 + 句起点倒退） | 1 条代码修复 + 4 条无模型回归 | ① 句子起点改用**这句最早那片音频**（`Timeline::sentence_audio_start`）：原来取「触发定稿的那一片」，句子横跨多片时前半段音频落在区间外，界面上这句话短一截；② 句起点只前进不后退：重放分片定稿时原来把 `segment_start` 改成那片分片的终点（比当前句起点更早），下一句会从那一片开始，区间里混进不属于它的音频；③ 余量（跨批 pending）只标记「这句有内容」，不拿它当句子起点 —— 余量可能横跨一个洞，位置不精确；④ `detected()` 是**状态量**实测确认（144 批里 74 批为 true，首个 true 在第 17 批），逐窗取「或」的前提成立。回归覆盖：跨两片的重放句、句起点不倒退（`asr/timeline_tests.rs` / `asr/stream_input_tests.rs`）；`cargo test --lib` 133 passed、真模型端到端 `2 passed`、clippy all-targets 通过、`npm run check` 六道门禁 fail 0 |
 | 2026-11-14 | RC-B4 / RC-B6 / RC-B7 / RC-B8 / RC-B10 / RC-I2（**改口径**：CI 不在验收范围内） | 0（只改清单状态，未动生产代码） | 真模型守卫**本地跑就是绿的**（实测：`cargo test --lib` 6 条真模型守卫全 ok；`quality_gate` 整段 CER 16.39% / 流式 43.28%，最差 RTF 0.036；`memory_probe` 整段 300s→1800s 涨 6.7 MB、流式涨 0.3 MB；`npm run check:ui` 140/140）—— 2026-11-13 那次降级的唯一理由是「守卫在 CI 上等于不存在」，按新口径不成立，故 RC-B4 / RC-B7 / RC-B8 / RC-B10 改回 ✅；RC-I2 从「流式路径进 CI」改为「流式路径的质量门禁可本地复现」，ID 保留。**作业面 6 → 1**，剩下的 RC-B6 是真缺陷（重放分片早于上一句终点时仍为零时长），不是覆盖问题 |
 | 2026-11-14 | RC-B6（门控收尾与真实输入时间） | 代码修复 + 回归测试（未提交） | 真模型生产路径在修复前复现零时长；收尾前消费 pending 并冲尾上下文，按真实输入终点定稿；空结果不占用已提交句子的时间，预录不能跨前置缺口。`npm run check`（140 passed）、`streaming_endpoint_time`（3 passed）、`streaming_smoke`（8 passed，含热词配置）、`streaming_long_probe` 与 `quality_gate` 通过 |
+| 2026-11-17 | RC-K1 / RC-K2 / RC-K4 / RC-K5 / RC-K6 / RC-K7 / RC-K8（云端模式 K 组）+ RC-K3（登记批 A 已落地的三条界面断言） | 0（本轮只补守卫与文档，未动生产代码） | 清单 75 → **83 条**（11 组 A–K）；新增 3 条守卫（K1 / K2 / K4）+ 补强 1 条断言（K5 的「`[[gap:1]]` 只出现一次」）+ 登记 5 条既有（K3 / K5 其余三条 / K6 的错误详情与状态回传 / K7 / K8）；**RC-K6 的日志那半边仍 ⚠️**（凭据不出现**在日志里**没有任何守卫）；作业面 0 → **1 条**。负向验证（七种改坏都让对应守卫变红，已恢复）：火山声明改成 `Delta`、Realtime 声明改成 `Preview`、阿里声明改成 `Delta`、归一器的 `Delta` 臂改成替换、火山改用 `result.text`、排序逆序、排序按文本 |
 
 「当天 fix 数」一列是 `git log` 实测值（`git log --since=<date> --until=<date>` 统计以 `fix` 开头的提交），
 不是估算 —— 它同时也是「这轮复审的产出」的度量。
