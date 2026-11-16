@@ -234,3 +234,105 @@ fn server_error_message_redacts_secret() {
     assert!(detail.contains("***"), "凭据要脱敏：{}", detail);
     assert!(!detail.contains(key), "凭据不能出现在错误详情里：{}", detail);
 }
+
+// ── provider 契约守卫（RC-K1 / RC-K2）────────────────────────────────────
+//
+// 两条不变量：
+// - RC-K1：声明的 `partial_semantics` 与协议实际形态一致；
+// - RC-K2：上抛的中间结果是当前未定稿句的**累计文本**（句内整体替换，不追加）。
+//
+// 守卫要躲开三种「恒真」写法（OpenSpec change `cloud-contract-guards` 的
+// design D2）：① 期望值不能从样例里再读一遍（那是 `x == x`）；② 第二次更新
+// 必须**改写**第一次（否则「替换」与「追加」结果相同）；③ 形态要从**样例
+// 本身**推导，不能只钉住 `CAPABILITIES` 里的常量。
+
+/// 第一次响应：一条已定稿 + 一条未定稿（草稿）。
+///
+/// 那条**已定稿**是必需的：它把 `emitted` 游标推进到 1，第二次响应里下标 0
+/// 的句子才会被跳过（否则第二次会把已定稿句又上抛一遍）。
+const FIRST_RESPONSE: &str = r#"{
+  "result": {
+    "utterances": [
+      {"definite": true, "text": "已定稿。"},
+      {"definite": false, "text": "你好世界"}
+    ]
+  }
+}"#;
+
+/// 第二次响应：全量返回（与真实协议一致），最后一条未定句被**改写**。
+const SECOND_RESPONSE: &str = r#"{
+  "result": {
+    "utterances": [
+      {"definite": true, "text": "已定稿。"},
+      {"definite": false, "text": "你好"}
+    ]
+  }
+}"#;
+
+/// 上抛的中间结果（`CloudEvent::Partial`）文本。
+fn partial_texts(events: &[CloudEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            CloudEvent::Partial(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 从两次中间结果推导协议形态。
+///
+/// **不接收任何声明值** —— 推导结果一旦被 `CAPABILITIES` 污染，断言就恒真。
+///
+/// 判据：第二次是第一次的**前缀扩展**（更长且以第一次为前缀）→ 增量拼接；
+/// 否则 → 整句替换（火山的形态：确认前缀为空，整句就是草稿）。
+///
+/// 区间替换（`Range`）与整句替换在样例上分不开（没有区间信息就无从判断）；
+/// 当前没有 provider 用它，推导不出 `Range` 是合理的。
+fn derive_shape(first: &str, second: &str) -> PartialSemantics {
+    if second.len() > first.len() && second.starts_with(first) {
+        PartialSemantics::Delta
+    } else {
+        PartialSemantics::Preview
+    }
+}
+
+/// 契约守卫：火山的中间结果是**整句替换**，声明的形态与样例相符。
+#[test]
+fn partial_is_a_whole_sentence_replacement() {
+    // 两次响应用**同一个 `emitted` 游标**（会话状态，不能各自从头数）。
+    let mut emitted = 0usize;
+    let first = map_response(FIRST_RESPONSE.as_bytes(), &mut emitted);
+    let second = map_response(SECOND_RESPONSE.as_bytes(), &mut emitted);
+
+    let first_texts = partial_texts(&first);
+    let second_texts = partial_texts(&second);
+    assert_eq!(
+        first_texts.len(),
+        1,
+        "volcengine/Preview: 第一次响应该有一条实时行"
+    );
+    assert_eq!(
+        second_texts.len(),
+        1,
+        "volcengine/Preview: 第二次响应该有一条实时行"
+    );
+
+    let derived = derive_shape(&first_texts[0], &second_texts[0]);
+    // 期望值是**手写字面量**：不从样例 JSON 里再读一遍 `utterances[..].text`。
+    assert_eq!(
+        first_texts[0], "你好世界",
+        "volcengine/{:?}: 第一次上抛的中间结果应是整句草稿", derived
+    );
+    assert_eq!(
+        second_texts[0], "你好",
+        "volcengine/{:?}: 第二次上抛的中间结果应**改写**第一次（整句替换，不是追加）",
+        derived
+    );
+    // 声明值与**推导出的**形态比较（不是只钉住常量）。
+    assert_eq!(
+        VolcengineProvider::CAPABILITIES.partial_semantics,
+        derived,
+        "volcengine/{:?}: 声明的形态与协议实际形态不符", derived
+    );
+}

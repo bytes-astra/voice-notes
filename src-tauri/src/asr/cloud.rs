@@ -53,8 +53,8 @@ impl SendOutcome {
 pub enum PartialSemantics {
     /// 增量拼接：每次追加一段（OpenAI Realtime 的 `.delta`）。
     Delta,
-    /// 确认前缀加草稿：整体替换成「确认前缀 + 草稿」。百炼 Qwen Realtime 的
-    /// `.text` + `stash` 是标准形态；火山与阿里的「确认前缀为空、整句快照」
+    /// 确认前缀加草稿：整体替换成「确认前缀 + 草稿」。阿里的
+    /// `sentence.text` + `stash` 是标准形态；火山的「确认前缀为空、整句快照」
     /// 是它的退化形态。
     Preview,
     /// 区间替换：按区间改写已识别片段（讯飞的 `pgs` + `rg`）。

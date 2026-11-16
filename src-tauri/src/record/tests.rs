@@ -817,6 +817,15 @@ fn cloud_core_does_not_double_count_upload_drops() {
         "丢掉的音频要留可见缺口标记：{}",
         transcript.text
     );
+    // 缺口**只上报一次**（RC-K5）：`contains` 挡不住重复插入 ——
+    // 收尾循环里若把同一段缺口 push 进 `gaps` 两次，`insert_gaps` 就会插两遍，
+    // 转写里出现两个 `[[gap:1]]`，累计时长自相矛盾。
+    assert_eq!(
+        transcript.text.matches("[[gap:1]]").count(),
+        1,
+        "缺口只能出现一次：{}",
+        transcript.text
+    );
 }
 
 /// 收尾时的尾部缺口：缺口要落在最后一句**之后**，不能盖住它。

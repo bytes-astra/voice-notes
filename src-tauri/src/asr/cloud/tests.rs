@@ -836,3 +836,63 @@ fn aliyun_mapper_drops_late_partial_for_finalized_sentence() {
     let late = mapper.map_sentence(sentence(1, false, "完整的一句"));
     assert!(late.is_empty(), "定稿后的同句 partial 必须被丢弃：{late:?}");
 }
+
+/// 同批多句的零长区间：句子之间的先后以**到达顺序**为准。
+///
+/// 服务端断句族在收尾时一次性 drain 出多条 final 时，第一条占用收尾那段
+/// 区间，第 2 条起退化为零长（同 `start`）—— 这时唯一可用的顺序就是到达顺序。
+///
+/// **这是行为守卫，不能证明内部一定用稳定排序** —— 它只钉住「同 `start` 时
+/// 顺序等于到达顺序」这个可观察行为。
+#[test]
+fn zero_length_segments_keep_arrival_order() {
+    let (provider, state) = MockProvider::new(EndpointKind::ServerEndpoint, 16000);
+    let mut session = CloudStreamingSession::new(Box::new(provider));
+    session.connect().unwrap();
+    // **先推进时钟再喂音频**：`fed_end` 只在 `push_at` 里更新 ——
+    // 只 `advance_samples` 的话所有 Final 全是零长，测不到「后续句退化」。
+    session.advance_samples(16000);
+    session.push(&[0.2; 16000]);
+    // 连续九条 final、**只 poll 一次**（同一个 drain 批次）。
+    // 文本的到达顺序与代码点序、长度都不一致 —— 否则按任何别的字段排序都可能
+    // 碰巧通过（八条零长句才够：三条时不稳定排序很可能碰巧保留顺序）。
+    let texts = ["丙", "甲甲", "乙", "庚", "丁丁", "戊", "壬壬", "癸", "己"];
+    for text in texts {
+        emit(
+            &state,
+            CloudEvent::Final {
+                item_id: None,
+                text: text.into(),
+                start_ms: None,
+                end_ms: None,
+            },
+        );
+    }
+    session.poll();
+    let transcript = session.transcript();
+    assert_eq!(
+        transcript.segments.len(),
+        texts.len(),
+        "九条句子都要在：{:?}",
+        transcript.segments
+    );
+    // 第一条占用收尾那段区间。
+    assert!(
+        transcript.segments[0].start < transcript.segments[0].end,
+        "第一条该占一段区间：{:?}",
+        transcript.segments[0]
+    );
+    // 后八条零长，且 `start` 相同。
+    for segment in &transcript.segments[1..] {
+        assert_eq!(segment.start, segment.end, "后续句该是零长：{segment:?}");
+        assert_eq!(
+            segment.start, transcript.segments[1].start,
+            "零长句的 start 该相同：{segment:?}"
+        );
+    }
+    // 文本顺序 = 到达顺序。
+    assert_eq!(
+        transcript.text, "丙甲甲乙庚丁丁戊壬壬癸己",
+        "同批零长句的先后以到达顺序为准"
+    );
+}

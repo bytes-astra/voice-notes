@@ -198,7 +198,9 @@ fn finals(events: &[CloudEvent]) -> Vec<String> {
 /// 实时行文本 = **已确认的前缀 + 草稿**（本模型的结果结构：sentence + stash）。
 ///
 /// 第二次的样例刻意用「**改写**第一次」（更短），这样「追加」实现会得到
-/// 「你好世界你好」而不是「你好」—— 前缀型样例区分不出这两种实现。
+/// 「你好世界你好呀」而不是「你好呀」—— 前缀型样例区分不出这两种实现。
+///
+/// 这也是阿里的 **RC-K1 / RC-K2 契约守卫**（登记在 `docs/REVIEW-CHECKLIST.md`）。
 #[test]
 fn partial_is_confirmed_prefix_plus_draft() {
     let mut mapper = AliyunMapper::new();
@@ -207,8 +209,11 @@ fn partial_is_confirmed_prefix_plus_draft() {
 
     // 确认前缀变短 + 草稿有内容 → 实时行 = 前缀 + 草稿。
     let second = mapper.map_sentence(sentence_with(Some(1), false, "你好", "呀", Some(2)));
-    assert_eq!(partials(&second), vec!["你好呀".to_string()]);
-    assert_ne!(partials(&second)[0], "你好世界你好");
+    assert_eq!(
+        partials(&second),
+        vec!["你好呀".to_string()],
+        "aliyun/Preview: 第二次上抛的中间结果应**改写**第一次（整句替换，不是追加）"
+    );
 }
 
 /// 断言二：**从样例推导形态**，再与能力声明比较。
@@ -231,7 +236,7 @@ fn declared_partial_semantics_matches_samples() {
     assert_eq!(
         AliyunProvider::CAPABILITIES.partial_semantics,
         derived,
-        "声明的形态与样例推导出的形态不一致"
+        "aliyun/{:?}: 声明的形态与协议实际形态不符", derived
     );
 }
 

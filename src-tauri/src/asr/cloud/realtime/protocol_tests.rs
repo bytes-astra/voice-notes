@@ -381,3 +381,79 @@ fn error_releases_the_head_commit_slot() {
         .collect();
     assert_eq!(texts, vec!["后面这句".to_string()]);
 }
+
+// ── provider 契约守卫（RC-K1 / RC-K2）────────────────────────────────────
+//
+// 两条不变量：
+// - RC-K1：声明的 `partial_semantics` 与协议实际形态一致；
+// - RC-K2：上抛的中间结果是当前未定稿句的**累计文本**（句内整体替换，不追加）。
+//
+// 守卫要躲开三种「恒真」写法（OpenSpec change `cloud-contract-guards` 的
+// design D2）：① 期望值不能从样例里再读一遍；② 第二次更新必须**改写**第一次
+// （对增量协议不成立 —— `.delta` 按协议**就是**后缀增量，伪造「改写型」样例
+// 反而会让守卫测不到东西）；③ 形态要从**样例本身**推导。
+
+/// 两条增量帧：**同一个 `item_id`** —— 不同 id 会开两个桶，第二次 `apply`
+/// 返回的只是半句，看起来像「追加丢了」。
+const DELTA_FRAMES: [&str; 2] = [
+    r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"item_1","delta":"你好"}"#,
+    r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"item_1","delta":"，世界"}"#,
+];
+
+/// 从两条 `.delta` 推导协议形态。
+///
+/// **不接收任何声明值** —— 推导结果一旦被 `CAPABILITIES` 污染，断言就恒真。
+///
+/// 判据：第二次的 delta **不含**第一次的内容（若是整句覆盖，第二次必须带着
+/// 整句），而累计结果**保留**了第一次 → 后缀增量（`Delta`）；否则整句替换。
+fn derive_shape(first_delta: &str, second_delta: &str, accumulated: &str) -> PartialSemantics {
+    if !second_delta.contains(first_delta) && accumulated.starts_with(first_delta) {
+        PartialSemantics::Delta
+    } else {
+        PartialSemantics::Preview
+    }
+}
+
+/// 契约守卫：Realtime 的中间结果是**后缀增量**，累计串是当前句的全文；
+/// 声明的形态与样例相符。
+#[test]
+fn deltas_accumulate_into_the_sentence_so_far() {
+    // 归一器用**硬编码的 `Delta`** 构造：不能拿声明值来构造 ——
+    // `partial.rs` 的兜底分支（形态不匹配也照收）会让错误的声明照样通过。
+    let mut accumulator = partial::PartialAccumulator::new(PartialSemantics::Delta);
+    let mut deltas: Vec<String> = Vec::new();
+    let mut accumulated: Vec<String> = Vec::new();
+    for raw in DELTA_FRAMES {
+        let delta = match decode_event(raw) {
+            ServerEvent::Partial { item_id, delta } => {
+                assert_eq!(
+                    item_id.as_deref(),
+                    Some("item_1"),
+                    "realtime/Delta: 两条 delta 帧必须用同一个 item_id"
+                );
+                delta
+            }
+            other => panic!("realtime/Delta: 该解出增量事件，实际是 {other:?}"),
+        };
+        deltas.push(delta.clone());
+        accumulated.push(
+            accumulator.apply(Some("item_1".into()), partial::PartialUpdate::Delta(delta)),
+        );
+    }
+    // 期望值是**手写字面量**。
+    assert_eq!(
+        accumulated[0], "你好",
+        "realtime/Delta: 第一次累计串应是第一条 delta"
+    );
+    assert_eq!(
+        accumulated[1], "你好，世界",
+        "realtime/Delta: 累计串应是当前句的全文（不是只留最后一段）"
+    );
+    // 形态推导 → 与声明值比较（不是只钉住常量）。
+    let derived = derive_shape(&deltas[0], &deltas[1], &accumulated[1]);
+    assert_eq!(
+        RealtimeProvider::CAPABILITIES.partial_semantics,
+        derived,
+        "realtime/{:?}: 声明的形态与协议实际形态不符", derived
+    );
+}
