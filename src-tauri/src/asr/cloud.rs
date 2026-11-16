@@ -270,15 +270,14 @@ pub fn create_provider(
             } else {
                 settings.cloud_model.trim().to_string()
             };
-            // 8k 模型要求 8000 Hz，而 target_sample_rate 是静态常量 16000 ——
-            // 传 16k 音频会被拒或识别错。按**已知前缀**拒绝（不用「含 8k」，
-            // 那会误拒未来名字里带 8k 的非 8k 模型）。
-            if model.starts_with(aliyun::EIGHT_K_MODEL_PREFIX) {
+            // 模型白名单：协议骨架相同，但参数与结果结构不同（本模型有 stash
+            // 草稿、即时热词、方言开关），不按「名字随便填」处理。
+            if !aliyun::SUPPORTED_MODELS.contains(&model.as_str()) {
                 return Err(crate::code_detail("cloud.unsupportedModel", &model));
             }
-            // 术语表：能力层决定要不要带，阿里协议层决定能带多少（400 字符）。
+            // 术语表：能力层决定要不要带，协议层决定能带多少（2000 条，带权重）。
             let (words, cap_ignored) = cloud_keywords(settings, &caps);
-            let (context_text, proto_ignored) = aliyun::build_context(&words);
+            let (vocabulary, proto_ignored) = aliyun::build_vocabulary(&words);
             let ignored = cap_ignored + proto_ignored;
             if ignored > 0 {
                 crate::log::warn(format!("云端热词有 {ignored} 条未通过协议校验，已忽略"));
@@ -288,7 +287,7 @@ pub fn create_provider(
                 api_key: settings.cloud_api_key.clone(),
                 model,
                 language_hint: aliyun::language_hint(&settings.language),
-                context_text,
+                vocabulary,
             })))
         }
         other => Err(crate::code_detail("cloud.unsupportedProvider", other)),

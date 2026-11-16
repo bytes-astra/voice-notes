@@ -651,10 +651,26 @@ fn aliyun_8k_model_is_rejected_with_model_name() {
     assert!(error.contains("fun-asr-flash-8k-realtime"), "错误里要带模型名：{error}");
 }
 
+/// 阿里只支持白名单里的模型：协议骨架相同但参数与结果结构不同
+/// （本模型有 stash 草稿、即时热词、方言开关），不按「名字随便填」处理。
+#[test]
+fn aliyun_rejects_models_outside_the_whitelist() {
+    let settings = crate::settings::Settings {
+        cloud_provider: "aliyun".into(),
+        cloud_model: "fun-asr-realtime".into(),
+        ..Default::default()
+    };
+    let error = match create_provider(&settings) {
+        Ok(_) => panic!("白名单外的模型不该建出来"),
+        Err(error) => error,
+    };
+    assert!(error.starts_with("cloud.unsupportedModel"), "{error}");
+}
+
 /// 16k 的阿里模型能建出来（默认模型名也走这条）。
 #[test]
 fn aliyun_16k_model_builds() {
-    for model in ["", "fun-asr-realtime", "fun-asr-realtime-2026-02-28"] {
+    for model in ["", "qwen-audio-3.1-asr-flash-streaming"] {
         let settings = crate::settings::Settings {
             cloud_provider: "aliyun".into(),
             cloud_model: model.into(),
@@ -755,10 +771,11 @@ fn aliyun_new_sentence_partial_after_final_is_not_a_duplicate() {
     session.push(&[0.2; 16000]);
     let sentence = |id: i64, end: bool, text: &str| aliyun::Sentence {
         id: Some(id),
-        begin: false,
         end,
-        heartbeat: false,
         text: text.into(),
+        draft: String::new(),
+        draft_id: None,
+        heartbeat: false,
     };
     let mut mapper = aliyun::AliyunMapper::new();
     for event in mapper.map_sentence(sentence(1, false, "第一句")) {
@@ -813,10 +830,11 @@ fn stale_partial_for_a_finalized_sentence_would_be_duplicated() {
 fn aliyun_mapper_drops_late_partial_for_finalized_sentence() {
     let sentence = |id: i64, end: bool, text: &str| aliyun::Sentence {
         id: Some(id),
-        begin: false,
         end,
-        heartbeat: false,
         text: text.into(),
+        draft: String::new(),
+        draft_id: None,
+        heartbeat: false,
     };
     let mut mapper = aliyun::AliyunMapper::new();
     let first = mapper.map_sentence(sentence(1, false, "完整的一句"));

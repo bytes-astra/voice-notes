@@ -33,21 +33,28 @@ use super::{
 
 /// 默认端点（公共地址，开箱可用；可换成业务空间专属域名）。
 pub const DEFAULT_BASE_URL: &str = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
-/// 默认模型。
-pub const DEFAULT_MODEL: &str = "fun-asr-realtime";
-/// 术语表上下文的上限：每轮 `input_text` 与 `text` 合计不超过 400 字符
-/// （官方 `fun-asr-client-events` 的 `input` 字段说明）。
-pub const MAX_CONTEXT_CHARS: usize = 400;
-/// 发包节奏：官方建议每包 100 ms 左右。16 kHz × 16 bit × 0.1 s = 3200 字节。
+/// 默认模型：Qwen-Audio 3.1 实时流式版（百炼当前首推的实时 ASR 模型）。
+pub const DEFAULT_MODEL: &str = "qwen-audio-3.1-asr-flash-streaming";
+/// 支持的模型白名单。**协议骨架相同、但参数与结果结构不同**（本模型有
+/// `stash` 草稿、即时热词、方言开关），所以不按「名字随便填」处理。
+pub const SUPPORTED_MODELS: [&str; 1] = [DEFAULT_MODEL];
+/// 即时热词条数上限（官方：与预编译热词合并后不超过 2000 个）。
+pub const MAX_VOCABULARY: usize = 2000;
+/// 即时热词的默认权重（官方建议从 4 起调）。
+pub const DEFAULT_HOTWORD_WEIGHT: i32 = 4;
+/// 发包节奏：官方建议每包 100 ms 左右。16 kHz × 16 bit × 0.1 s = 3200 字节
+/// （官方 WebSocket 接入示例就是 3200 字节一包）。
 pub const AUDIO_PACKET_BYTES: usize = 3200;
-/// 断句静音阈值（毫秒）。官方两处文档的默认值不一致（1300 / 800），**显式设**。
-const MAX_SENTENCE_SILENCE_MS: u32 = 1300;
+/// 断句静音阈值（毫秒）。本模型官方默认 **800**（Fun-ASR 是 1300），
+/// **显式设**，不依赖默认值。
+const MAX_SENTENCE_SILENCE_MS: u32 = 800;
+/// 保留方言表达。官方默认 `false`（把方言转写为普通话文本）—— 我们是录音工具，
+/// 用户要的是「他实际说了什么」，所以保留方言写法。
+const KEEP_DIALECT: bool = true;
+/// VAD 模型：桌面麦克风是近场（官方默认是远场会议场景）。
+const VAD_MODEL: &str = "near_meeting_16k";
 /// 控制帧排队等待的上限。
 const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(3);
-/// 8k 模型的已知前缀（要求 8000 Hz 采样率，与静态能力表冲突 → 拒绝）。
-pub const EIGHT_K_MODEL_PREFIX: &str = "fun-asr-flash-8k-realtime";
-/// 术语表上下文的前缀。
-const CONTEXT_PREFIX: &str = "术语表：";
 
 /// 阿里 provider 的配置。
 #[derive(Clone)]
@@ -60,8 +67,8 @@ pub struct AliyunConfig {
     pub model: String,
     /// `language_hints` 的单个值（`None` = 不传，让模型自动识别）。
     pub language_hint: Option<String>,
-    /// 术语表拼成的上下文文本（`None` = 不带 `input.context`）。
-    pub context_text: Option<String>,
+    /// 即时热词：`(词, 权重)`。请求级直传，不需要预建词表。
+    pub vocabulary: Vec<(String, i32)>,
 }
 
 impl AliyunConfig {
@@ -91,16 +98,24 @@ enum Command {
 }
 
 /// 一条服务端 `sentence`。
+///
+/// 本模型（Qwen-Audio-ASR-Streaming）的结果结构是**「已确认句子 + 草稿」**：
+/// `text` 是已确认的句子文本，`stash.text` 是当前还在变的草稿（属于下一句的
+/// `sentence_id`）。实时行文本 = `text` + `stash.text`。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sentence {
     /// 服务端给的句标识。**缺字段时是 `None`** —— 不能拿 0 顶替：官方口径里
     /// 0 是心跳的 id，两条都缺 id 的句子会共用 0，被当成同一句（第二句被吞）。
     pub id: Option<i64>,
-    /// 句子的开始标志（服务端显式说「新句开始了」）。
-    pub begin: bool,
+    /// 这句是否已结束（`sentence_end`）。
     pub end: bool,
-    pub heartbeat: bool,
+    /// 已确认的句子文本。
     pub text: String,
+    /// 草稿文本（`stash.text`）—— 还在变的那部分。
+    pub draft: String,
+    /// 草稿所属的句标识（`stash.sentence_id`）。
+    pub draft_id: Option<i64>,
+    pub heartbeat: bool,
 }
 
 /// 服务端事件。
@@ -317,21 +332,25 @@ pub fn encode_run_task(config: &AliyunConfig, task_id: &str) -> String {
         "max_sentence_silence": MAX_SENTENCE_SILENCE_MS,
         // 长静音也保活：官方说 false 时即使持续发静音也会在一定时间后断开。
         "heartbeat": true,
+        // 保留方言表达（官方默认 false = 转成普通话文本）。
+        "keep_dialect": KEEP_DIALECT,
+        // 近场 VAD（官方默认远场会议场景；我们是桌面麦克风）。
+        "vad_model": VAD_MODEL,
     });
     if let Some(hint) = &config.language_hint {
-        // **只放一个值**：官方说「设置多个时仅第一个生效」。
+        // **只放一个值**：官方说最多 4 个值、只取前 4 个；我们只传一个。
         parameters["language_hints"] = json!([hint]);
     }
-    // 上下文（术语表）：只有带内容时才出现这个字段，否则 `input` 是 `{}`。
-    let input = match &config.context_text {
-        Some(text) => json!({
-            "context": [{
-                "role": "user",
-                "content": [{ "type": "input_text", "text": text }],
-            }],
-        }),
-        None => json!({}),
-    };
+    // 即时热词：键值对（词 → 权重），请求级直传，不需要预建词表。
+    if !config.vocabulary.is_empty() {
+        let mut map = serde_json::Map::new();
+        for (word, weight) in &config.vocabulary {
+            map.insert(word.clone(), json!(weight));
+        }
+        parameters["vocabulary"] = serde_json::Value::Object(map);
+    }
+    // 不带上下文时 `input` 是 `{}`（本 provider 不传 input.context）。
+    let input = json!({});
     json!({
         "header": {
             "action": "run-task",
@@ -363,41 +382,29 @@ pub fn encode_finish_task(task_id: &str) -> String {
     .to_string()
 }
 
-/// 术语表 → `input.context` 的文本。
+/// 术语表 → 即时热词（`词, 权重`）。
 ///
-/// **按字符数（不是字节数）** 度量：中文一个字算一个字符。上限 400 含前缀与
-/// 分隔符，超限时**在术语边界上丢整条**（不把一个词截成半个）。
+/// **请求级直传**（官方 `parameters.vocabulary`）：键为热词文本、值为权重
+/// （1–5，50 是超级热词且最多 50 个）。不需要预建词表、不需要额外 HTTP API。
 ///
-/// 返回 `(文本, 被忽略的条数)`；词表为空时返回 `(None, 0)`。
-pub fn build_context(words: &[String]) -> (Option<String>, usize) {
+/// 权重统一取 4（官方建议从 4 起调；界面没有权重输入，先给一个中间值）。
+/// 超上限时**整条丢弃**（不截半个词），返回被忽略的条数。
+pub fn build_vocabulary(words: &[String]) -> (Vec<(String, i32)>, usize) {
     let usable: Vec<&str> = words
         .iter()
         .map(|word| word.trim())
         .filter(|word| !word.is_empty())
         .collect();
-    if usable.is_empty() {
-        return (None, 0);
+    let mut vocabulary: Vec<(String, i32)> = usable
+        .iter()
+        .map(|word| ((*word).to_string(), DEFAULT_HOTWORD_WEIGHT))
+        .collect();
+    let mut ignored = 0usize;
+    if vocabulary.len() > MAX_VOCABULARY {
+        ignored = vocabulary.len() - MAX_VOCABULARY;
+        vocabulary.truncate(MAX_VOCABULARY);
     }
-    let mut text = String::from(CONTEXT_PREFIX);
-    let mut used = 0usize;
-    for (index, word) in usable.iter().enumerate() {
-        // 分隔符按「不是第一条」算，所以第一条不加「、」。
-        let piece = if index == 0 {
-            word.to_string()
-        } else {
-            format!("、{word}")
-        };
-        if text.chars().count() + piece.chars().count() > MAX_CONTEXT_CHARS {
-            break;
-        }
-        text.push_str(&piece);
-        used = index + 1;
-    }
-    // 一条都放不下：不带上下文（总比带个只有前缀的空壳好）。
-    if used == 0 {
-        return (None, usable.len());
-    }
-    (Some(text), usable.len() - used)
+    (vocabulary, ignored)
 }
 
 /// 解码一条服务端文本帧。
@@ -436,20 +443,13 @@ pub fn decode_server_event(raw: &str) -> Result<ServerEvent, String> {
 }
 
 fn parse_sentence(value: &Value) -> Sentence {
+    let stash = value.get("stash");
     Sentence {
         // `sentence_id` 是 integer，正常结果从 1 递增，心跳固定 0。
         // **缺字段时留 None**（不用 0 顶替 —— 0 是心跳的 id）。
         id: value.get("sentence_id").and_then(Value::as_i64),
-        begin: value
-            .get("sentence_begin")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
         end: value
             .get("sentence_end")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        heartbeat: value
-            .get("heartbeat")
             .and_then(Value::as_bool)
             .unwrap_or(false),
         text: value
@@ -457,6 +457,17 @@ fn parse_sentence(value: &Value) -> Sentence {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        // 草稿：`stash.text`（下一句还在变的那部分）。
+        draft: stash
+            .and_then(|stash| stash.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        draft_id: stash.and_then(|stash| stash.get("sentence_id")).and_then(Value::as_i64),
+        heartbeat: value
+            .get("heartbeat")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -468,10 +479,10 @@ fn parse_sentence(value: &Value) -> Sentence {
 /// 的文字永久消失。
 #[derive(Debug, Default)]
 pub struct AliyunMapper {
-    /// 当前未定稿句：`(句 id，最后一次非空快照)`。
+    /// 当前未定稿句：`(句 id，最后一次上屏的文本)`。
     ///
     /// **id 可能是 `None`** —— 服务端没给 `sentence_id` 时（见 `Sentence.id`），
-    /// 只能靠 `sentence_begin` 标志与「end」来切句。
+    /// 只能靠「句结束」与草稿来切句。
     open: Option<(Option<i64>, String)>,
     /// 已定稿的句：id → 定稿文本。
     ///
@@ -491,6 +502,15 @@ impl AliyunMapper {
 
     /// 把一条 `sentence` 归一成 `CloudEvent`。
     ///
+    /// ## 结果结构：已确认句子 + 草稿
+    ///
+    /// 本模型返回 `sentence`（已确认的句子，`sentence_end` 表示它结束了）与
+    /// `stash`（还在变的草稿，属于下一句的 `sentence_id`）。所以：
+    ///
+    /// - 实时行文本 = `sentence.text` + `stash.text`（确认前缀 + 草稿）；
+    /// - `sentence_end == true` → 该句定稿，用 `sentence.text`；
+    ///   随后的 `stash` 是**下一句**的草稿，转成新的实时行。
+    ///
     /// ## 缺 `sentence_id` 怎么办
     ///
     /// 官方口径里 `sentence_id` 必有（正常结果从 1 递增，心跳固定 0）。若服务端
@@ -498,7 +518,7 @@ impl AliyunMapper {
     /// 当成重复句**静默丢掉**。所以：
     ///
     /// - **只有带 id 的句子才参与 `finalized` 去重**；
-    /// - 缺 id 时靠 `sentence_begin` 判断新句（服务端显式说「新句开始」）；
+    /// - 缺 id 时不靠 id 去重，靠「句结束」与草稿切句；
     /// - `id == 0` 但没带 `heartbeat` 标记 → 当成缺 id 处理（0 是心跳的 id）；
     /// - 每次会话首次发现缺 id 时记一条 WARN —— 兼容路径能继续工作，但服务端
     ///   违约这件事要留在日志里，不能用一个静默兜底换掉另一个静默吞句。
@@ -514,7 +534,7 @@ impl AliyunMapper {
         if raw_id.is_none() && !self.warned_missing_id {
             self.warned_missing_id = true;
             crate::log::warn(
-                "阿里云端：服务端的句子没有 sentence_id（0 视为心跳），改用 sentence_begin 切句",
+                "阿里云端：服务端的句子没有 sentence_id（0 视为心跳），改用句结束标志切句",
             );
         }
         // ③ 已定稿的句：后续事件一律忽略。文本没变不刷 WARN（服务端重发同一条
@@ -527,61 +547,59 @@ impl AliyunMapper {
                 return events;
             }
         }
-        let text = sentence.text.trim();
-        // ④ 新句开始而上一句还没定稿 → 先按最后快照定稿上一句。
-        //
-        //    带 id：id 变了就是新句。
-        //    缺 id：靠 `sentence_begin`（服务端显式说「新句开始」）。
-        let is_new_sentence = match (&self.open, raw_id) {
-            (None, _) => false,
-            (Some((open_id, _)), Some(id)) => *open_id != Some(id),
-            // 缺 id：只有 `sentence_begin` 才算新句；否则当作同一句的快照更新
-            // （宁可少切一句，也不要把两句话并成一句）。
-            (Some((open_id, _)), None) => open_id.is_none() && sentence.begin,
-        };
-        if is_new_sentence {
-            if let Some((id, snapshot)) = self.open.take() {
+        let confirmed = sentence.text.trim();
+        let draft = sentence.draft.trim();
+        // ④ 句 id 变了 → 上一句没被结束就开了新句：先按最后快照定稿它
+        //    （否则会话层的 Partial 替换语义会让上一句的文字永久消失）。
+        if let Some((open_id, snapshot)) = self.open.as_ref() {
+            let changed = match (open_id, raw_id) {
+                (Some(a), Some(b)) => *a != b,
+                // 缺 id 的那一边：无法核对，不自己切句（宁可少切，也不要把两句并成一句）。
+                (None, None) => false,
+                _ => false,
+            };
+            if changed && !snapshot.trim().is_empty() {
+                let (id, snapshot) = (*open_id, snapshot.clone());
+                self.open = None;
                 if let Some(id) = id {
                     self.finalized.insert(id, snapshot.clone());
                 }
                 events.push(final_event(snapshot));
             }
         }
-        // ⑤ 空文本：不产 Partial；若这句就此结束，用已有快照定稿（没有就什么都不产）。
-        if text.is_empty() {
-            if sentence.end {
-                let snapshot = self
-                    .open
-                    .take()
-                    .filter(|(open_id, _)| match (open_id, raw_id) {
-                        // 两边都有 id：必须相同。
-                        (Some(a), Some(b)) => *a == b,
-                        // 缺 id 的那一边：无法核对，接受当前打开的句。
-                        (None, None) => true,
-                        // 一边有 id 一边没有：不认为它们是同一句。
-                        _ => false,
-                    })
-                    .map(|(_, snapshot)| snapshot);
-                if let Some(id) = raw_id {
-                    self.finalized.insert(id, snapshot.clone().unwrap_or_default());
-                }
-                if let Some(snapshot) = snapshot {
-                    events.push(final_event(snapshot));
-                }
+        if sentence.end {
+            // ⑤ 句结束 → 定稿。服务端没给文本时用最后快照（别把说过的字丢掉）。
+            let final_text: String = if !confirmed.is_empty() {
+                confirmed.to_string()
+            } else {
+                self.open.take().map(|(_, snapshot)| snapshot).unwrap_or_default()
+            };
+            if let Some(id) = raw_id {
+                self.finalized.insert(id, final_text.clone());
+            }
+            if !final_text.trim().is_empty() {
+                events.push(final_event(final_text));
+            } else {
+                self.open = None;
+            }
+            // ⑥ `stash` 是**下一句**的草稿：转成新的实时行。
+            if !draft.is_empty() {
+                self.open = Some((sentence.draft_id, draft.to_string()));
+                events.push(CloudEvent::Partial(draft.to_string()));
+            } else {
+                self.open = None;
             }
             return events;
         }
-        if sentence.end {
-            if let Some(id) = raw_id {
-                self.finalized.insert(id, text.to_string());
-            }
-            self.open = None;
-            events.push(final_event(text.to_string()));
-        } else {
-            // 整句快照：替换不追加。
-            self.open = Some((raw_id, text.to_string()));
-            events.push(CloudEvent::Partial(text.to_string()));
+        // ⑦ 还没结束：实时行 = 已确认的前缀 + 草稿。
+        let partial = format!("{confirmed}{draft}");
+        if partial.trim().is_empty() {
+            return events;
         }
+        // 草稿属于下一句时，「当前句」以草稿的 id 为准。
+        let owner = if draft.is_empty() { raw_id } else { sentence.draft_id };
+        self.open = Some((owner, partial.clone()));
+        events.push(CloudEvent::Partial(partial));
         events
     }
 }

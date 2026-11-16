@@ -8,7 +8,7 @@ fn config() -> AliyunConfig {
         api_key: "sk-test".into(),
         model: String::new(),
         language_hint: None,
-        context_text: None,
+        vocabulary: Vec::new(),
     }
 }
 
@@ -25,11 +25,14 @@ fn run_task_carries_required_fields() {
     assert_eq!(value["payload"]["task_group"], "audio");
     assert_eq!(value["payload"]["task"], "asr");
     assert_eq!(value["payload"]["function"], "recognition");
-    assert_eq!(value["payload"]["model"], "fun-asr-realtime");
+    assert_eq!(value["payload"]["model"], "qwen-audio-3.1-asr-flash-streaming");
     assert_eq!(value["payload"]["parameters"]["format"], "pcm");
     assert_eq!(value["payload"]["parameters"]["sample_rate"], 16_000);
-    assert_eq!(value["payload"]["parameters"]["max_sentence_silence"], 1300);
+    assert_eq!(value["payload"]["parameters"]["max_sentence_silence"], 800);
     assert_eq!(value["payload"]["parameters"]["heartbeat"], true);
+    // 保留方言表达（录音工具要用户实际说的话）+ 近场 VAD（桌面麦克风）。
+    assert_eq!(value["payload"]["parameters"]["keep_dialect"], true);
+    assert_eq!(value["payload"]["parameters"]["vad_model"], "near_meeting_16k");
     // 没指定语言：不传 language_hints，让模型自动识别。
     assert!(value["payload"]["parameters"].get("language_hints").is_none());
     // 没术语表：input 是空对象。
@@ -48,22 +51,15 @@ fn run_task_sends_single_language_hint() {
 }
 
 #[test]
-fn run_task_puts_glossary_into_context() {
+fn run_task_sends_request_level_hotwords() {
     let mut cfg = config();
-    cfg.context_text = Some("术语表：祺元、洛柯".into());
+    cfg.vocabulary = vec![("祺元".into(), 4), ("洛柯".into(), 5)];
     let value: Value = serde_json::from_str(&encode_run_task(&cfg, "t")).unwrap();
-    assert_eq!(
-        value["payload"]["input"]["context"][0]["role"],
-        "user"
-    );
-    assert_eq!(
-        value["payload"]["input"]["context"][0]["content"][0]["type"],
-        "input_text"
-    );
-    assert_eq!(
-        value["payload"]["input"]["context"][0]["content"][0]["text"],
-        "术语表：祺元、洛柯"
-    );
+    // 即时热词：键值对（词 → 权重），请求级直传，不需要预建词表。
+    assert_eq!(value["payload"]["parameters"]["vocabulary"]["祺元"], 4);
+    assert_eq!(value["payload"]["parameters"]["vocabulary"]["洛柯"], 5);
+    // 本 provider 不传 input.context。
+    assert_eq!(value["payload"]["input"], serde_json::json!({}));
 }
 
 #[test]
@@ -77,49 +73,35 @@ fn finish_task_reuses_task_id_with_empty_input() {
 // ── input.context 的组装与截断 ──────────────────────────────────────
 
 #[test]
-fn empty_glossary_omits_context() {
-    let (text, ignored) = build_context(&[]);
-    assert_eq!(text, None);
+fn empty_glossary_means_no_hotwords() {
+    let (vocabulary, ignored) = build_vocabulary(&[]);
+    assert!(vocabulary.is_empty());
     assert_eq!(ignored, 0);
     // 全是空白也算空。
-    let (text, ignored) = build_context(&["  ".into(), "".into()]);
-    assert_eq!(text, None);
+    let (vocabulary, ignored) = build_vocabulary(&["  ".into(), "".into()]);
+    assert!(vocabulary.is_empty());
     assert_eq!(ignored, 0);
 }
 
 #[test]
-fn glossary_becomes_prefixed_text() {
+fn glossary_becomes_weighted_hotwords() {
     let words = vec!["祺元".to_string(), "洛柯".to_string()];
-    let (text, ignored) = build_context(&words);
-    assert_eq!(text.as_deref(), Some("术语表：祺元、洛柯"));
+    let (vocabulary, ignored) = build_vocabulary(&words);
+    assert_eq!(
+        vocabulary,
+        vec![("祺元".to_string(), DEFAULT_HOTWORD_WEIGHT), ("洛柯".to_string(), DEFAULT_HOTWORD_WEIGHT)]
+    );
     assert_eq!(ignored, 0);
 }
 
 #[test]
-fn over_limit_drops_whole_terms_not_half_a_word() {
-    // 每个词 100 个中文字：前缀 4 字 + 100 + 「、」+ 100 + 「、」+ 100 = 306，
-    // 再加第 4 个词就是 407 > 400 → 第 4 条整条丢弃。
-    let words: Vec<String> = (0..4).map(|_| "甲".repeat(100)).collect();
-    let (text, ignored) = build_context(&words);
-    let text = text.expect("前三条放得下");
-    assert_eq!(ignored, 1, "第 4 条整条被丢弃");
-    assert_eq!(text.chars().count(), 306);
-    // 关键：结尾必须是完整的词，不能是半个。
-    assert!(text.ends_with(&"甲".repeat(100)));
-    // 必须是 3 条而不是 3 条多一点点。
-    assert_eq!(text.matches('甲').count(), 300);
-}
-
-#[test]
-fn limit_counts_chars_not_bytes() {
-    // 397 个中文字 + 前缀 4 字 = 401 > 400 → 一条都放不下。
-    let (text, ignored) = build_context(&["甲".repeat(397)]);
-    assert_eq!(text, None);
-    assert_eq!(ignored, 1);
-    // 396 个中文字 + 前缀 4 字 = 400，正好放得下（按字节算是 1188，会误判超限）。
-    let (text, ignored) = build_context(&["甲".repeat(396)]);
-    assert!(text.is_some(), "396 个中文字按字符算没超 400");
-    assert_eq!(ignored, 0);
+fn over_limit_drops_whole_hotwords() {
+    let words: Vec<String> = (0..MAX_VOCABULARY + 3).map(|i| format!("词{i}")).collect();
+    let (vocabulary, ignored) = build_vocabulary(&words);
+    assert_eq!(ignored, 3, "超出的三条整条被丢弃");
+    assert_eq!(vocabulary.len(), MAX_VOCABULARY);
+    // 丢的是**末尾**的整条，不是把最后一个词截成半个。
+    assert_eq!(vocabulary.last().unwrap().0, format!("词{}", MAX_VOCABULARY - 1));
 }
 
 // ── 事件解码 ────────────────────────────────────────────────────────
@@ -152,7 +134,6 @@ fn decodes_all_four_server_events() {
     match decode_server_event(result).unwrap() {
         ServerEvent::Sentence(sentence) => {
             assert_eq!(sentence.id, Some(1));
-            assert!(!sentence.begin);
             assert!(sentence.end);
             assert!(!sentence.heartbeat);
             assert_eq!(sentence.text, "好，我知道了");
@@ -179,17 +160,18 @@ fn non_json_payload_reports_protocol_error() {
 // ── 结果映射（有状态） ──────────────────────────────────────────────
 
 fn sentence(id: i64, end: bool, text: &str) -> Sentence {
-    sentence_with(Some(id), false, end, text)
+    sentence_with(Some(id), end, text, "", None)
 }
 
 /// 造一条句子：`id` 为 `None` 表示服务端没给 `sentence_id`。
-fn sentence_with(id: Option<i64>, begin: bool, end: bool, text: &str) -> Sentence {
+fn sentence_with(id: Option<i64>, end: bool, text: &str, draft: &str, draft_id: Option<i64>) -> Sentence {
     Sentence {
         id,
-        begin,
         end,
-        heartbeat: false,
         text: text.into(),
+        draft: draft.into(),
+        draft_id,
+        heartbeat: false,
     }
 }
 
@@ -213,20 +195,19 @@ fn finals(events: &[CloudEvent]) -> Vec<String> {
         .collect()
 }
 
-/// design D2 第 2 条：`text` 是**整句快照**，替换不追加。
+/// 实时行文本 = **已确认的前缀 + 草稿**（本模型的结果结构：sentence + stash）。
 ///
-/// 样例刻意用「第二次**改写**第一次」（更短），这样「追加」实现会得到
+/// 第二次的样例刻意用「**改写**第一次」（更短），这样「追加」实现会得到
 /// 「你好世界你好」而不是「你好」—— 前缀型样例区分不出这两种实现。
 #[test]
-fn partial_is_whole_snapshot_not_appended() {
+fn partial_is_confirmed_prefix_plus_draft() {
     let mut mapper = AliyunMapper::new();
-    let first = mapper.map_sentence(sentence(1, false, "你好世界"));
+    let first = mapper.map_sentence(sentence_with(Some(1), false, "你好世界", "", None));
     assert_eq!(partials(&first), vec!["你好世界".to_string()]);
 
-    let second = mapper.map_sentence(sentence(1, false, "你好"));
-    assert_eq!(partials(&second), vec!["你好".to_string()]);
-    // 展示形态：第二次比第一次短，且不是「第一次 + 第二次」。
-    assert!(second.is_empty() || partials(&second)[0].len() < "你好世界".len());
+    // 确认前缀变短 + 草稿有内容 → 实时行 = 前缀 + 草稿。
+    let second = mapper.map_sentence(sentence_with(Some(1), false, "你好", "呀", Some(2)));
+    assert_eq!(partials(&second), vec!["你好呀".to_string()]);
     assert_ne!(partials(&second)[0], "你好世界你好");
 }
 
@@ -236,8 +217,8 @@ fn partial_is_whole_snapshot_not_appended() {
 #[test]
 fn declared_partial_semantics_matches_samples() {
     let mut mapper = AliyunMapper::new();
-    let first = partials(&mapper.map_sentence(sentence(1, false, "你好世界")));
-    let second = partials(&mapper.map_sentence(sentence(1, false, "你好")));
+    let first = partials(&mapper.map_sentence(sentence_with(Some(1), false, "你好世界", "", None)));
+    let second = partials(&mapper.map_sentence(sentence_with(Some(1), false, "你好", "呀", Some(2))));
     let (first, second) = (first[0].clone(), second[0].clone());
 
     // 推导：第二次若包含第一次的全部内容且更长 → 增量；否则（更短/改写）→ 整句替换。
@@ -269,10 +250,11 @@ fn heartbeat_is_ignored_and_does_not_finalize() {
     // 心跳的 sentence_id 固定为 0：若先判「新 id」就会把第一句提前定稿。
     let beat = mapper.map_sentence(Sentence {
         id: Some(0),
-        begin: false,
         end: false,
-        heartbeat: true,
         text: String::new(),
+        draft: String::new(),
+        draft_id: None,
+        heartbeat: true,
     });
     assert!(beat.is_empty(), "心跳不产事件");
     let again = mapper.map_sentence(sentence(1, false, "第一句"));
@@ -459,7 +441,7 @@ fn finish_keeps_reading_and_flushes_leftover_packet() {
         api_key: "sk-test".into(),
         model: String::new(),
         language_hint: None,
-        context_text: None,
+        vocabulary: Vec::new(),
     });
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
@@ -525,7 +507,8 @@ fn live_smoke() {
         model: String::new(),
         // 不传语言：确认「自动识别」真的可用。
         language_hint: None,
-        context_text: build_context(&["开放时间".to_string()]).0,
+        // 术语表走即时热词（请求级直传，带权重）。
+        vocabulary: build_vocabulary(&["开放时间".to_string()]).0,
     };
     use crate::asr::cloud::{CloudStreamingSession, StreamEvent};
     use crate::asr::AsrSession;
@@ -609,7 +592,7 @@ fn task_failed_before_started_reports_the_real_error() {
         api_key: "sk-test".into(),
         model: String::new(),
         language_hint: None,
-        context_text: None,
+        vocabulary: Vec::new(),
     });
     let error = provider
         .connect(Box::new(|_| {}))
@@ -666,7 +649,7 @@ fn close_without_task_finished_reports_disconnected() {
         api_key: "sk-test".into(),
         model: String::new(),
         language_hint: None,
-        context_text: None,
+        vocabulary: Vec::new(),
     });
     provider
         .connect(Box::new(|_| {}))
@@ -684,20 +667,20 @@ fn close_without_task_finished_reports_disconnected() {
 #[test]
 fn missing_sentence_id_does_not_swallow_the_next_sentence() {
     let mut mapper = AliyunMapper::new();
-    // 第一句：没有 id，靠 sentence_begin 标记新句。
-    let first = mapper.map_sentence(sentence_with(None, true, false, "第一句"));
+    // 第一句：没有 id。
+    let first = mapper.map_sentence(sentence_with(None, false, "第一句", "", None));
     assert_eq!(partials(&first), vec!["第一句".to_string()]);
-    let first_end = mapper.map_sentence(sentence_with(None, false, true, "第一句"));
+    let first_end = mapper.map_sentence(sentence_with(None, true, "第一句", "", None));
     assert_eq!(finals(&first_end), vec!["第一句".to_string()]);
 
-    // 第二句：同样没有 id，但它带了 sentence_begin → 是新句，不能被吞。
-    let second = mapper.map_sentence(sentence_with(None, true, false, "第二句"));
+    // 第二句：同样没有 id —— 不能被当成重复句丢掉。
+    let second = mapper.map_sentence(sentence_with(None, false, "第二句", "", None));
     assert_eq!(
         partials(&second),
         vec!["第二句".to_string()],
         "缺 id 的第二句不能被当成重复句丢掉"
     );
-    let second_end = mapper.map_sentence(sentence_with(None, false, true, "第二句"));
+    let second_end = mapper.map_sentence(sentence_with(None, true, "第二句", "", None));
     assert_eq!(finals(&second_end), vec!["第二句".to_string()]);
 }
 
@@ -708,7 +691,7 @@ fn zero_id_without_heartbeat_is_treated_as_missing_id() {
     let mut mapper = AliyunMapper::new();
     mapper.map_sentence(sentence(1, false, "第一句"));
     // 心跳形状（id=0）但没标 heartbeat：不能提前定稿第一句。
-    let beat = mapper.map_sentence(sentence_with(Some(0), false, false, ""));
+    let beat = mapper.map_sentence(sentence_with(Some(0), false, "", "", None));
     assert!(
         finals(&beat).is_empty(),
         "id=0 的空事件不该把打开的句子定稿：{beat:?}"
@@ -722,13 +705,13 @@ fn zero_id_without_heartbeat_is_treated_as_missing_id() {
 #[test]
 fn missing_id_uses_sentence_begin_to_split() {
     let mut mapper = AliyunMapper::new();
-    // 没有 sentence_begin → 视为同一句的快照更新（替换不追加）。
-    let first = mapper.map_sentence(sentence_with(None, false, false, "说了一半"));
+    // 没有 id 的连续两条：第二条是同一句的快照更新（替换不追加），还是新句？
+    // 缺 id 时**不自己切句**（宁可少切，也不要把两句并成一句）。
+    let first = mapper.map_sentence(sentence_with(None, false, "说了一半", "", None));
     assert_eq!(partials(&first), vec!["说了一半".to_string()]);
-    let update = mapper.map_sentence(sentence_with(None, false, false, "说完了"));
-    assert_eq!(partials(&update), vec!["说完了".to_string()]);
+    let update = mapper.map_sentence(sentence_with(None, false, "说完了", "", None));
     assert!(
         finals(&update).is_empty(),
-        "没有 sentence_begin 就不能自己切句：{update:?}"
+        "缺 id 时不能自己切句：{update:?}"
     );
 }
