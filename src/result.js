@@ -25,6 +25,54 @@ export function renderResultActions() {
 let liveSegments = []
 /// 到达序号：排序的 tie-break（数组下标会随重排变，不能用）。
 let liveOrder = 0
+/// 用户是否动过结果框（**粘滞**）：动过之后一律走追加分支。
+let liveEdited = false
+/// 本会话是否出现过没有时间的段：出现后整个会话退化为按到达顺序渲染。
+let liveDegraded = false
+/// 已渲染的最大 start（秒）；`-Infinity` = 还没有带时间的段。
+let liveMaxStart = -Infinity
+/// 最大 start 处有没有缺口（同一 start 时缺口要排在句子前面）。
+let liveGapAtMax = false
+/// 段列表之前已有的文本（会话开始时结果框里已有的内容）。
+let liveBaseText = ''
+
+/// 清空段列表：新会话开始、或结果区被整体重写时。
+///
+/// 段列表在 `clearResult` / `showTranscript` 的**入口**清 —— `showTranscript`
+/// 的空转写分支会提前返回，末尾清不到；而 `setResultView` 是增量追加的路径，
+/// 不能在那里清。
+function resetLiveSegments() {
+  liveSegments = []
+  liveOrder = 0
+  liveEdited = false
+  liveDegraded = false
+  liveMaxStart = -Infinity
+  liveGapAtMax = false
+  liveBaseText = ''
+}
+
+/// 段按**本地时间轴**排序：排序键只有 start；同一 start 时缺口在前，
+/// 其余按到达顺序（与后端 `insert_gaps` 的「同一时刻缺口排在句子前面」一致）。
+function sortedSegments() {
+  return [...liveSegments].sort((a, b) => {
+    if (a.start !== b.start) return a.start - b.start
+    const aGap = isGapMarker(a.text)
+    const bGap = isGapMarker(b.text)
+    if (aGap !== bGap) return aGap ? -1 : 1
+    return a.order - b.order
+  })
+}
+
+/// 从段列表重建全文。
+///
+/// 拼句用 `joinText` 逐段拼 —— 规则必须和后端 `asr::join_segments` 一致
+/// （`check:join` 只比对那两处，**查不到这里的调用点**，别手写拼接）。
+function rebuildRawText() {
+  const list = liveDegraded ? liveSegments : sortedSegments()
+  let out = liveBaseText
+  for (const seg of list) out = joinText(out, seg.text)
+  return out
+}
 
 function setResultView(rawText, meta) {
   const rendered = localizeText(rawText)
@@ -73,6 +121,7 @@ export function relocalizeResult() {
 
 /// 清空结果区：文本框清空，元信息区只留一条提示。
 export function clearResult(label = 'result.waiting') {
+  resetLiveSegments()
   setResultView('', { kind: 'label', key: label })
 }
 
@@ -82,6 +131,8 @@ export function clearResult(label = 'result.waiting') {
 /// 录音说「换个安静点的环境」（麦克风的锅），文件说「没有识别到内容」
 /// （文件的内容已经定下来了，别给建议）。
 export function showTranscript(transcript, { record = true, emptyKey = 'record.empty' } = {}) {
+  // 入口就清段列表：空转写会走下面的早退分支，末尾清不到。
+  resetLiveSegments()
   const raw = (transcript.text || '').trim()
   if (!raw) {
     setResultView('', { kind: 'label', key: emptyKey })
@@ -110,11 +161,16 @@ export function appendSegment(text, start, end) {
   const piece = (text || '').trim()
   if (!piece) return
   const view = state.resultView
-  const rawText = joinText(view?.rawText || els.text.value, piece)
   // 用户动过结果框：把新句接到他们改过的文本后面，别整段重画覆盖掉。
   // `rendered` 仍保持「原文的本地化结果」—— relocalizeResult 靠它判断
   // 文本有没有被编辑过，写成用户文本会让切语言时再次覆盖。
-  if (view && els.text.value !== view.rendered) {
+  //
+  // 标志是**粘滞**的：文本比较只能看出「此刻有没有被改过」，用户改完又
+  // 撤销回原样时它会变回false —— 那时再从段列表重拼，就把编辑期间追加的
+  // 句子弄丢了。所以一旦发现被改过，本会话就一直走追加分支。
+  if (liveEdited || (view && els.text.value !== view.rendered)) {
+    liveEdited = true
+    const rawText = joinText(view?.rawText || els.text.value, piece)
     // 缺口段要先本地化再上屏，否则用户看到的是内部标记 [[gap:N]]。
     // 缺口文案自带空格规则（gapText），别再让 joinText 补一个。
     const shown = localizeText(piece)
@@ -126,13 +182,44 @@ export function appendSegment(text, start, end) {
   // 段列表只收**后端原文**（`[[gap:N]]` 没本地化）：本地化在渲染那一层做，
   // 存本地化文本会让缺口判定（`isGapMarker`）和切语言都失效。
   // 用户编辑过的分支不进段列表 —— 那时它不再是事实源。
-  liveSegments.push({
+  // 第一次落段时把结果框里已有的文本记成前缀（会话开始时通常是空的；
+  // 停止之后迟到的句子要接在最终转写后面）。
+  if (liveSegments.length === 0) liveBaseText = view?.rawText || ''
+  const seg = {
+    // 缺时间戳的段（文件转写的老事件）排不了序 —— 整个会话退化为到达顺序。
     start: Number.isFinite(start) ? start : null,
     end: Number.isFinite(end) ? end : null,
     text: piece,
     order: liveOrder++,
-  })
-  setResultView(rawText, { kind: 'label', key: 'record.live' })
+  }
+  liveSegments.push(seg)
+  const gap = isGapMarker(piece)
+  if (seg.start === null) liveDegraded = true
+  // 能不能直接追加到末尾（顺序不会变）？
+  // - 退化了（出现过没有时间的段）：不行，整个会话按到达顺序。
+  // - 起点比已渲染的终点还晚：可以。
+  // - 起点相同、不是缺口、且那个时间点上没有缺口：可以（同时间点按到达顺序）。
+  // 其余都要重排 —— 同一 start 的缺口若直接追加，会排到句子**后面**，
+  // 正好是这条规则要防的反向顺序。
+  const canAppend =
+    !liveDegraded &&
+    seg.start !== null &&
+    (seg.start > liveMaxStart || (seg.start === liveMaxStart && !gap && !liveGapAtMax))
+  if (seg.start !== null) {
+    if (seg.start > liveMaxStart) {
+      liveMaxStart = seg.start
+      liveGapAtMax = gap
+    } else if (seg.start === liveMaxStart && gap) {
+      liveGapAtMax = true
+    }
+  }
+  if (canAppend) {
+    // 快路径：直接接在后面（O(1)，不用整段重排重拼）。
+    setResultView(joinText(view?.rawText || liveBaseText, piece), { kind: 'label', key: 'record.live' })
+  } else {
+    // 重排：按本地时间轴重建全文。
+    setResultView(rebuildRawText(), { kind: 'label', key: 'record.live' })
+  }
 }
 
 export function showPartial(partial) {

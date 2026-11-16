@@ -645,6 +645,56 @@ check(
   live.slice(0, 60)
 )
 
+// ── 结果框里的实时句子按**本地时间轴**排序 ──
+//
+// 三条断言都在**非编辑态**下跑：用户一旦改过结果框，后面的段一律追加到末尾
+// （粘滞标志），排序断言就测不到东西了。所以要放在下面「用户手改」那几行之前。
+const emitSegment = async (text, start, end) => {
+  await page.evaluate(([t, s, e]) => {
+    window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: t, start: s, end: e })
+  }, [text, start, end])
+}
+
+// ① 缺口段先到、它所属的句子后到（句子起点更早）：句子要排在缺口前面。
+//    这正是云端丢包时的真实顺序（缺口锚在丢包起点，句子更早开始）。
+await emitSegment('[[gap:7]]', 7, 7)
+await page.waitForTimeout(60)
+await emitSegment('迟到的一句', 3, 4)
+await page.waitForTimeout(120)
+const reordered = await page.locator('#text').inputValue()
+const atLate = reordered.indexOf('迟到的一句')
+const atGap7 = reordered.indexOf('约 7 秒未识别')
+check(
+  '缺口先到时句子仍排在缺口前面',
+  atLate >= 0 && atGap7 >= 0 && atLate < atGap7,
+  reordered.slice(-60)
+)
+
+// ② 同一 start：缺口在前（与后端 insert_gaps 的「同一时刻缺口在前」一致）。
+//    句子和缺口都取零长区间 —— 这样「按 (start, end) 排序」的实现会退回按
+//    到达顺序，只有显式的「缺口在前」规则才能通过。
+await emitSegment('同刻的一句', 9, 9)
+await page.waitForTimeout(60)
+await emitSegment('[[gap:9]]', 9, 9)
+await page.waitForTimeout(120)
+const sameStart = await page.locator('#text').inputValue()
+const atSame = sameStart.indexOf('同刻的一句')
+const atGap9 = sameStart.indexOf('约 9 秒未识别')
+check(
+  '同一时刻缺口排在句子前面',
+  atSame >= 0 && atGap9 >= 0 && atGap9 < atSame,
+  sameStart.slice(-60)
+)
+
+// ③ 本地句子按时间递增到达：结果框的完整文本与改动前逐字相同。
+const before = await page.locator('#text').inputValue()
+await emitSegment('递增甲', 10, 11)
+await page.waitForTimeout(60)
+await emitSegment('递增乙', 11, 12)
+await page.waitForTimeout(120)
+const after = await page.locator('#text').inputValue()
+check('时间递增到达时文本逐字不变', after === `${before}递增甲递增乙`, after.slice(-60))
+
 // 录音中手改的内容，不能被下一句识别结果覆盖。
 await page.locator('#text').fill('我手改的一行')
 await page.evaluate(() => {
