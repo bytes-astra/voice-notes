@@ -237,6 +237,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
     - 音频规格与「整句快照」口径：<https://help.aliyun.com/zh/model-studio/automatic-speech-recognition>
     - 模型与语种：<https://help.aliyun.com/zh/model-studio/asr-model>、<https://help.aliyun.com/zh/model-studio/fun-asr-realtime>
     - 术语表（预编译词表，本变更未采用）：<https://www.alibabacloud.com/help/zh/model-studio/vocabulary-http-api>、<https://docs.bailian.console.aliyun.com/zh/model-studio/improve-asr-accuracy>
+  - **快照版的限制**：`fun-asr-realtime-2026-02-28` 只支持 `zh` / `en` / `ja`（选别的语言服务端不认）；术语表上下文官方只对 `fun-asr-realtime` 声明支持，**用快照版时应用仍会发送 `input.context`**，服务端可能忽略或报错。
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（客户端事件页 1300 / Paraformer SDK 页 800）→ **显式设 1300**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按 fun-asr 的「不传 = 自动识别」**；Paraformer 是否有 `sentence_id` → **没有**（本变更只用 fun-asr 的）。
 
 **云端相关测试基线**：`cargo test --lib` = **259**（其中 `asr::cloud` = 107 = 会话层 29 + Realtime 协议层 27 + 归一器 6 + 火山 18 + 阿里 27；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
