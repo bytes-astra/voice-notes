@@ -14,7 +14,7 @@ pub const MAX_HOTWORDS: usize = 100;
 pub const MAX_HOTWORD_CHARS: usize = 32;
 pub const MODES: [&str; 3] = ["offline", "streaming", "cloud"];
 /// 云端 provider 取值（`cloud_provider`）。默认 `realtime`（Realtime JSON 族）。
-pub const CLOUD_PROVIDERS: [&str; 2] = ["realtime", "volcengine"];
+pub const CLOUD_PROVIDERS: [&str; 3] = ["realtime", "volcengine", "aliyun"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]

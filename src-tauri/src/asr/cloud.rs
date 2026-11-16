@@ -16,7 +16,9 @@ use sherpa_onnx::LinearResampler;
 use super::{AsrSession, Segment, StreamEvent, Timeline, Transcript, SAMPLE_RATE};
 
 // provider 的实现：`realtime.rs`（OpenAI Realtime JSON 族）、`volcengine.rs`
-// （火山 / 豆包，自研二进制帧协议）。
+// （火山 / 豆包，自研二进制帧协议）、`aliyun.rs`（阿里云百炼 fun-asr-realtime，
+// JSON 控制帧 + 裸二进制音频帧）。
+pub mod aliyun;
 pub mod realtime;
 // 中间结果归一器：把各家的协议形态归一成「当前句的累计串」。
 pub mod partial;
@@ -94,6 +96,7 @@ pub fn provider_capabilities(id: &str) -> Option<Capabilities> {
     match id {
         "realtime" => Some(realtime::RealtimeProvider::CAPABILITIES),
         "volcengine" => Some(volcengine::VolcengineProvider::CAPABILITIES),
+        "aliyun" => Some(aliyun::AliyunProvider::CAPABILITIES),
         _ => None,
     }
 }
@@ -259,8 +262,69 @@ pub fn create_provider(
                 },
             )))
         }
+        "aliyun" => {
+            let model = if settings.cloud_model.trim().is_empty() {
+                aliyun::DEFAULT_MODEL.to_string()
+            } else {
+                settings.cloud_model.trim().to_string()
+            };
+            // 8k 模型要求 8000 Hz，而 target_sample_rate 是静态常量 16000 ——
+            // 传 16k 音频会被拒或识别错。按**已知前缀**拒绝（不用「含 8k」，
+            // 那会误拒未来名字里带 8k 的非 8k 模型）。
+            if model.starts_with(aliyun::EIGHT_K_MODEL_PREFIX) {
+                return Err(crate::code_detail("cloud.unsupportedModel", &model));
+            }
+            // 术语表：能力层决定要不要带，阿里协议层决定能带多少（400 字符）。
+            let (words, cap_ignored) = cloud_keywords(settings, &caps);
+            let (context_text, proto_ignored) = aliyun::build_context(&words);
+            let ignored = cap_ignored + proto_ignored;
+            if ignored > 0 {
+                crate::log::warn(format!("云端热词有 {ignored} 条未通过协议校验，已忽略"));
+            }
+            Ok(Box::new(aliyun::AliyunProvider::new(aliyun::AliyunConfig {
+                base_url: settings.cloud_base_url.clone(),
+                api_key: settings.cloud_api_key.clone(),
+                model,
+                language_hint: aliyun::language_hint(&settings.language),
+                context_text,
+            })))
+        }
         other => Err(crate::code_detail("cloud.unsupportedProvider", other)),
     }
+}
+
+/// 生成一个 UUID v4 形状的唯一串。
+///
+/// 火山用它做请求 ID / 连接 ID（官方建议用 UUID 追踪调用），阿里用它做
+/// `task_id`。**不是密码学随机**，只用于标识与关联。
+pub(crate) fn new_uuid() -> String {
+    let mut bytes = [0u8; 16];
+    // 用时间与进程 id 拼一个够用的随机串（不必是密码学随机）。
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let pid = std::process::id() as u64;
+    let mut state = now ^ (pid << 32);
+    for byte in bytes.iter_mut() {
+        // xorshift：够随机即可（只是调用追踪标识，不是凭据）。
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        *byte = (state & 0xff) as u8;
+    }
+    // 版本 4 + 变体位。
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 /// 把凭据从文本里抹掉：日志、错误详情、错误帧里都不该出现它。

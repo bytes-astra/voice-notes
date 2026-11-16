@@ -436,8 +436,8 @@ async fn connect_socket(
     } else {
         config.resource_id.trim()
     };
-    let request_id = new_request_id();
-    let connect_id = new_request_id();
+    let request_id = super::new_uuid();
+    let connect_id = super::new_uuid();
     for (name, value) in [
         ("X-Api-Key", config.api_key.as_str()),
         ("X-Api-Resource-Id", resource_id),
@@ -455,37 +455,6 @@ async fn connect_socket(
             crate::code_detail("cloud.connectFailed", sanitize(&error.to_string(), &config.api_key))
         })?;
     Ok(socket)
-}
-
-/// 请求 ID：UUID v4（官方建议用 UUID 追踪调用）。
-fn new_request_id() -> String {
-    let mut bytes = [0u8; 16];
-    // 用时间与进程 id 拼一个够用的随机串（不必是密码学随机）。
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let pid = std::process::id() as u64;
-    let mut state = now ^ (pid << 32);
-    for byte in bytes.iter_mut() {
-        // xorshift：够随机即可（只是调用追踪标识，不是凭据）。
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        *byte = (state & 0xff) as u8;
-    }
-    // 版本 4 + 变体位。
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
 }
 
 /// 服务端错误码 → 字典错误码（纯函数，可单测）。

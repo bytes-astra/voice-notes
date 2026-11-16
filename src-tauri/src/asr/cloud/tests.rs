@@ -634,3 +634,35 @@ fn sanitize_leaves_text_without_secret_alone() {
     let text = "上传失败：连接被重置";
     assert_eq!(sanitize(text, "sk-1"), text);
 }
+
+/// 8k 模型必须被拒：`target_sample_rate` 是静态常量 16000，8k 模型要求 8000。
+#[test]
+fn 阿里的_8k_模型被拒绝且错误里带模型名() {
+    let settings = crate::settings::Settings {
+        cloud_provider: "aliyun".into(),
+        cloud_model: "fun-asr-flash-8k-realtime".into(),
+        ..Default::default()
+    };
+    let error = match create_provider(&settings) {
+        Ok(_) => panic!("8k 模型不该建出来"),
+        Err(error) => error,
+    };
+    assert!(error.starts_with("cloud.unsupportedModel"), "{error}");
+    assert!(error.contains("fun-asr-flash-8k-realtime"), "错误里要带模型名：{error}");
+}
+
+/// 16k 的阿里模型能建出来（默认模型名也走这条）。
+#[test]
+fn 阿里的_16k_模型能建出来() {
+    for model in ["", "fun-asr-realtime", "fun-asr-realtime-2026-02-28"] {
+        let settings = crate::settings::Settings {
+            cloud_provider: "aliyun".into(),
+            cloud_model: model.into(),
+            ..Default::default()
+        };
+        assert!(
+            create_provider(&settings).is_ok(),
+            "模型 {model:?} 应该能建出来"
+        );
+    }
+}
