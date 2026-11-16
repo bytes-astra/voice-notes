@@ -12,6 +12,20 @@ export function renderResultActions() {
   els.clearBtn.innerHTML = clearIcon()
 }
 
+// —— 结果框里的实时句子 ——
+//
+// 一次会话内维护一个**段列表**（句子与缺口）：每段记后端原文、时间区间与
+// 到达序号。段列表是结果框的事实源 —— 渲染顺序按本地时间轴，而不是事件
+// 到达顺序（云端的缺口段可能先于它所属的句子到达）。
+//
+// 段列表放模块级，**不要**放进 `state.resultView` —— `setResultView` 每次
+// 增量追加都会整体覆盖 `resultView`，放进去会被冲掉。
+
+/// 一次会话内的段（句子 / 缺口）。
+let liveSegments = []
+/// 到达序号：排序的 tie-break（数组下标会随重排变，不能用）。
+let liveOrder = 0
+
 function setResultView(rawText, meta) {
   const rendered = localizeText(rawText)
   state.resultView = { rawText, rendered, meta, markers: gapMarkerTexts(rawText) }
@@ -87,7 +101,10 @@ export function showTranscript(transcript, { record = true, emptyKey = 'record.e
 }
 
 /// 追加一句识别好的文本（事件是增量载荷：只带新句子）。
-export function appendSegment(text) {
+///
+/// `start` / `end` 是句子在**本地录音时间轴**上的区间（秒）。缺 `start`
+/// 的事件（文件转写的老事件）没有时间信息，排不了序。
+export function appendSegment(text, start, end) {
   // 取消 / 收尾结束之后迟到的句子不再追加，否则结果框会冒出被取消的内容。
   if (state.phase !== 'recording' && state.phase !== 'transcribing') return
   const piece = (text || '').trim()
@@ -106,6 +123,15 @@ export function appendSegment(text) {
     renderResultMeta()
     return
   }
+  // 段列表只收**后端原文**（`[[gap:N]]` 没本地化）：本地化在渲染那一层做，
+  // 存本地化文本会让缺口判定（`isGapMarker`）和切语言都失效。
+  // 用户编辑过的分支不进段列表 —— 那时它不再是事实源。
+  liveSegments.push({
+    start: Number.isFinite(start) ? start : null,
+    end: Number.isFinite(end) ? end : null,
+    text: piece,
+    order: liveOrder++,
+  })
   setResultView(rawText, { kind: 'label', key: 'record.live' })
 }
 

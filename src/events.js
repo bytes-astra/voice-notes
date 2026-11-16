@@ -79,7 +79,7 @@ export async function listenEvents() {
     const payload = event.payload || {}
     const activeSession = state.transcribingFile ? state.fileSessionId : state.recordingSessionId
     if (payload.sessionId !== activeSession) return
-    appendSegment(payload.segment)
+    appendSegment(payload.segment, payload.start, payload.end)
     showPartial('')
     if (state.transcribingFile) {
       state.fileSegments += 1
