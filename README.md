@@ -129,7 +129,7 @@ CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2
   - **计费按 token**（不是按秒）：输入 6 元 / 百万 token、输出 4.5 元 / 百万 token，北京与新加坡同价。
 - **结果框按录音时间顺序显示**：同一时刻先显示缺口提示。录音与文件转写的结果框都如此。
 - **中途断连**：已经定稿的句子会保留，连接问题另行提示。
-- 术语表会一起发给服务：Realtime 走 `keywords`（含协议不支持字符的条目会被跳过），火山走 `corpus.context`（应用按 100 条截断，服务端可能再按 token 截一次）；是否生效取决于服务。
+- 术语表会一起发给服务：Realtime 走 `keywords`（含协议不支持字符的条目会被跳过），火山走 `corpus.context`（应用按 100 条截断，服务端可能再按 token 截一次），阿里走 `vocabulary`（键值对带权重，超过官方长度上限的条目会被跳过）；是否生效取决于服务。
 
 各语料的当前实测字符错误率见 [docs/HOW_TO_VERIFY.md](docs/HOW_TO_VERIFY.md)。
 

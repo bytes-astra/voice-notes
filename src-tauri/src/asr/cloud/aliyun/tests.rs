@@ -58,7 +58,7 @@ fn run_task_sends_request_level_hotwords() {
     // 即时热词：键值对（词 → 权重），请求级直传，不需要预建词表。
     assert_eq!(value["payload"]["parameters"]["vocabulary"]["祺元"], 4);
     assert_eq!(value["payload"]["parameters"]["vocabulary"]["洛柯"], 5);
-    // 本 provider 不传 input.context。
+    // 本 provider 不带上下文：`input` 恒为 `{}`。
     assert_eq!(value["payload"]["input"], serde_json::json!({}));
 }
 
@@ -70,7 +70,7 @@ fn finish_task_reuses_task_id_with_empty_input() {
     assert_eq!(value["payload"]["input"], serde_json::json!({}));
 }
 
-// ── input.context 的组装与截断 ──────────────────────────────────────
+// ── 即时热词的组装与过滤 ──────────────────────────────────────────────
 
 #[test]
 fn empty_glossary_means_no_hotwords() {

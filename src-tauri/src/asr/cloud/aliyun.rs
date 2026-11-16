@@ -355,7 +355,7 @@ pub fn encode_run_task(config: &AliyunConfig, task_id: &str) -> String {
         }
         parameters["vocabulary"] = serde_json::Value::Object(map);
     }
-    // 不带上下文时 `input` 是 `{}`（本 provider 不传 input.context）。
+    // 本 provider 不带上下文：`input` 恒为 `{}`。
     let input = json!({});
     json!({
         "header": {

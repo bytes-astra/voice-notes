@@ -247,7 +247,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
     - 音频规格与「整句快照」口径：<https://help.aliyun.com/zh/model-studio/automatic-speech-recognition>
     - 模型与语种：<https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-audio-3-1-asr-flash-streaming>、<https://help.aliyun.com/zh/model-studio/asr-model>
     - 术语表（预编译词表，本变更未采用）：<https://www.alibabacloud.com/help/zh/model-studio/vocabulary-http-api>、<https://docs.bailian.console.aliyun.com/zh/model-studio/improve-asr-accuracy>
-  - **模型白名单**：只支持 `qwen-audio-3.1-asr-flash-streaming`。协议骨架与旧的 Fun-ASR 相同，但参数与结果结构不同（本模型有 `stash` 草稿、即时热词、方言开关），不按「名字随便填」处理。
+  - **模型白名单**：只支持 `qwen-audio-3.1-asr-flash-streaming`。参数与结果结构与通用 ASR 协议不同（本模型有 `stash` 草稿、即时热词、方言开关），不按「名字随便填」处理。
   - **计费按 token**（输入 6 元 / 百万、输出 4.5 元 / 百万，北京与新加坡同价），不是按秒。
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（本模型客户端事件页 **800** / 旧的 Paraformer SDK 页 800）→ **显式设 800**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按「不传 = 自动识别」**；`sentence_id` 是否必填 → **必填**（缺了按兼容路径处理并记 WARN）。
 
