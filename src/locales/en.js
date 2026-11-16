@@ -249,6 +249,7 @@ window.I18N_LOCALES['en'] = {
   'settings.cloudProvider': 'Cloud service',
   'settings.cloudProviderRealtime': 'OpenAI Realtime (live, per-character)',
   'settings.cloudProviderVolcengine': 'Volcengine · Doubao (server-side sentence splitting)',
+  'settings.cloudProviderAliyun': 'Alibaba Cloud Bailian · Fun-ASR',
   'settings.cloudResourceId': 'Resource ID',
   'settings.cloudResourceIdPlaceholder': 'Leave empty for the default resource ID',
   'settings.cloudBaseUrl': 'Service address',

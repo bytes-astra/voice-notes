@@ -125,6 +125,7 @@ export function cloudProviderItems() {
   return [
     { value: 'realtime', label: t('settings.cloudProviderRealtime') },
     { value: 'volcengine', label: t('settings.cloudProviderVolcengine') },
+    { value: 'aliyun', label: t('settings.cloudProviderAliyun') },
   ]
 }
 
@@ -152,7 +153,8 @@ function renderCloudConfig() {
   if (document.activeElement !== els.cloudResourceId) {
     els.cloudResourceId.value = status.cloudResourceId || ''
   }
-  // 配置项按 provider 解释：火山的「模型名」是固定的，资源标识才有意义。
+  // 配置项按 provider 解释：Realtime 与阿里都有「模型名」（可换模型），
+  // 只有火山需要「资源标识」。
   const provider = status.cloudProvider || 'realtime'
   // 下拉框必须跟着状态走：启动时 bindUI 先于 refreshStatus，那时还没有
   // 状态（界面显示 realtime，实际存的是 volcengine）—— 保存一次就把
@@ -160,7 +162,7 @@ function renderCloudConfig() {
   if (cloudProviderSelect && cloudProviderSelect.value !== provider) {
     cloudProviderSelect.setItems(cloudProviderItems(), provider)
   }
-  els.cloudModelField.classList.toggle('hidden', provider !== 'realtime')
+  els.cloudModelField.classList.toggle('hidden', provider !== 'realtime' && provider !== 'aliyun')
   els.cloudResourceField.classList.toggle('hidden', provider !== 'volcengine')
 }
 

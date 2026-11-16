@@ -1369,7 +1369,24 @@ check(
   (await page.evaluate(() => window.__mockStatus.cloudProvider)) === 'volcengine',
   await page.evaluate(() => window.__mockStatus.cloudProvider),
 )
-// 切回默认服务。切换会清掉地址与凭据（两家的配置不能混用），
+// 阿里的字段可见性与火山相反：有模型名（可换模型），没有资源标识。
+await page.locator('#cloud-provider-select .select-button').click()
+await page.waitForTimeout(150)
+await page.locator('.select-popup .select-item', { hasText: '阿里' }).first().click()
+await page.waitForTimeout(300)
+check(
+  '切到阿里后出现模型名、隐藏资源标识',
+  (await page.locator('#cloud-model-field').isVisible()) &&
+    !(await page.locator('#cloud-resource-field').isVisible()),
+  `模型可见=${await page.locator('#cloud-model-field').isVisible()} 资源标识可见=${await page.locator('#cloud-resource-field').isVisible()}`,
+)
+check(
+  '切到阿里后服务已保存',
+  (await page.evaluate(() => window.__mockStatus.cloudProvider)) === 'aliyun',
+  await page.evaluate(() => window.__mockStatus.cloudProvider),
+)
+
+// 切回默认服务。切换会清掉地址与凭据（各家的配置不能混用），
 // 后面还有断言要用「已配置」的状态 —— 这里重新填一次。
 await page.locator('#cloud-provider-select .select-button').click()
 await page.waitForTimeout(150)
