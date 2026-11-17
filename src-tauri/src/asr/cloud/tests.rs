@@ -943,8 +943,9 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
         //    `super::super::log::warn`（在模块深度下能编译、照样写日志文件）
         //    都要红。关口自己的 `logging::warn` 不含这些片段 → 不误伤。
         //
-        //    只看**代码行**：注释里提到 `log::warn` 不该红。
-        let code = code_lines(&source);
+        //    扫的是**代码骨架**（注释去掉、字符串字面量内容清空）：注释里
+        //    提到 `log::warn`、或字符串里写着 `log::warn`，都不该红。
+        let code = code_skeleton(&source);
         for fragment in ["log::warn", "log::info", "log::error", "log::write"] {
             assert!(
                 !code.contains(fragment),
@@ -986,14 +987,58 @@ fn calls_code_detail_directly(code: &str) -> bool {
     false
 }
 
-/// 只看代码行（去掉整行注释）—— 注释里提到 `log::warn` 不该让守卫变红。
-fn code_lines(source: &str) -> String {
-    source
-        .lines()
-        .map(str::trim_start)
-        .filter(|line| !line.starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n")
+/// 只留代码骨架：**去掉注释**、**把字符串字面量的内容清空**（保留引号）。
+///
+/// 免得「注释里提到 `log::warn`」或「字符串里写着 `log::warn`」让守卫误伤 ——
+/// 这个仓库注释密度很高，这种误伤很容易踩。
+///
+/// 字符串内容清空是安全的：真正的调用（`log::warn("x")`）里的 `log::warn`
+/// 在**引号外面**，照样能扫到。
+fn code_skeleton(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut in_block = false;
+    while let Some(ch) = chars.next() {
+        if in_block {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block = false;
+            }
+            continue;
+        }
+        if in_string {
+            if ch == '\\' {
+                chars.next();
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+                out.push('"');
+            }
+            continue;
+        }
+        match ch {
+            '/' if chars.peek() == Some(&'/') => {
+                for skipped in chars.by_ref() {
+                    if skipped == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                in_block = true;
+            }
+            '"' => {
+                in_string = true;
+                out.push('"');
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// 从 `crate` 导入了日志相关的东西吗（`use crate::log;` / `use crate::{log, …};` /
@@ -1006,6 +1051,13 @@ fn imports_a_log_path(source: &str) -> bool {
         let Some(rest) = statement.trim().strip_prefix("use crate::") else {
             continue;
         };
+        // **从 `crate::log` 这个模块里导入的，一律不许** —— 不只是
+        // `use crate::log;`：花括号与 glob 形式（`use crate::log::{warn};`、
+        // `use crate::log::*;`）拆出来的名字是 `log::{warn}` / `log::*`，
+        // 按名字判会漏掉它们。
+        if rest.starts_with("log") {
+            return true;
+        }
         let rest = rest.trim_end_matches(';').replace(['{', '}'], "");
         for item in rest.split(',') {
             let name = item.trim().split(" as ").next().unwrap_or("").trim();
