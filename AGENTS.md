@@ -202,6 +202,10 @@
 
 - **provider 可插拔**：`CloudProvider` trait（`src-tauri/src/asr/cloud.rs`）只管协议 —— 建连、喂音频、提交、收尾。协议差异（帧格式、鉴权、partial 语义、术语表格式）全部关在 provider 内部：`realtime.rs`（OpenAI Realtime，JSON 帧）、`volcengine.rs`（火山 / 豆包，自研二进制帧）、`aliyun.rs`（阿里云百炼 Qwen-Audio，JSON 控制帧 + 裸二进制音频帧）。
   **加一家的实际清单**（不只是「加个文件」）：provider 文件 + `provider_capabilities` 表项 + `create_provider` 分支 + `settings::CLOUD_PROVIDERS` + 前端 `cloudProviderItems()` 与 locale 文案 + 字段可见性条件 + 协议层单测 + 界面断言。
+- **配置形态是「连接列表」**：一条 = provider + 地址 + 密钥 + 模型/资源标识 + 备注，**绑成一套**（换 provider 换的是整套）。`Status.cloudProfiles` 回传列表，**凭据只有掩码**（`settings::mask_secret`，头 4 + 尾 4）；`cloudActiveProfile` 指向**正在使用**的那条 —— 转写与 `create_provider` 都读它。
+  - **切 provider 不再清空别人的配置**（旧行为是切一下就把地址/密钥/模型全清掉）—— 每家各是一条独立连接。
+  - **「模型」与「资源标识」合并成一个字段**，按 provider 解释：Realtime 与阿里是模型名，火山是 `X-Api-Resource-Id`。**给候选项、不让用户手打** —— 阿里模型走白名单（填错直接报错），火山填成模型 1.0 的 id 会握手 403。
+  - **不做旧格式迁移**：旧 `settings.json` 的 5 个平铺云端字段被忽略（用户重新填一遍）—— 两套真值来源迟早不一致。
 - **能力声明**：`Capabilities`（句边界方式 / 是否需要本地 VAD / 中间结果语义 / 是否支持术语表 / 上传采样率）由 provider 自报，按 id 静态查的表（`provider_capabilities`）与实例**同源**（表项就是实现自报的那个常量，别手写第二份）。合法组合只有两种：客户端提交 + 需要本地 VAD；服务端断句 + 不需要本地 VAD。**「缺 VAD」不是「改用服务端断句」** —— 那是另一个能力，混起来会让客户端提交族静默退化。
 - **中间结果统一为「当前未定稿句的累计串」**：各家协议形态不同，在 provider 内部归一，上层只认这一种。归一器按句标识分桶；**没有句标识的协议（服务端断句族）走单桶**，不支持跨句交错。
 
@@ -239,7 +243,7 @@
 - **服务端断句族的防御性定稿**（阿里最容易回退的一条）：新 `sentence_id` 出现而上一句还没定稿时，**先按最后快照把上一句 emit 成 Final**（判定**只看 id**，与新句有没有文本无关 —— 服务端可能先发「新句 + 空文本 + `sentence_end`」的收尾事件）；
   - **取舍**：按快照定稿后，那个 id 进了去重表 → 服务端随后对同一 id 的**完整** `sentence_end` 会被早退丢弃 → 定稿文本是快照而不是服务端最终文本。**宁可少几个标点，也不要同一句出两条 Final**（重复句子更糟）—— 见 RC-K11；**已定稿且有内容**的 id，其后续事件**一律忽略**（否则重复/迟到的 `end` 会让会话层产生重复句子，迟到的 `end` 还会 `partial.clear()` 掉新句的实时行）。**空文本的定稿不算「已定稿」** —— 它不占去重键，否则同 id 的后续真实文本会被整段丢弃（2026-11-17 外部复审发现 —— **缺陷随 v1.6.0 发布出去了；修复已进 main，尚未发版**（等 v1.6.1 的 tag））。心跳必须在「新 id」判断**之前**判掉。
 - **断句**：客户端提交族本地门控（静音在本地丢掉、静音时提交）；服务端断句族**不门控**（静音照上传，服务端靠静音判句尾），区间走本地轴兜底（终点偏长是已知取舍）。「末包 / 结束标识」不等于「结果已全回」—— 要等最终响应才收尾。**阿里还要多一条：`sentence_end=true` 只表示句子结束，任务结束以 `task-finished` 为准** —— `finish-task` 之后必须继续收 `result-generated`，发完就关会丢尾部结果；而且残包要在 `finish-task` 之前发出去。
-- **凭据**：只存 settings，**不进日志、不回传前端**（`Status` 里没有 key 明文：凭据只有 `cloud_configured` 布尔）；错误详情里的 key 要脱敏（`sanitize`）。**云端模块的日志只许走 `asr/cloud/logging.rs` 的关口**（`warn` / `info` / `code_detail`）—— 写入前用该 provider 的凭据脱敏；绕过关口会被源码级守卫抓住（`asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`：云端模块里出现 `crate::log` 或 `crate::code_detail` 就红 —— **两条路都写日志文件**（`crate::code_detail` 内部就是 `log::error`）却不脱敏，所以云端模块一律用 `logging::code_detail` 先脱敏再委托）。**已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现。切换 provider 会清空地址、凭据、模型与资源标识（各家的配置不能混用）—— 这是**有提示的已知取舍**。
+- **凭据**：只存 settings，**不进日志、不回传前端**（`Status` 里没有 key 明文：凭据只有 `cloud_configured` 布尔；连接列表里只有 `keyMask`）；错误详情里的 key 要脱敏（`sanitize`）。**云端模块的日志只许走 `asr/cloud/logging.rs` 的关口**（`warn` / `info` / `code_detail`）—— 写入前用该 provider 的凭据脱敏；绕过关口会被源码级守卫抓住（`asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`：云端模块里出现 `crate::log` 或 `crate::code_detail` 就红 —— **两条路都写日志文件**（`crate::code_detail` 内部就是 `log::error`）却不脱敏，所以云端模块一律用 `logging::code_detail` 先脱敏再委托）。**已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现。切换 provider 会清空地址、凭据、模型与资源标识（各家的配置不能混用）—— 这是**有提示的已知取舍**。
 - **上传丢包要留缺口**：队列满时丢掉的那段音频推进真实录音时间轴并生成 `[[gap:N]]`；**连续丢包并成一条**（逐条上报会刷屏）。provider 要区分「投递了」与「只是攒包」—— 只回一个丢包数不够（`SendOutcome`）。
 - **验证**：协议层单测（帧编解码、结果映射）+ 真服务冒烟（凭据走环境变量，见 HOW_TO_VERIFY）。真 key 不入库、不进日志、不打印。
 

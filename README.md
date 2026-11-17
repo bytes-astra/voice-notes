@@ -104,15 +104,17 @@ CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2
 
 云端模式是**第三种识别引擎**，跑在你自己填的云端服务上。默认不启用 —— 不填凭据就起不了录音，界面会提示「先在设置里填写云端服务与凭据」。
 
-在 **设置 → 云端服务** 里填三项：
+在 **设置 → 云端服务** 里可以保存**多条连接**，每条是一整套配置（用哪家服务 + 地址 + 密钥 + 模型）。列表里每条显示**掩码**（如 `sk-c…HePU`）和「使用中」标记 —— 转写时用的是标着「使用中」的那条，随时可以点圆点换一条、点铅笔改、点垃圾桶删。
 
 | 配置项 | 说明 |
 | --- | --- |
 | 云端服务 | 选哪家：**OpenAI Realtime**（逐字实时）、**火山引擎 · 豆包**（服务端断句）或**阿里云百炼 · Qwen-Audio**（服务端断句，30 语种 + 热词带权重） |
+| 备注 | 自己起个名字，方便区分（工作 / 个人、火山·小时版 / 并发版） |
 | 服务地址 | 留空 = 用该服务的默认地址（Realtime：`wss://api.openai.com/v1/realtime?intent=transcription`；火山：`wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`；阿里：`wss://dashscope.aliyuncs.com/api-ws/v1/inference`） |
-| API 密钥 | 填了就保存下来；**保存后不再显示**（界面上只显示「凭据已配置」），随时可以「清除凭据」 |
-| 模型 | 只对 OpenAI Realtime 有效（默认 `gpt-live-transcribe`）；火山与阿里云百炼用固定模型，不需要填 |
-| 资源标识 | 只对火山有效（`X-Api-Resource-Id`，留空 = 默认）。只用**豆包流式语音识别模型 2.0**：小时版 `volc.seedasr.sauc.duration` / 并发版 `volc.seedasr.sauc.concurrent` |
+| API 密钥 | 填了就保存下来；**保存后不再显示明文**（列表里只有掩码），编辑时留空 = 不改 |
+| 模型 / 资源标识 | **按服务解释**，并且**给的是候选项、不让手打**：Realtime 是模型名（默认 `gpt-live-transcribe`）、阿里是模型名（`qwen-audio-3.1-asr-flash-streaming`，只有这一款）、火山是 `X-Api-Resource-Id`（豆包流式语音识别模型 2.0：小时版 `volc.seadasr.sauc.duration` / 并发版 `volc.seadasr.sauc.concurrent`）—— 填了模型 1.0 的 id 会握手 403 |
+
+**每家各是一条独立连接**：同时用阿里和火山不用来回切换重打密钥，切换只是点一下「使用中」。
 
 其他行为：
 

@@ -219,6 +219,9 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 - **协议编解码单测**（`src-tauri/src/asr/cloud/realtime/protocol_tests.rs`）：拿官方的示例帧当输入 —— `conversation.item.input_audio_transcription.delta`（字段 `delta`）与 `.completed`（字段 `transcript`）解成 Partial / Final、`input_audio_buffer.commit` 的回执带 `item_id`（用来给 final 按提交顺序排序）、`session.update` 的编码（`audio/pcm` + 24000、`turn_detection` 为 `null` 时由客户端断句、语言参数是 `languages` 复数）。另有**收尾记账**两组：客户端断句（提交后结果没回来就还在等）、服务端断句（迟到的旧 final 不能抹掉新音频的等待），以及**迟到的 `committed` 回执不再排队**（否则队列永远不空，收尾会一直等）。
 - **集成测试**（`src-tauri/src/record/tests.rs`）：走 `run_cloud_streaming_core` 的完整编排 —— 中途断连后已定稿句子仍在（`cloud_core_keeps_finalized_sentences_when_disconnected`）、上传丢掉的音频不重复计时（`cloud_core_does_not_double_count_upload_drops`）、**收尾的尾部缺口排在最后一句之后**（`cloud_tail_gap_follows_last_sentence`：第一次上传回一句话、第二次上传丢 1 秒，断言缺口是一个时刻且不并进最后一句）。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib record::tests::<name>`。
 - **凭据不外泄**：`Status` 序列化里没有 key 明文（`engine` 的单测）、错误详情里的 key 会被抹成 `***`（`sanitize()`，Realtime 与火山各一条协议单测 —— 火山的用会保留 message 的错误码分支，否则断言会恒真）、界面检查断言「密钥不回显」。
+  - **连接列表只回传掩码**：`Status.cloudProfiles` 里每条是 `{id, label, provider, baseUrl, model, keyMask}` —— `keyMask` 是头 4 + 尾 4（`settings::mask_secret`；≤ 8 个字符只露头 2 个，更短的一律用固定点数）。**明文不回传**。守卫：`settings/cloud_tests.rs::mask_secret_hides_the_middle` / `mask_secret_never_reveals_the_whole_secret`；界面断言「列表显示掩码、不显示明文」。
+  - **每家一条独立连接**：切 provider 不再清空别人的配置（旧行为是「切换会清掉地址与凭据」）。守卫：`settings/cloud_tests.rs::switching_provider_keeps_the_other_providers_profile`。
+  - **不做旧格式迁移**：旧 `settings.json` 的 5 个平铺云端字段被忽略（用户重新填一遍）—— 两套真值来源迟早不一致。
   - **日志这一半**：云端模块的日志只许走 `asr/cloud/logging.rs` 的关口（`warn` / `info` / `code_detail`），写入前用该 provider 的凭据脱敏。两条守卫：`asr::cloud::tests::log_choke_point_redacts_the_credential`（关口的脱敏）+ `asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`（**源码级守卫**：运行时读 `src/asr/cloud/` 下各 `.rs` 与 `src/asr/cloud.rs`，出现 `crate::log` 或 `crate::code_detail` 就红 —— **两条路都写日志文件**（`crate::code_detail` 内部就是 `log::error`）却不脱敏，所以云端模块一律用 `logging::code_detail` 先脱敏再委托）。守卫**跳过**测试文件（`tests.rs` / `*_tests.rs` / `tests/` 目录）、`mock.rs`（`#[cfg(test)]`）与关口自己（`logging.rs`）。
     - **已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现（变形、URL 编码不保证）。
     - **范围只有云端模块**：`record.rs` 的云端日志只拼字典码，前端那半边靠「key 不回传」。
@@ -256,7 +259,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   - **计费按 token**（输入 6 元 / 百万、输出 4.5 元 / 百万，北京与新加坡同价），不是按秒。
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（本模型客户端事件页 **800** / 旧的 Paraformer SDK 页 800）→ **显式设 800**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按「不传 = 自动识别」**；`sentence_id` 是否必填 → **必填**（缺了按兼容路径处理并记 WARN）。
 
-**云端相关测试基线**：`cargo test --lib` = **282**（其中 `asr::cloud` = 130 = 会话层 38 + Realtime 协议层 29 + 归一器 6 + 火山 19 + 阿里 38；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
+**云端相关测试基线**：`cargo test --lib` = **290**（其中 `asr::cloud` = 130 = 会话层 38 + Realtime 协议层 29 + 归一器 6 + 火山 19 + 阿里 38；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 > [!NOTE]
 > 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。

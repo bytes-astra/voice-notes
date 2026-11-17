@@ -6,13 +6,13 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**87 条**不变量、11 组（A–K）—— ✅ 87 条有守卫，⚠️ 0 条，❌ 0 条。
+**当前规模**：**88 条**不变量、11 组（A–K）—— ✅ 88 条有守卫，⚠️ 0 条，❌ 0 条。
 
 > **云端条目在 K 组**（2026-11-17 落地）：provider 契约、中间结果语义、结果框顺序、凭据脱敏、零长句顺序、上传丢包缺口。
 2026-11-14 修复 RC-B6 的门控收尾与预录时间轴问题，作业面 1 → 0；真模型守卫在本地运行。
 
 （历史口径：5 份旧 review plan 一共提出 **26** 个 focus 项 —— 那是「轮次」的粒度；
-本文档把它们展开成 **87** 条可逐条核对的条目。两个数各指什么，不要混用。）
+本文档把它们展开成 **88** 条可逐条核对的条目。两个数各指什么，不要混用。）
 
 ## 怎么用
 
@@ -190,7 +190,7 @@
 | RC-J2 | 装引擎必须用**当前**设置：读设置与装引擎要在同一把锁内，陈旧判定必须覆盖**所有**影响识别的设置（整段 = 模型目录 / 语言 / ITN，流式 = 热词）。只比语言和 ITN 的话，换了模型目录照样复用旧引擎，新设置被静默吞掉 | `engine.rs` 的 `install_engine`（拿槽锁 → 锁内读设置 → 比身份 → 复用或重建）+ `OfflineEngineKey` / `StreamingEngineKey`；`engine/tests.rs` 设置没变就复用引擎 / 换了模型目录就重建引擎 / 换了语言就重建引擎 / 换了热词就重建流式引擎 / 等锁期间设置改了也要用新设置 | ✅ 2026-11-04 |
 | RC-J3 | async 路径上不许**阻塞式**取引擎锁：引擎加载要好几秒（239 MB / 161 MB / 294 MB），那把锁会被占住；async 命令在执行器线程上死等，整个执行器就卡住（用户看着像界面冻住）。`try_lock()` 不算 | `scripts/check-async.mjs`（沿调用图从 async 函数出发，引擎槽的 `.lock()` 只许出现在 `spawn_blocking` 闭包里）+ 9 条自测（含「把旧的 `shared_engine` 加回真源码会被抓住」）；`load_engine` 直接返回 `Arc<Engine>`，不再有 `shared_engine` 的二次取锁 | ✅ 2026-11-04 |
 
-### K. 云端模式（12 条）
+### K. 云端模式（13 条）
 
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
@@ -199,12 +199,13 @@
 | RC-K3 | 结果框里的实时句子顺序 SHALL 以本地时间轴为准，与最终转写一致；同 `start` 时缺口在前 | `scripts/ui/check.mjs` 的「缺口先到时句子仍排在缺口前面」/「同一时刻缺口排在句子前面」/「时间递增到达时文本逐字不变」三条断言（**RC-B3 的前端那半边** —— RC-B3 的后端守卫不覆盖 `result.js`；「与最终转写一致」是两条规则同源，界面断言只验实时行） | ✅ 2026-11-16 |
 | RC-K4 | 同批多句的零长区间 SHALL 以**到达顺序**为准（服务端断句族收尾时一次性 drain 出多条 final：首条占收尾那段区间，第 2 条起退化为零长、同 `start`） | `asr/cloud/tests.rs::zero_length_segments_keep_arrival_order`（九条 final 同批到达：首条 `start < end`、后八条零长且同 `start`、文本顺序 = 到达顺序）—— **这条守的是「顺序」，不是区间准确性**：零长区间是已知取舍（今天无用户可见影响；触发条件与选型见 `AGENTS.md` 与 OpenSpec change `cloud-server-endpoint-spans`） | ✅ 2026-11-17 |
 | RC-K5 | 上传丢包所占的时间 SHALL 计入真实录音时长，缺口位置 SHALL 在真实录音时间轴上；连续丢包并成一条；**缺口只上报一次** | `asr/cloud/tests.rs::upload_drop_records_gap_position`（缺口位置）、`asr/cloud/tests.rs::consecutive_drops_merge_into_one_gap`（并成一条）、`record/tests.rs::cloud_core_does_not_double_count_upload_drops`（时长不虚增 + `[[gap:1]]` **只出现一次**）、`record/tests.rs::cloud_tail_gap_follows_last_sentence`（收尾尾部缺口排在最后一句之后） | ✅ 2026-11-17 |
-| RC-K6 | 凭据 SHALL NOT 出现在错误详情 / 状态回传 / 日志 | 错误详情：`asr/cloud/realtime/protocol_tests.rs::error_detail_redacts_secret`、`asr/cloud/realtime/protocol_tests.rs::server_error_redacts_secret`、`asr/cloud/volcengine/tests.rs::server_error_message_redacts_secret`（**helper 级守卫**：只钉 `sanitize` / `error_detail` 这两个函数，**不覆盖 run 循环的调用点**）；状态回传：`engine/tests.rs::cloud_status_exposes_bool_not_key`；**日志**：`asr/cloud/tests.rs::log_choke_point_redacts_the_credential`（关口的脱敏）+ `asr/cloud/tests.rs::cloud_logs_go_through_the_redacting_choke_point`（**源码级守卫**：云端模块里出现 `crate::log` 或 `crate::code_detail` 就红 —— 两条路都写日志文件却不脱敏；`crate::code_detail` 内部就是 `log::error`，云端模块一律用 `logging::code_detail` 先脱敏再委托）。**已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现。前端那半边靠**「key 不回传」**：`Status` 里没有 key 明文，凭据只有 `cloud_configured` 布尔 | ✅ 2026-11-17 |
+| RC-K6 | 凭据 SHALL NOT 出现在错误详情 / 状态回传 / 日志 | 错误详情：`asr/cloud/realtime/protocol_tests.rs::error_detail_redacts_secret`、`asr/cloud/realtime/protocol_tests.rs::server_error_redacts_secret`、`asr/cloud/volcengine/tests.rs::server_error_message_redacts_secret`（**helper 级守卫**：只钉 `sanitize` / `error_detail` 这两个函数，**不覆盖 run 循环的调用点**）；状态回传：`engine/tests.rs::cloud_status_exposes_bool_not_key`（连接列表只回传**掩码** —— `settings/cloud_tests.rs::mask_secret_never_reveals_the_whole_secret`）；**日志**：`asr/cloud/tests.rs::log_choke_point_redacts_the_credential`（关口的脱敏）+ `asr/cloud/tests.rs::cloud_logs_go_through_the_redacting_choke_point`（**源码级守卫**：云端模块里出现 `crate::log` 或 `crate::code_detail` 就红 —— 两条路都写日志文件却不脱敏；`crate::code_detail` 内部就是 `log::error`，云端模块一律用 `logging::code_detail` 先脱敏再委托）。**已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现。前端那半边靠**「key 不回传」**：`Status` 里没有 key 明文，凭据只有 `cloud_configured` 布尔 | ✅ 2026-11-17 |
 | RC-K7 | 服务端断句族 SHALL NOT 依赖客户端 commit 定句，也不要求本地 VAD | `asr/cloud/tests.rs::server_endpoint_provider_does_not_commit`、`volcengine/tests.rs::capabilities_are_server_endpoint`、`record/tests.rs::gate_follows_capabilities` | ✅ 2026-11-17（登记既有） |
 | RC-K8 | 有 `item_id` 的 final SHALL 按 `item_id` 绑定，SHALL NOT 按到达顺序配对；**没有 `item_id` 时才按提交顺序（`pending` 队列）兜底**；空 final / 提交失败的区间也必须被消费或合并，不能留给下一句 | `asr/cloud/tests.rs::out_of_order_final_keeps_its_span`、`asr/cloud/tests.rs::failed_item_without_ack_keeps_spans_aligned`（前两条守 id 绑定）、`asr/cloud/tests.rs::empty_final_does_not_steal_next_span`、`asr/cloud/tests.rs::failed_commit_merges_span_into_the_last_one`（后两条守无 id 兜底与区间合并） | ✅ 2026-11-17（登记既有） |
 | RC-K9 | 映射器的**去重表只收有内容的定稿**：空文本的定稿 SHALL NOT 占住去重键 —— 否则同 id 的**后续真实文本**会被早退整段丢弃（只留一条 WARN） | `asr/cloud/aliyun/tests.rs::empty_final_does_not_block_later_text_for_the_same_id` | ✅ 2026-11-17 |
 | RC-K10 | 映射器的**防御性定稿 SHALL 与本句有没有文本无关**：新句（哪怕文本为空）+ `sentence_end` 时，上一句 SHALL 照样按快照 emit 成 Final；上一句只当过 Partial 的话，下一个 Partial 一覆盖就彻底消失 | `asr/cloud/aliyun/tests.rs::a_new_id_with_empty_text_still_finalizes_the_previous_sentence`、`asr/cloud/aliyun/tests.rs::a_missing_id_empty_end_still_finalizes_the_previous_sentence`（服务端违约不发 `sentence_id` 时同样不能丢上一句）、`asr/cloud/aliyun/tests.rs::a_draft_without_id_does_not_survive_the_next_update`（草稿缺 id 时按「属于本句」处理，过期草稿不重复拼接） | ✅ 2026-11-17 |
 | RC-K11 | 防御性定稿的**取舍**：按快照定稿后那个 id 进了去重表 → 服务端随后对同一 id 的**完整** `sentence_end` 会被早退丢弃 → 定稿文本是快照而不是服务端最终文本。**宁可少几个标点，也不要同一句出两条 Final**（重复句子更糟） | `asr/cloud/aliyun/tests.rs::new_sentence_finalizes_previous_by_snapshot`（按快照定稿）+ `asr/cloud/aliyun/tests.rs::finalized_sentence_ignores_later_events`（已定稿的后续事件忽略） | ✅ 2026-11-17（登记既有取舍） |
+| RC-K13 | 云端配置 SHALL 以**连接列表**保存：每条一整套配置（provider / 地址 / 凭据 / 模型），切 provider SHALL NOT 清空其它 provider 的连接；`Status` SHALL 只回传**掩码**、SHALL NOT 回传凭据明文 | `settings/cloud_tests.rs::switching_provider_keeps_the_other_providers_profile`（切走不清空别人的连接）+ `settings/cloud_tests.rs::mask_secret_never_reveals_the_whole_secret`（掩码不泄露原文）+ 界面断言「列表显示掩码、不显示明文」/「切到火山没有清掉阿里那条」 | ✅ 2026-11-18 |
 | RC-K12 | 云端 provider 在**协议层**丢弃的术语数 SHALL 回传界面：术语表是本地流式与云端共用的设置，但各家限制不同（阿里官方规范 ≤ 15 字、火山 100 条上限、Realtime 禁特定字符）—— 被丢掉的用户得知道，不能只记一条日志 | `asr/cloud/tests.rs::cloud_hotwords_ignored_counts_protocol_level_drops`（每个 provider 都有分支 + 正常词不丢）+ 界面断言「术语表提示云端协议层丢弃几条」 | ✅ 2026-11-17 |
 
 ---
@@ -308,6 +309,7 @@ async 路径上不再有第二把引擎锁。
 | 2026-11-17 | RC-K10 / RC-K11（第四份外部复审发现 aa8ceff 的残留：缺 sentence_id 的空收尾事件仍会丢上一句）+ RC-K6 日志守卫的两个绕过口 | 1 条代码修复（`fix(asr)`，第六次外部复审）+ 1 条回归测试 | 三份外部复审后又有第四份独立复审撞见同一处映射器缺陷的**另一半**（服务端违约不发 `sentence_id` 时，收尾事件认不出是哪一句 → 上一句的快照被丢掉）。修在 ⑥（按「快照归谁」分两种）；④ 的「无法核对」那一支**保持不变** —— 心跳形状（id=0 但没标 heartbeat）靠它守住，去掉条件会打破既有守卫。负向验证：退回 ⑥ → 变红。顺带把日志守卫的两个绕过口堵上（多行成组导入、任意路径前缀的 `log::` 调用）。清单 86 条，作业面仍 0 条 |
 | 2026-11-17 | RC-K1 / RC-K2 / RC-K6（三块交叉复核后的补强：契约守卫盖住生产接线与协议解析、日志关口盖住 `code_detail`） | 0（补的是守卫与结构，没修 bug） | 交叉复核（三个 Haiku 子 agent + 逐条 mutation 验证）找出两类洞：① **契约守卫只守了 provider 内部映射**，没守「provider → 上抛」的接线（把 Realtime 的生产调用点绕开归一器 → 276 条测试全绿）与「协议帧 → Sentence」的解析（把阿里的 stash 解析丢掉 → 276 条全绿）；② **日志关口有第二条没人守的路** —— `crate::code_detail` 内部就是 `log::error` → 写日志文件，云端模块 33 处，守卫的片段表匹配不到它（**今天没有凭据泄漏**：三家的服务端文本进 `code_detail` 前都过了 `sanitize`）。补法：Realtime 加**假 WebSocket 服务端**守卫跑真实 run 循环；阿里的守卫改喂**真实协议 JSON**（经 `decode_server_event` → `map_sentence`）；关口补 `code_detail` 出口、守卫片段表换成 `crate::log` + `crate::code_detail`、33 处改走云端自己的出口、跳过 `mock.rs`。负向验证（**五种改坏都变红**）：Realtime 绕开归一器、阿里丢 stash、`crate::code_detail` 直调、`use crate::log;` 之后 `log::warn`、`crate::log::write`。清单：RC-K2 补登记阿里的字面量守卫与生产链路守卫；RC-K6 的日志那半边改成准确说法 + 已知边界（`eprintln!` 只进 stderr；脱敏只保证精确子串）。AGENTS.md：「客户端提交族不可达」→「协议正常时不可达」、触发条件统一成通式、`Status` 的措辞收准 |
 | 2026-11-17 | RC-K12（云端术语表被协议层丢弃没有用户可见提示）+ RC-K6 日志守卫的第三、四轮收紧 | 1 条功能修复（`feat` 性质：Status 加字段 + 界面提示）+ 1 条 Rust 守卫 + 1 条界面断言 | 第三份外部复审发现：**云端术语表被协议层丢弃时用户看不到任何提示** —— 术语表是本地流式与云端共用的设置，但各家协议限制不同（阿里官方规范 ≤ 15 字、火山 100 条上限、Realtime 禁特定字符），而 `settings::clean_hotwords` 允许最长 32 字 → 一条 20 字的中文术语在云端会被**静默丢掉**，界面却只说「已保存」。修法：`Status.cloudHotwordsIgnored` 按当前 provider 算（用 `create_provider` 里**同一批过滤函数**），界面在云端丢弃时给**云端专属**的提示（与本地流式的「含模型不认识的字」分开）。同轮还收了日志守卫的两轮：子 agent 复核找出 `use crate::log::{warn};` / `use crate::log::*;` 两种**真漏网**（按导入名判会漏），改成「凡从 `crate::log` 导入的一律不许」；以及行尾注释 / 字符串字面量里的 `log::warn` 会**误伤**，改成扫**代码骨架**（去掉注释、清空字符串内容）。负向验证（四种改坏都变红，已恢复）：两种新导入写法、行尾注释误伤、字符串字面量误伤。清单 86 → **87 条**（11 组 A–K），作业面仍 0 条 |
+| 2026-11-18 | RC-K13（云端配置改成连接列表）+ RC-K6（凭据只回传掩码） | 1 条功能改动（后端 `feat(asr)` + 前端 `feat(ui)`）+ 3 条 Rust 守卫 + 8 条界面断言 | 设置页的云端配置从**一张平铺表单**改成**一份连接列表**（参考用户给的中转服务密钥面板形态：列表 + 掩码 + 「使用中」+ 可增删改）。解决四个具体痛点：① 切 provider 清空一切（`app.js` 的 onChange 显式清空地址/密钥/模型/资源标识）→ 每家各一条独立连接；② 密钥零反馈（password 框 + 「已保存的密钥不会显示出来」）→ 列表显示掩码 `sk-c…HePU`；③ 模型/资源标识手打会踩雷（阿里模型走白名单、火山填模型 1.0 的 id 会握手 403）→ 按 provider 给候选项；④ 一个 provider 只能一套配置 → 可增删改多条。**借形态不借字段**：参考图的「并发不限 / 无消费上限」是中转服务的**配额**语义，桌面端一次只连一个、算不出来 → 不做。**不做旧格式迁移**（旧 5 个平铺字段被忽略，用户重填）—— 两套真值来源迟早不一致。**不做复制明文密钥**（要开显式命令回传明文，动 RC-K6 的口径，值得单独评估）。负向验证：`mask_secret` 对 1 字符密钥曾 panic（已修 → 固定点数）、`CloudProfileView` 漏 `rename_all=camelCase` 导致前端读不到字段（已修）。清单 87 → **88 条**（11 组 A–K），作业面仍 0 条 |
 
 「当天 fix 数」一列是 `git log` 实测值（`git log --since=<date> --until=<date>` 统计以 `fix` 开头的提交），
 不是估算 —— 它同时也是「这轮复审的产出」的度量。
