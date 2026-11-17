@@ -636,15 +636,29 @@ impl AliyunMapper {
         if sentence.end {
             // ⑥ 句结束 → 定稿。服务端没给文本时用**本句**的快照（别的句子的
             //    草稿不能拿来当本句的定稿）。
-            let final_text = if !confirmed_empty {
+            let mut final_text = if !confirmed_empty {
                 confirmed.to_string()
             } else {
-                match &self.open {
-                    Some((open_id, snapshot)) if same_sentence(*open_id, raw_id) => snapshot.clone(),
-                    _ => String::new(),
-                }
+                String::new()
             };
-            self.open = None;
+            // 快照归谁：
+            // - **是本句的** → 用它当本句的定稿（服务端没给文本时的快照）；
+            // - **是别的句子的** → 上一句还没定稿 → **先把上一句按快照定稿**。
+            //   服务端可能发「缺 sentence_id + 空文本 + sentence_end」的收尾
+            //   事件（违约路径）：丢掉它的话，上一句只剩一条 Partial，
+            //   下一个 Partial 一覆盖就彻底消失。
+            if let Some((open_id, snapshot)) = self.open.take() {
+                if same_sentence(open_id, raw_id) {
+                    if final_text.is_empty() {
+                        final_text = snapshot.clone();
+                    }
+                } else if !snapshot.trim().is_empty() {
+                    if let Some(id) = open_id {
+                        self.finalized.insert(id, snapshot.clone());
+                    }
+                    events.push(final_event(snapshot));
+                }
+            }
             // **空文本不进去重表**：那张表是「这句已定稿**且有内容**」的凭据 ——
             // 空文本进去就把去重键占住了，同 id 的**后续真实文本**会被 ③ 的早退
             // 整段丢弃（只留一条 WARN）。2026-11-17 外部复审发现的真实路径。

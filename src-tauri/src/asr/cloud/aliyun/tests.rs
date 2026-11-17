@@ -924,3 +924,23 @@ fn a_draft_without_id_does_not_survive_the_next_update() {
         "aliyun/Preview: 没有 id 的旧草稿不能被再拼一次"
     );
 }
+
+/// **缺 `sentence_id` + 空文本 + `sentence_end`** → 上一句必须照样定稿。
+///
+/// 反例（2026-11-17 第四份外部复审发现 —— 是「新句空文本」那条的另一半）：
+/// 服务端违约（不发 `sentence_id`）时，这个事件**认不出是哪一句** → 上一句的
+/// 快照被直接丢掉 → 它只剩一条 `Partial`，下一个 `Partial` 一覆盖就彻底消失。
+#[test]
+fn a_missing_id_empty_end_still_finalizes_the_previous_sentence() {
+    let mut mapper = AliyunMapper::new();
+    let first = mapper.map_sentence(sentence_with(Some(1), false, "第一句", "", None));
+    assert_eq!(partials(&first), vec!["第一句".to_string()]);
+
+    // 收尾事件：**没有 id**、没有文本。
+    let second = mapper.map_sentence(sentence_with(None, true, "", "", None));
+    assert_eq!(
+        finals(&second),
+        vec!["第一句".to_string()],
+        "aliyun/Preview: 认不出是哪一句的收尾事件，也不能把上一句的快照丢掉"
+    );
+}
