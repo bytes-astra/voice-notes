@@ -6,13 +6,13 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**83 条**不变量、11 组（A–K）—— ✅ 83 条有守卫，⚠️ 0 条，❌ 0 条。
+**当前规模**：**85 条**不变量、11 组（A–K）—— ✅ 85 条有守卫，⚠️ 0 条，❌ 0 条。
 
 > **云端条目在 K 组**（2026-11-17 落地）：provider 契约、中间结果语义、结果框顺序、凭据脱敏、零长句顺序、上传丢包缺口。
 2026-11-14 修复 RC-B6 的门控收尾与预录时间轴问题，作业面 1 → 0；真模型守卫在本地运行。
 
 （历史口径：5 份旧 review plan 一共提出 **26** 个 focus 项 —— 那是「轮次」的粒度；
-本文档把它们展开成 **83** 条可逐条核对的条目。两个数各指什么，不要混用。）
+本文档把它们展开成 **85** 条可逐条核对的条目。两个数各指什么，不要混用。）
 
 ## 怎么用
 
@@ -190,7 +190,7 @@
 | RC-J2 | 装引擎必须用**当前**设置：读设置与装引擎要在同一把锁内，陈旧判定必须覆盖**所有**影响识别的设置（整段 = 模型目录 / 语言 / ITN，流式 = 热词）。只比语言和 ITN 的话，换了模型目录照样复用旧引擎，新设置被静默吞掉 | `engine.rs` 的 `install_engine`（拿槽锁 → 锁内读设置 → 比身份 → 复用或重建）+ `OfflineEngineKey` / `StreamingEngineKey`；`engine/tests.rs` 设置没变就复用引擎 / 换了模型目录就重建引擎 / 换了语言就重建引擎 / 换了热词就重建流式引擎 / 等锁期间设置改了也要用新设置 | ✅ 2026-11-04 |
 | RC-J3 | async 路径上不许**阻塞式**取引擎锁：引擎加载要好几秒（239 MB / 161 MB / 294 MB），那把锁会被占住；async 命令在执行器线程上死等，整个执行器就卡住（用户看着像界面冻住）。`try_lock()` 不算 | `scripts/check-async.mjs`（沿调用图从 async 函数出发，引擎槽的 `.lock()` 只许出现在 `spawn_blocking` 闭包里）+ 9 条自测（含「把旧的 `shared_engine` 加回真源码会被抓住」）；`load_engine` 直接返回 `Arc<Engine>`，不再有 `shared_engine` 的二次取锁 | ✅ 2026-11-04 |
 
-### K. 云端模式（8 条）
+### K. 云端模式（10 条）
 
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
@@ -202,6 +202,8 @@
 | RC-K6 | 凭据 SHALL NOT 出现在错误详情 / 状态回传 / 日志 | 错误详情：`realtime/protocol_tests.rs::error_detail_redacts_secret`、`realtime/protocol_tests.rs::server_error_redacts_secret`、`volcengine/tests.rs::server_error_message_redacts_secret`（**helper 级守卫**：只钉 `sanitize` / `error_detail` 这两个函数，**不覆盖 run 循环的调用点**）；状态回传：`engine/tests.rs::cloud_status_exposes_bool_not_key`；**日志**：`asr/cloud/tests.rs::log_choke_point_redacts_the_credential`（关口的脱敏）+ `asr/cloud/tests.rs::cloud_logs_go_through_the_redacting_choke_point`（**源码级守卫**：云端模块里出现 `crate::log` 或 `crate::code_detail` 就红 —— 两条路都写日志文件却不脱敏；`crate::code_detail` 内部就是 `log::error`，云端模块一律用 `logging::code_detail` 先脱敏再委托）。**已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现。前端那半边靠**「key 不回传」**：`Status` 里没有 key 明文，凭据只有 `cloud_configured` 布尔 | ✅ 2026-11-17 |
 | RC-K7 | 服务端断句族 SHALL NOT 依赖客户端 commit 定句，也不要求本地 VAD | `asr/cloud/tests.rs::server_endpoint_provider_does_not_commit`、`volcengine/tests.rs::capabilities_are_server_endpoint`、`record/tests.rs::gate_follows_capabilities` | ✅ 2026-11-17（登记既有） |
 | RC-K8 | 有 `item_id` 的 final SHALL 按 `item_id` 绑定，SHALL NOT 按到达顺序配对；**没有 `item_id` 时才按提交顺序（`pending` 队列）兜底**；空 final / 提交失败的区间也必须被消费或合并，不能留给下一句 | `asr/cloud/tests.rs::out_of_order_final_keeps_its_span`、`asr/cloud/tests.rs::failed_item_without_ack_keeps_spans_aligned`（前两条守 id 绑定）、`asr/cloud/tests.rs::empty_final_does_not_steal_next_span`、`asr/cloud/tests.rs::failed_commit_merges_span_into_the_last_one`（后两条守无 id 兜底与区间合并） | ✅ 2026-11-17（登记既有） |
+| RC-K9 | 映射器的**去重表只收有内容的定稿**：空文本的定稿 SHALL NOT 占住去重键 —— 否则同 id 的**后续真实文本**会被早退整段丢弃（只留一条 WARN） | `asr/cloud/aliyun/tests.rs::empty_final_does_not_block_later_text_for_the_same_id` | ✅ 2026-11-17 |
+| RC-K10 | 映射器的**防御性定稿 SHALL 与本句有没有文本无关**：新句（哪怕文本为空）+ `sentence_end` 时，上一句 SHALL 照样按快照 emit 成 Final；上一句只当过 Partial 的话，下一个 Partial 一覆盖就彻底消失 | `asr/cloud/aliyun/tests.rs::a_new_id_with_empty_text_still_finalizes_the_previous_sentence`、`asr/cloud/aliyun/tests.rs::a_draft_without_id_does_not_survive_the_next_update`（草稿缺 id 时按「属于本句」处理，过期草稿不重复拼接） | ✅ 2026-11-17 |
 
 ---
 
@@ -300,6 +302,7 @@ async 路径上不再有第二把引擎锁。
 | 2026-11-17 | RC-K1 / RC-K2 / RC-K4 / RC-K5 / RC-K6 / RC-K7 / RC-K8（云端模式 K 组）+ RC-K3（登记批 A 已落地的三条界面断言） | 0（本轮只补守卫与文档，未动生产代码） | 清单 75 → **83 条**（11 组 A–K）；新增 3 条守卫（K1 / K2 / K4）+ 补强 1 条断言（K5 的「`[[gap:1]]` 只出现一次」）+ 登记 5 条既有（K3 / K5 其余三条 / K6 的错误详情与状态回传 / K7 / K8）；**RC-K6 的日志那半边仍 ⚠️**（凭据不出现**在日志里**没有任何守卫）；作业面 0 → **1 条**。负向验证（七种改坏都让对应守卫变红，已恢复）：火山声明改成 `Delta`、Realtime 声明改成 `Preview`、阿里声明改成 `Delta`、归一器的 `Delta` 臂改成替换、火山改用 `result.text`、排序逆序、排序按文本 |
 | 2026-11-17 | RC-K4（服务端断句族「同批多句 → 后续句区间退化为零长」这个取舍的单独评估） | 0（只做评估与文档，未动生产代码） | 评估结论：**今天没有用户可见影响** —— 结果框不显示逐句时间、导出是纯文本、落盘不存区间、顺序不乱（RC-K4 守的是顺序，不是区间准确性）。三条修法各有代价：本地 VAD 要改「服务端断句族不需要本地 VAD」这条能力契约；provider 时间戳兜底要**定一套口径**（两家 `begin` 差 230 ms、Realtime 没有时间戳）；本地平分剩余区间要改会话层核心（影响所有 provider）而且边界仍是编造的 → **暂不修**。实测（四种情形 × **各 3 轮、12 组数字逐位一致**（可复现）：两家 × 有/无 1.5 秒尾静音，同一个单句 fixture）：两家的 `end` 都落在**语音末点（~5100 ms）与音频末点（7092 ms）之间**，而**本地轴把尾巴静音整段算进句子**、直接顶到 7092（阿里补静音后 `end` 反而变小，机制未查） —— 偏差方向是「本地轴偏长」，终点差 0 / 12 ms（无尾静音）到 **1.28 / 1.71 s**（有尾静音）；两家对同一起音点的 `begin` 差 ~230 ms（火山 572 / 阿里 800），**互相校准不了**；Realtime 根本没有时间戳。**四组样本、同一个 fixture，不是常数**。将来触发条件：导 SRT·VTT / 显示逐句时间 / 按句跳转 —— 届时选 provider 时间戳。评估全文见 OpenSpec change `cloud-server-endpoint-spans` |
 | 2026-11-17 | RC-K6（云端凭据不进日志：守卫从无到有） | 0（收口不是修 bug —— 原来的调用点就脱敏了，缺的是**守卫**） | 云端模块的日志改走 `asr/cloud/logging.rs` 的**唯一出口**（写入前用该 provider 的凭据脱敏），12 处 `crate::log::` 调用全部改走；两条新守卫：关口的脱敏（纯函数）+ **源码级守卫**（云端模块里出现直接的日志调用就红 —— 日志写进文件与 stderr，测试抓不到，唯一能自动发现「绕过关口」的办法是读源码）。RC-K6 由 ⚠️ 改 ✅，作业面 1 → **0 条**；清单仍 83 条（11 组 A–K）。负向验证（三种改坏都变红，已恢复）：关口去掉脱敏、provider 里加一行 `crate::log::warn`、`use crate::log;` 之后写 `log::warn` |
+| 2026-11-17 | RC-K9 / RC-K10（外部复审发现：阿里映射器两处丢文本）+ 日志关口的两个口子 | 2 条代码修复（`fix(asr)`，已随 **v1.6.0** 发布出去）+ 3 条回归测试 | 两份**独立的**外部复审（两个 Orca session）各自实测复现了同一处：① 空文本的定稿把 `finalized` 去重表毒化成空串 → 同 id 的后续真实文本被整段丢弃（只留一条 WARN）；② 新句 + 空文本 + `sentence_end` → 上一句拿不到 Final，文本只剩一条 Partial，下一个 Partial 一覆盖就彻底消失（与 AGENTS.md 写下的「防御性定稿」规则冲突）。修法：空文本不进去重表；防御性定稿的判定只看 id、与本句有没有文本无关（「无法核对」那一支仍要求带文本 —— 心跳形状靠它守住）。顺带收口：火山的 `map_error_code` 改成把凭据交给关口脱敏（不再靠调用点自觉）；源码级日志守卫补「按导入的名字判断」（`use crate::{log, …};` 漏网）；草稿缺 id 时按「属于本句」处理。负向验证（五种改坏都变红，已恢复）：退回两处修复各一条、加 `use crate::{log,…}` 绕过、退回草稿条件。清单 83 → **85 条**（11 组 A–K），作业面仍 0 条 |
 | 2026-11-17 | RC-K1 / RC-K2 / RC-K6（三块交叉复核后的补强：契约守卫盖住生产接线与协议解析、日志关口盖住 `code_detail`） | 0（补的是守卫与结构，没修 bug） | 交叉复核（三个 Haiku 子 agent + 逐条 mutation 验证）找出两类洞：① **契约守卫只守了 provider 内部映射**，没守「provider → 上抛」的接线（把 Realtime 的生产调用点绕开归一器 → 276 条测试全绿）与「协议帧 → Sentence」的解析（把阿里的 stash 解析丢掉 → 276 条全绿）；② **日志关口有第二条没人守的路** —— `crate::code_detail` 内部就是 `log::error` → 写日志文件，云端模块 33 处，守卫的片段表匹配不到它（**今天没有凭据泄漏**：三家的服务端文本进 `code_detail` 前都过了 `sanitize`）。补法：Realtime 加**假 WebSocket 服务端**守卫跑真实 run 循环；阿里的守卫改喂**真实协议 JSON**（经 `decode_server_event` → `map_sentence`）；关口补 `code_detail` 出口、守卫片段表换成 `crate::log` + `crate::code_detail`、33 处改走云端自己的出口、跳过 `mock.rs`。负向验证（**五种改坏都变红**）：Realtime 绕开归一器、阿里丢 stash、`crate::code_detail` 直调、`use crate::log;` 之后 `log::warn`、`crate::log::write`。清单：RC-K2 补登记阿里的字面量守卫与生产链路守卫；RC-K6 的日志那半边改成准确说法 + 已知边界（`eprintln!` 只进 stderr；脱敏只保证精确子串）。AGENTS.md：「客户端提交族不可达」→「协议正常时不可达」、触发条件统一成通式、`Status` 的措辞收准 |
 
 「当天 fix 数」一列是 `git log` 实测值（`git log --since=<date> --until=<date>` 统计以 `fix` 开头的提交），
