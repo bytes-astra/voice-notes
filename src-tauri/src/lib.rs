@@ -351,6 +351,7 @@ async fn set_mode(
 /// `api_key` 传 `None` 表示「不改」（key 不会回传前端，前端无从知道当前值，
 /// 所以清空要显式传空串）。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri 命令的签名是框架定的，拆不开
 fn save_cloud_profile(
     app: AppHandle,
     state: State<AppState>,

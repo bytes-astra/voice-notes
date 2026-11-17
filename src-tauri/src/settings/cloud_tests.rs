@@ -2,11 +2,6 @@
 
 use super::*;
 
-/// 测试用的凭据（**只在本文件里出现**）。
-const TEST_KEY: &str = "test-key-value";
-/// 测试用的资源标识（火山的「模型」字段）。
-const TEST_RESOURCE_ID: &str = "res-id-for-test";
-
 /// 造一条连接（测试用）。
 fn profile(provider: &str, key: &str, model: &str) -> CloudProfile {
     CloudProfile {
@@ -205,7 +200,7 @@ fn a_fresh_install_has_no_profiles() {
 /// 已有连接列表 → normalize 不该多出一条连接。
 #[test]
 fn normalize_keeps_the_existing_profile_list() {
-    let mut settings = Settings {
+    let settings = Settings {
         cloud_profiles: vec![profile("aliyun", "key-1", "m")],
         cloud_active_profile: "p-1".into(),
         ..Settings::default()

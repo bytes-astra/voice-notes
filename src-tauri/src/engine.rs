@@ -169,6 +169,7 @@ pub struct Status {
 /// （RC-K6 守着这条）。这里单独定一个回传类型，就是为了让明文**没有机会**
 /// 被序列化出去。
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudProfileView {
     pub id: String,
     /// 用户自己起的名字（列表里显示）。

@@ -148,7 +148,7 @@ fn next_profile_id(existing: &[String]) -> String {
     let mut index = existing.len() + 1;
     loop {
         let candidate = format!("p-{index}");
-        if !existing.iter().any(|id| *id == candidate) {
+        if !existing.contains(&candidate) {
             return candidate;
         }
         index += 1;
