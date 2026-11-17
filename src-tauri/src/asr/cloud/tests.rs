@@ -946,7 +946,32 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
                 file.display()
             );
         }
+        // 成组导入：`use crate::{log, code_detail};` 里**没有**连续的
+        // `crate::log` 片段 —— 只扫片段会漏掉它，而 `log::warn` 照样写日志文件。
+        assert!(
+            !imports_a_log_path(&source),
+            "{}: 不许从 crate 直接导入 log / code_detail（日志必须走 asr/cloud/logging.rs 的关口）",
+            file.display()
+        );
     }
+}
+
+/// 从 `crate` 导入了日志相关的东西吗（`use crate::log;` / `use crate::{log, …};` /
+/// `use crate::*;`）。
+///
+/// **按导入的名字判断**，不能只看路径片段 —— 成组导入把 `crate::` 和名字拆到了
+/// 不同的括号里。
+fn imports_a_log_path(source: &str) -> bool {
+    source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("use crate::"))
+        .any(|rest| {
+            rest.trim_end_matches(';')
+                .replace(['{', '}'], "")
+                .split(',')
+                .map(|item| item.trim().split(" as ").next().unwrap_or("").trim())
+                .any(|name| name == "log" || name == "code_detail" || name == "*")
+        })
 }
 
 /// 云端模块下的源码文件（递归）：跳过关口自己与测试文件。

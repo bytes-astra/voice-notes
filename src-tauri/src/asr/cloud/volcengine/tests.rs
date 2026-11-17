@@ -115,9 +115,9 @@ fn first_request_payload_is_correct() {
 /// 错误码映射：空音频 → 没有结果；等包超时 → 超时；其余 → 协议错误（带细节）。
 #[test]
 fn error_code_maps_to_dictionary_key() {
-    assert_eq!(map_error_code(45000002, "empty audio"), "cloud.noResult");
-    assert_eq!(map_error_code(45000081, "timeout"), "cloud.timeout");
-    let other = map_error_code(45000151, "bad format");
+    assert_eq!(map_error_code(45000002, "empty audio", "k"), "cloud.noResult");
+    assert_eq!(map_error_code(45000081, "timeout", "k"), "cloud.timeout");
+    let other = map_error_code(45000151, "bad format", "k");
     assert!(other.starts_with("cloud.protocolError"), "实际 {other}");
     assert!(other.contains("45000151"), "细节要带上错误码：{other}");
 }

@@ -485,11 +485,17 @@ async fn connect_socket(
 ///
 /// 官方错误码：`45000001` 参数无效 / `45000002` 空音频 / `45000081` 等包超时 /
 /// `45000151` 音频格式不对 / `55000031` 服务繁忙。
-fn map_error_code(code: u32, message: &str) -> String {
+fn map_error_code(code: u32, message: &str, api_key: &str) -> String {
     match code {
         45000002 => crate::code("cloud.noResult"),
         45000081 => crate::code("cloud.timeout"),
-        _ => super::logging::code_detail("cloud.protocolError", format!("{code}: {message}"), None),
+        // **凭据交给关口脱敏**，不要在调用点先 sanitize 再传 `None` ——
+        // 那样「关口是唯一出口」的契约就靠调用点自觉了。
+        _ => super::logging::code_detail(
+            "cloud.protocolError",
+            format!("{code}: {message}"),
+            Some(api_key),
+        ),
     }
 }
 
@@ -522,11 +528,11 @@ fn send_control(
 
 /// 服务端错误帧 → 干净的错误详情。
 ///
-/// **凭据先脱敏再进错误详情** —— 顺序不能反：先映射成字典码再脱敏，细节里
-/// 的凭据就漏出去了。抽成函数是为了让单测能直接覆盖这条生产路径（删掉这里的
-/// `sanitize` 调用，守卫就会红）。
+/// **脱敏在关口里做**（`logging::code_detail`）—— 调用点只管把凭据传下去。
+/// 顺序不能反：先把服务端原文拼进细节再交给关口，细节里的凭据就漏出去了。
+/// 抽成函数是为了让单测能直接覆盖这条生产路径（把凭据从调用链里拿掉，守卫就会红）。
 fn error_detail(code: u32, message: &str, api_key: &str) -> String {
-    map_error_code(code, &sanitize(message, api_key))
+    map_error_code(code, message, api_key)
 }
 
 #[cfg(test)]

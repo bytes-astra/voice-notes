@@ -860,3 +860,67 @@ fn overlong_hotwords_are_dropped() {
     assert_eq!(vocabulary.len(), 1);
     assert_eq!(ignored, 0);
 }
+
+/// **空文本的定稿不能占住去重键**：同 id 的后续真实文本必须还能出来。
+///
+/// 反例（2026-11-17 外部复审发现，已实测复现）：`finalized` 表无条件 `insert`，
+/// 空文本也进去 → 早退条件只看「id 在不在表里」→ 同 id 的后续文本被整段丢弃，
+/// 只留一条 WARN「已定稿的句子又收到了新的文本，已忽略」。
+#[test]
+fn empty_final_does_not_block_later_text_for_the_same_id() {
+    let mut mapper = AliyunMapper::new();
+    // 一条**空文本**的定稿（同 id）。
+    let empty = mapper.map_sentence(sentence_with(Some(2), true, "", "", None));
+    assert!(
+        finals(&empty).is_empty(),
+        "空文本不该产出定稿：{:?}",
+        empty
+    );
+    // 同一个 id 的**真实文本**必须还能出来。
+    let later = mapper.map_sentence(sentence_with(Some(2), false, "第二句", "", None));
+    assert_eq!(
+        partials(&later),
+        vec!["第二句".to_string()],
+        "aliyun/Preview: 空文本的定稿不能把同 id 的后续文本吃掉"
+    );
+}
+
+/// **新句 + 空文本 + `sentence_end`**：上一句必须照样定稿。
+///
+/// 反例（同上）：「防御性定稿上一句」的判定被圈在 `!confirmed_empty` 里，
+/// 而收尾分支又无条件清掉 `self.open` → 上一句既没有 `Final`，文本只剩一条
+/// `Partial` —— 下一个 `Partial` 一覆盖就彻底消失。
+#[test]
+fn a_new_id_with_empty_text_still_finalizes_the_previous_sentence() {
+    let mut mapper = AliyunMapper::new();
+    let first = mapper.map_sentence(sentence_with(Some(1), false, "第一句", "", None));
+    assert_eq!(partials(&first), vec!["第一句".to_string()]);
+
+    // 新句（id=2）带空文本 + sentence_end：上一句必须定稿。
+    let second = mapper.map_sentence(sentence_with(Some(2), true, "", "", None));
+    assert_eq!(
+        finals(&second),
+        vec!["第一句".to_string()],
+        "aliyun/Preview: 新句（哪怕文本为空）也要把上一句按快照定稿"
+    );
+}
+
+/// **草稿没有 id 时按「属于本句」处理**：过期草稿不能被再拼一次。
+///
+/// 反例（2026-11-17 外部复审发现）：草稿的 `stash.sentence_id` 缺失时
+/// `draft_id` 是 `None` → 「本句的旧草稿作废」的判��� `draft.id == raw_id`
+/// 永远不成立 → 过期草稿长期留着 → 实时行把它再拼一次（文本重复）。
+#[test]
+fn a_draft_without_id_does_not_survive_the_next_update() {
+    let mut mapper = AliyunMapper::new();
+    // 第一句 + 一条**没有 id** 的草稿。
+    let first = mapper.map_sentence(sentence_with(Some(1), false, "第一句", "旧草稿", None));
+    assert_eq!(partials(&first), vec!["第一句旧草稿".to_string()]);
+    // 本句的文本往前走 → 过期草稿必须作废。
+    let second = mapper.map_sentence(sentence_with(Some(1), false, "第一句更长", "", None));
+    assert_eq!(
+        partials(&second),
+        vec!["第一句更长".to_string()],
+        "aliyun/Preview: 没有 id 的旧草稿不能被再拼一次"
+    );
+}

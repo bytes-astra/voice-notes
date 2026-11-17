@@ -585,29 +585,43 @@ impl AliyunMapper {
         let confirmed_empty = confirmed.trim().is_empty();
         let draft_empty = draft.trim().is_empty();
 
-        // ④ 已确认文本的句 id 变了 → 上一句没结束就开了新句：先按快照定稿它
+        // ④ 句 id 变了 → 上一句没结束就开了新句：先按快照定稿它
         //    （否则会话层的 Partial 替换语义会让上一句的文字永久消失）。
-        if !confirmed_empty {
-            let differs = match (&self.open, raw_id) {
-                (None, _) => false,
-                // 两边都有 id：id 不同就是新句。
-                (Some((open_id, _)), Some(id)) => *open_id != Some(id),
-                // 一边有 id 一边没有：无法核对是不是同一句 → 当新句
-                //（宁可多切一句，也不要把上一句的文本丢掉）。
-                (Some((open_id, _)), None) => open_id.is_some(),
-            };
-            if differs {
-                if let Some((open_id, snapshot)) = self.open.take() {
-                    if !snapshot.trim().is_empty() {
-                        if let Some(id) = open_id {
-                            self.finalized.insert(id, snapshot.clone());
-                        }
-                        events.push(final_event(snapshot));
+        //
+        //    **判定只看 id，与本句有没有文本无关** —— 服务端可能先发一个
+        //    「新句 + 空文本 + sentence_end」的收尾事件（2026-11-17 外部复审
+        //    发现的真实路径）。那时本句没文本，但**上一句的快照必须照样定稿** ——
+        //    否则上一句只剩一条 Partial，下一个 Partial 一覆盖就彻底消失。
+        let differs = match (&self.open, raw_id) {
+            (None, _) => false,
+            // 两边都有 id：id 不同就是新句。
+            (Some((open_id, _)), Some(id)) => *open_id != Some(id),
+            // 一边有 id 一边没有：无法核对是不是同一句 → 当新句
+            //（宁可多切一句，也不要把上一句的文本丢掉）。
+            // **但只在事件带文本时**：空事件不能定稿打开的句子 ——
+            // 「id=0 但没标 heartbeat」正是这种形状（心跳）。
+            (Some((open_id, _)), None) => open_id.is_some() && !confirmed_empty,
+        };
+        if differs {
+            if let Some((open_id, snapshot)) = self.open.take() {
+                if !snapshot.trim().is_empty() {
+                    if let Some(id) = open_id {
+                        self.finalized.insert(id, snapshot.clone());
                     }
+                    events.push(final_event(snapshot));
                 }
             }
+        }
+        if !confirmed_empty {
             // 本句的旧草稿作废（它已被这句的已确认文本取代）。
-            if self.draft.as_ref().and_then(|(id, _)| *id) == raw_id && raw_id.is_some() {
+            //
+            // **草稿没有 id 时按「属于本句」处理** —— 缺 id 就没法判断它属于
+            // 哪一句；留着它，下一次更新会把过期草稿再拼一次（文本重复）。
+            let draft_is_this_sentence = match self.draft.as_ref().and_then(|(id, _)| *id) {
+                None => true,
+                Some(id) => Some(id) == raw_id && raw_id.is_some(),
+            };
+            if draft_is_this_sentence {
                 self.draft = None;
             }
             self.open = Some((raw_id, confirmed.to_string()));
@@ -631,8 +645,13 @@ impl AliyunMapper {
                 }
             };
             self.open = None;
-            if let Some(id) = raw_id {
-                self.finalized.insert(id, final_text.clone());
+            // **空文本不进去重表**：那张表是「这句已定稿**且有内容**」的凭据 ——
+            // 空文本进去就把去重键占住了，同 id 的**后续真实文本**会被 ③ 的早退
+            // 整段丢弃（只留一条 WARN）。2026-11-17 外部复审发现的真实路径。
+            if !final_text.trim().is_empty() {
+                if let Some(id) = raw_id {
+                    self.finalized.insert(id, final_text.clone());
+                }
             }
             if !final_text.trim().is_empty() {
                 events.push(final_event(final_text));
