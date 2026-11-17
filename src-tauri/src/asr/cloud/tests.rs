@@ -952,11 +952,10 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
                 file.display()
             );
         }
-        // ② 直接的 `code_detail(`：关口自己的 `logging::code_detail(` 除外 ——
+        // ② 直接调 `crate::code_detail`（而不是关口的 `logging::code_detail`）：
         //    它内部是 `log::error` → 写日志文件，却不脱敏。
-        let without_ours = code.replace("logging::code_detail(", "");
         assert!(
-            !without_ours.contains("code_detail("),
+            !calls_code_detail_directly(&code),
             "{}: 错误详情必须走 asr/cloud/logging.rs 的 code_detail（先脱敏再委托），不许直接调 crate::code_detail",
             file.display()
         );
@@ -969,6 +968,22 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
             file.display()
         );
     }
+}
+
+/// 直接调了 `crate::code_detail` 吗（而不是关口的 `logging::code_detail`）。
+///
+/// **按调用点的路径前缀判断** —— `crate::code_detail` / `super::super::code_detail`
+/// 都是绕过；`super::logging::code_detail` 是关口自己。
+// （字面量里不写 `code_detail(`：i18n 扫描器会把它当错误码。）
+fn calls_code_detail_directly(code: &str) -> bool {
+    let mut rest = code;
+    while let Some(index) = rest.find("code_detail") {
+        if !rest[..index].ends_with("logging::") {
+            return true;
+        }
+        rest = &rest[index + "code_detail".len()..];
+    }
+    false
 }
 
 /// 只看代码行（去掉整行注释）—— 注释里提到 `log::warn` 不该让守卫变红。
