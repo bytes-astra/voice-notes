@@ -939,15 +939,30 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
     );
     for file in files {
         let source = std::fs::read_to_string(&file).expect("读源码");
-        for fragment in ["crate::log", "crate::code_detail"] {
+        // ① 直接的日志调用：**任何路径前缀**都算 —— `crate::log::warn`、
+        //    `super::super::log::warn`（在模块深度下能编译、照样写日志文件）
+        //    都要红。关口自己的 `logging::warn` 不含这些片段 → 不误伤。
+        //
+        //    只看**代码行**：注释里提到 `log::warn` 不该红。
+        let code = code_lines(&source);
+        for fragment in ["log::warn", "log::info", "log::error", "log::write"] {
             assert!(
-                !source.contains(fragment),
-                "{}: 日志必须走 asr/cloud/logging.rs 的关口（写入前脱敏），不许直接用 {fragment}",
+                !code.contains(fragment),
+                "{}: 日志必须走 asr/cloud/logging.rs 的关口（写入前脱敏），不许直接调 {fragment}",
                 file.display()
             );
         }
-        // 成组导入：`use crate::{log, code_detail};` 里**没有**连续的
-        // `crate::log` 片段 —— 只扫片段会漏掉它，而 `log::warn` 照样写日志文件。
+        // ② 直接的 `code_detail(`：关口自己的 `logging::code_detail(` 除外 ——
+        //    它内部是 `log::error` → 写日志文件，却不脱敏。
+        let without_ours = code.replace("logging::code_detail(", "");
+        assert!(
+            !without_ours.contains("code_detail("),
+            "{}: 错误详情必须走 asr/cloud/logging.rs 的 code_detail（先脱敏再委托），不许直接调 crate::code_detail",
+            file.display()
+        );
+        // ③ 成组导入 / glob 导入：`use crate::{log, code_detail};` 里**没有**
+        //    连续的 `crate::log` 片段 —— 只扫片段会漏掉它，而 `log::warn` 照样
+        //    写日志文件。
         assert!(
             !imports_a_log_path(&source),
             "{}: 不许从 crate 直接导入 log / code_detail（日志必须走 asr/cloud/logging.rs 的关口）",
@@ -956,22 +971,64 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
     }
 }
 
+/// 只看代码行（去掉整行注释）—— 注释里提到 `log::warn` 不该让守卫变红。
+fn code_lines(source: &str) -> String {
+    source
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| !line.starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// 从 `crate` 导入了日志相关的东西吗（`use crate::log;` / `use crate::{log, …};` /
 /// `use crate::*;`）。
 ///
 /// **按导入的名字判断**，不能只看路径片段 —— 成组导入把 `crate::` 和名字拆到了
-/// 不同的括号里。
+/// 不同的括号里，甚至拆到了**不同的行**。
 fn imports_a_log_path(source: &str) -> bool {
-    source
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("use crate::"))
-        .any(|rest| {
-            rest.trim_end_matches(';')
-                .replace(['{', '}'], "")
-                .split(',')
-                .map(|item| item.trim().split(" as ").next().unwrap_or("").trim())
-                .any(|name| name == "log" || name == "code_detail" || name == "*")
-        })
+    for statement in use_statements(source) {
+        let Some(rest) = statement.trim().strip_prefix("use crate::") else {
+            continue;
+        };
+        let rest = rest.trim_end_matches(';').replace(['{', '}'], "");
+        for item in rest.split(',') {
+            let name = item.trim().split(" as ").next().unwrap_or("").trim();
+            if name == "log" || name == "code_detail" || name == "*" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 把 `use` 语句按分号切开（成组导入可能折成多行）。
+fn use_statements(source: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut buffer = String::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if !buffer.is_empty() {
+            // 续行：成组导入可能折行。
+            buffer.push_str(trimmed);
+            buffer.push(' ');
+            if trimmed.ends_with(';') {
+                statements.push(std::mem::take(&mut buffer));
+            }
+            continue;
+        }
+        if trimmed.starts_with("use ") {
+            buffer.push_str(trimmed);
+            buffer.push(' ');
+            if trimmed.ends_with(';') {
+                statements.push(std::mem::take(&mut buffer));
+            }
+        }
+    }
+    if !buffer.is_empty() {
+        statements.push(buffer);
+    }
+    statements
 }
 
 /// 云端模块下的源码文件（递归）：跳过关口自己与测试文件。

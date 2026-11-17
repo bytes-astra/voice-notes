@@ -6,13 +6,13 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**85 条**不变量、11 组（A–K）—— ✅ 85 条有守卫，⚠️ 0 条，❌ 0 条。
+**当前规模**：**86 条**不变量、11 组（A–K）—— ✅ 86 条有守卫，⚠️ 0 条，❌ 0 条。
 
 > **云端条目在 K 组**（2026-11-17 落地）：provider 契约、中间结果语义、结果框顺序、凭据脱敏、零长句顺序、上传丢包缺口。
 2026-11-14 修复 RC-B6 的门控收尾与预录时间轴问题，作业面 1 → 0；真模型守卫在本地运行。
 
 （历史口径：5 份旧 review plan 一共提出 **26** 个 focus 项 —— 那是「轮次」的粒度；
-本文档把它们展开成 **85** 条可逐条核对的条目。两个数各指什么，不要混用。）
+本文档把它们展开成 **86** 条可逐条核对的条目。两个数各指什么，不要混用。）
 
 ## 怎么用
 
@@ -190,7 +190,7 @@
 | RC-J2 | 装引擎必须用**当前**设置：读设置与装引擎要在同一把锁内，陈旧判定必须覆盖**所有**影响识别的设置（整段 = 模型目录 / 语言 / ITN，流式 = 热词）。只比语言和 ITN 的话，换了模型目录照样复用旧引擎，新设置被静默吞掉 | `engine.rs` 的 `install_engine`（拿槽锁 → 锁内读设置 → 比身份 → 复用或重建）+ `OfflineEngineKey` / `StreamingEngineKey`；`engine/tests.rs` 设置没变就复用引擎 / 换了模型目录就重建引擎 / 换了语言就重建引擎 / 换了热词就重建流式引擎 / 等锁期间设置改了也要用新设置 | ✅ 2026-11-04 |
 | RC-J3 | async 路径上不许**阻塞式**取引擎锁：引擎加载要好几秒（239 MB / 161 MB / 294 MB），那把锁会被占住；async 命令在执行器线程上死等，整个执行器就卡住（用户看着像界面冻住）。`try_lock()` 不算 | `scripts/check-async.mjs`（沿调用图从 async 函数出发，引擎槽的 `.lock()` 只许出现在 `spawn_blocking` 闭包里）+ 9 条自测（含「把旧的 `shared_engine` 加回真源码会被抓住」）；`load_engine` 直接返回 `Arc<Engine>`，不再有 `shared_engine` 的二次取锁 | ✅ 2026-11-04 |
 
-### K. 云端模式（10 条）
+### K. 云端模式（11 条）
 
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
@@ -203,6 +203,7 @@
 | RC-K7 | 服务端断句族 SHALL NOT 依赖客户端 commit 定句，也不要求本地 VAD | `asr/cloud/tests.rs::server_endpoint_provider_does_not_commit`、`volcengine/tests.rs::capabilities_are_server_endpoint`、`record/tests.rs::gate_follows_capabilities` | ✅ 2026-11-17（登记既有） |
 | RC-K8 | 有 `item_id` 的 final SHALL 按 `item_id` 绑定，SHALL NOT 按到达顺序配对；**没有 `item_id` 时才按提交顺序（`pending` 队列）兜底**；空 final / 提交失败的区间也必须被消费或合并，不能留给下一句 | `asr/cloud/tests.rs::out_of_order_final_keeps_its_span`、`asr/cloud/tests.rs::failed_item_without_ack_keeps_spans_aligned`（前两条守 id 绑定）、`asr/cloud/tests.rs::empty_final_does_not_steal_next_span`、`asr/cloud/tests.rs::failed_commit_merges_span_into_the_last_one`（后两条守无 id 兜底与区间合并） | ✅ 2026-11-17（登记既有） |
 | RC-K9 | 映射器的**去重表只收有内容的定稿**：空文本的定稿 SHALL NOT 占住去重键 —— 否则同 id 的**后续真实文本**会被早退整段丢弃（只留一条 WARN） | `asr/cloud/aliyun/tests.rs::empty_final_does_not_block_later_text_for_the_same_id` | ✅ 2026-11-17 |
+| RC-K11 | 防御性定稿的**取舍**：按快照定稿后那个 id 进了去重表 → 服务端随后对同一 id 的**完整** `sentence_end` 会被早退丢弃 → 定稿文本是快照而不是服务端最终文本。**宁可少几个标点，也不要同一句出两条 Final**（重复句子更糟） | `asr/cloud/aliyun/tests.rs::new_sentence_finalizes_previous_by_snapshot`（按快照定稿）+ `asr/cloud/aliyun/tests.rs::finalized_sentence_ignores_later_events`（已定稿的后续事件忽略） | ✅ 2026-11-17（登记既有取舍） |
 | RC-K10 | 映射器的**防御性定稿 SHALL 与本句有没有文本无关**：新句（哪怕文本为空）+ `sentence_end` 时，上一句 SHALL 照样按快照 emit 成 Final；上一句只当过 Partial 的话，下一个 Partial 一覆盖就彻底消失 | `asr/cloud/aliyun/tests.rs::a_new_id_with_empty_text_still_finalizes_the_previous_sentence`、`asr/cloud/aliyun/tests.rs::a_draft_without_id_does_not_survive_the_next_update`（草稿缺 id 时按「属于本句」处理，过期草稿不重复拼接） | ✅ 2026-11-17 |
 
 ---
