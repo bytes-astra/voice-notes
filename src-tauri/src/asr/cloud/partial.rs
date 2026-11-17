@@ -11,7 +11,7 @@
 //!
 //! 本仓库接了**三家**：OpenAI Realtime、火山、阿里；其余是协议形态的调研实例。
 //!
-//! **火山与阿里不走本归一器** —— 它们的映射器（`map_response` / `AliyunMapper`）
+//! **火山与阿里不走归一器** —— 它们的映射器（`map_response` / `AliyunMapper`）
 //! 直接产出 `CloudEvent::Partial`；归一器目前**只被 Realtime 自建使用**。
 //!
 //! **以句为界**：每个句子一个桶，句定稿（final / failed）时清掉它自己的桶。

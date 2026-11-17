@@ -385,6 +385,7 @@ fn cloud_status_exposes_bool_not_key() {
         punct_ready: false,
         hotwords: vec![],
         hotwords_ignored: 0,
+        cloud_hotwords_ignored: 0,
         input_device: None,
         punct_bytes: 0,
         punct_total_bytes: 0,

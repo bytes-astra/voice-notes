@@ -274,6 +274,7 @@ window.I18N_LOCALES['en'] = {
   'settings.hotwordsSave': 'Save terms',
   'settings.hotwordsSaved': 'Saved {count} terms',
   'settings.hotwordsSavedSome': 'Saved {count} terms; {ignored} contain characters the model does not know and will not take effect',
+  'settings.hotwordsSavedSomeCloud': 'Saved {count} terms; {ignored} exceed the cloud service limit and will not take effect',
   'settings.hotwordsCleared': 'Term list cleared (streaming falls back to default decoding)',
   'settings.hotwordsExampleFilled': 'Example filled — remember to save',
   'settings.modelPath': '{source} · {dir}',

@@ -1132,3 +1132,35 @@ fn cloud_source_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     files
 }
+
+/// 云端 provider 的**协议层丢弃数**要算对 —— 界面靠它提示用户。
+///
+/// 三家限制不同：阿里按官方热词文本规范（非 ASCII 合计 ≤ 15 字）、火山 100 条
+/// 上限 + 控制字符、Realtime 禁 `<` `>` CR LF。丢弃数算错，用户就以为术语生效了。
+#[test]
+fn cloud_hotwords_ignored_counts_protocol_level_drops() {
+    // 一条「各家都会丢」的词：超 15 字（阿里）+ 含换行（火山 / Realtime）。
+    let long = format!("{}\n", "很长的术语".repeat(4));
+    for provider in ["realtime", "volcengine", "aliyun"] {
+        let settings = crate::settings::Settings {
+            cloud_provider: provider.into(),
+            hotwords: vec![long.clone()],
+            ..Default::default()
+        };
+        assert!(
+            cloud_hotwords_ignored(&settings) >= 1,
+            "{provider} 应当丢掉这条超长且带换行的术语"
+        );
+    }
+    // 正常长度的词：三家都不该丢。
+    let settings = crate::settings::Settings {
+        cloud_provider: "aliyun".into(),
+        hotwords: vec!["玄戒芯片".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        cloud_hotwords_ignored(&settings),
+        0,
+        "正常的术语不该被协议层丢掉"
+    );
+}

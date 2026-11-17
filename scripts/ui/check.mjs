@@ -57,6 +57,8 @@ const installMock = () => {
     // 术语表里有几条含模型不认识的字（真后端：Status.hotwordsIgnored）。
     // 少了它，界面检查就测不到「其中 N 个不会生效」这条提示。
     hotwordsIgnored: 0,
+    // 云端 provider 在**协议层**丢掉的术语条数（真后端：Status.cloudHotwordsIgnored）。
+    cloudHotwordsIgnored: 0,
     inputDevice: null,
     punctBytes: 294_372_519,
     punctTotalBytes: 294_372_519,
@@ -109,6 +111,7 @@ const installMock = () => {
               ...window.__mockStatus,
               hotwords: args.hotwords,
               hotwordsIgnored: window.__mockHotwordsIgnored,
+              cloudHotwordsIgnored: window.__mockCloudHotwordsIgnored,
             }
             return clone(window.__mockStatus)
           case 'set_cloud_config':
@@ -427,6 +430,22 @@ check(
   hotwordsToast,
 )
 await page.evaluate(() => { window.__mockHotwordsIgnored = 0 })
+
+// 云端 provider 的**协议层**丢弃（Status.cloudHotwordsIgnored）：各家限制不同
+//（阿里的 15 字规范、火山的 100 条上限）—— 用户在云端模式下必须知道哪些术语
+// 没送出去，不能只说「已保存」。
+await page.evaluate(() => { window.__mockCloudHotwordsIgnored = 1 })
+await page.locator('#hotwords-save').click()
+await page.waitForTimeout(250)
+const cloudHotwordsToast = await text('#toast')
+check(
+  '术语表提示云端协议层丢弃几条',
+  cloudHotwordsToast.includes('1') &&
+    cloudHotwordsToast.includes('云端') &&
+    !cloudHotwordsToast.includes('{ignored}'),
+  cloudHotwordsToast,
+)
+await page.evaluate(() => { window.__mockCloudHotwordsIgnored = 0 })
 
 await page.locator('#locale-select .select-button').click()
 await page.waitForTimeout(150)

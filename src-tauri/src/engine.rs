@@ -137,6 +137,10 @@ pub struct Status {
     pub hotwords: Vec<String>,
     /// 术语表里模型不认识的条目数（模型没下载时算不出来，按 0 记）
     pub hotwords_ignored: usize,
+    /// 云端 provider 在**协议层**丢掉的术语条数（各家限制不同：长度、条数、字符）。
+    ///
+    /// 与 `hotwords_ignored` 分开：一个是「模型词表不认识」，一个是「协议不收」。
+    pub cloud_hotwords_ignored: usize,
     pub input_device: Option<String>,
     pub punct_bytes: u64,
     pub punct_total_bytes: u64,
@@ -204,6 +208,9 @@ pub fn status_of(app: &AppHandle, state: &AppState) -> Status {
             split_hotwords_by_vocab(&settings.hotwords, &vocab).1.len()
         })
         .unwrap_or(0);
+    // 云端 provider 的协议层丢弃：各家限制不同（阿里的 15 字规范、火山的 100 条
+    // 上限、Realtime 的字符限制）—— 用户得知道哪些术语没送出去。
+    let cloud_hotwords_ignored = crate::asr::cloud::cloud_hotwords_ignored(&settings);
     Status {
         model_ready: paths.is_some(),
         vad_ready: paths.as_ref().map(|p| p.vad.is_some()).unwrap_or(false),
@@ -228,6 +235,7 @@ pub fn status_of(app: &AppHandle, state: &AppState) -> Status {
         punct_ready: models::resolve_punctuation(app).is_some(),
         hotwords: settings.hotwords.clone(),
         hotwords_ignored,
+        cloud_hotwords_ignored,
         input_device: settings.input_device.clone(),
         punct_bytes: models::punctuation_install_dir(app)
             .ok()

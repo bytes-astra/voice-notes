@@ -222,6 +222,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   - **日志这一半**：云端模块的日志只许走 `asr/cloud/logging.rs` 的关口（`warn` / `info` / `code_detail`），写入前用该 provider 的凭据脱敏。两条守卫：`asr::cloud::tests::log_choke_point_redacts_the_credential`（关口的脱敏）+ `asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`（**源码级守卫**：运行时读 `src/asr/cloud/` 下各 `.rs` 与 `src/asr/cloud.rs`，出现 `crate::log` 或 `crate::code_detail` 就红 —— **两条路都写日志文件**（`crate::code_detail` 内部就是 `log::error`）却不脱敏，所以云端模块一律用 `logging::code_detail` 先脱敏再委托）。守卫**跳过**测试文件（`tests.rs` / `*_tests.rs` / `tests/` 目录）、`mock.rs`（`#[cfg(test)]`）与关口自己（`logging.rs`）。
     - **已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现（变形、URL 编码不保证）。
     - **范围只有云端模块**：`record.rs` 的云端日志只拼字典码，前端那半边靠「key 不回传」。
+- **云端术语表的协议层丢弃要回传界面**（`Status.cloudHotwordsIgnored`）：术语表是本地流式与云端共用的设置，但**各家的协议限制不同**（阿里官方规范 ≤ 15 字、火山 100 条上限、Realtime 禁特定字符）—— 被丢掉的用户得知道，不能只记一条日志。`asr/cloud/tests.rs::cloud_hotwords_ignored_counts_protocol_level_drops` 守着计数（每个 provider 都有分支 + 正常词不丢）。
 - **能力声明**（`src-tauri/src/asr/cloud.rs` 的 `Capabilities`）：每个 provider 自报能力（句边界方式、是否需要本地 VAD、中间结果语义、是否支持术语表、上传采样率），按 provider id 静态查的表（`provider_capabilities`）与实例自报值必须一致。合法组合只有两种：**客户端提交 + 需要本地 VAD**、**服务端断句 + 不需要本地 VAD** —— 其余组合拒绝建 provider（「缺 VAD」绝不能被当成「改用服务端断句」）。单测覆盖能力表、组合校验、VAD 前置条件与门控决策的四种组合。
 - **中间结果归一器**（`src-tauri/src/asr/cloud/partial.rs`）：各家协议给的中间结果形态不同（增量拼接 / 确认前缀加草稿 / 区间替换），provider 内部归一成「当前未定稿句的累计串」，上层只认这一种语义。归一器按句标识分桶、句定稿时清掉自己的桶；没有句标识的协议走单桶。单测见 `src-tauri/src/asr/cloud/partial/tests.rs`。
 - **provider 契约守卫**（各 provider 自己的测试模块）：三家的中间结果形态各有一条守卫，断言两件事 —— ① 上抛的中间结果是当前未定稿句的**累计文本**（句内整体替换，不追加）；② 声明的 `partial_semantics` 与**从样例推导出的**形态一致。三条硬规矩（否则守卫是假的）：**禁 mock provider 当协议样例**（mock 直接注入 `CloudEvent`，没有协议形态）、**期望值必须手写字面量**（从样例里再读一遍就是 `x == x`）、**形态从样例推导而不是只钉常量**（只钉常量的话形态漂移照样过）。样例：火山是两次响应（第二次全量返回、改写最后一条未定句）、Realtime 是两条**同 `item_id`** 的 `.delta`、阿里是同一句的两次「已确认句子 + 草稿」。另外还有**生产链路**的守卫：`asr::cloud::realtime::protocol_tests::deltas_accumulate_on_the_production_path` —— 本地假 WebSocket 服务端回两帧 `.delta`，跑**真实 run 循环**，断言上抛的中间结果是「你好，世界」而不是「，世界」。自建归一器的守卫守不住「provider → 上抛」那段接线（实测：把生产调用点绕开归一器，276 条测试全绿）。会话层还有一条零长句顺序守卫（`zero_length_segments_keep_arrival_order`：同批九条 final，首条占区间、后八条零长且同 `start`，文本顺序 = 到达顺序）。清单见 `docs/REVIEW-CHECKLIST.md` 的 RC-K1 / RC-K2 / RC-K4。
@@ -255,7 +256,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   - **计费按 token**（输入 6 元 / 百万、输出 4.5 元 / 百万，北京与新加坡同价），不是按秒。
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（本模型客户端事件页 **800** / 旧的 Paraformer SDK 页 800）→ **显式设 800**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按「不传 = 自动识别」**；`sentence_id` 是否必填 → **必填**（缺了按兼容路径处理并记 WARN）。
 
-**云端相关测试基线**：`cargo test --lib` = **281**（其中 `asr::cloud` = 129 = 会话层 37 + Realtime 协议层 29 + 归一器 6 + 火山 19 + 阿里 38；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
+**云端相关测试基线**：`cargo test --lib` = **282**（其中 `asr::cloud` = 130 = 会话层 38 + Realtime 协议层 29 + 归一器 6 + 火山 19 + 阿里 38；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 > [!NOTE]
 > 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。

@@ -225,13 +225,23 @@ export function bindUI() {
     try {
       state.status = await invoke('set_hotwords', { hotwords })
       renderStatus()
-      // 模型不认识的字：这些术语流式用不了，得告诉用户。
+      // 两件不同的事，分开提示：
+      // - `hotwordsIgnored`：模型词表不认识（本地流式）；
+      // - `cloudHotwordsIgnored`：云端 provider 的协议层不收（长度、条数、字符）。
+      // 用户在云端模式下尤其要知道哪些术语**没送出去** —— 只说「已保存」会让人
+      // 以为术语生效了。
       const ignored = state.status?.hotwordsIgnored || 0
+      const cloudIgnored = state.status?.cloudHotwordsIgnored || 0
       toast(
         hotwords.length
-          ? ignored
-            ? t('settings.hotwordsSavedSome', { count: hotwords.length, ignored })
-            : t('settings.hotwordsSaved', { count: hotwords.length })
+          ? cloudIgnored
+            ? t('settings.hotwordsSavedSomeCloud', {
+                count: hotwords.length,
+                ignored: cloudIgnored,
+              })
+            : ignored
+              ? t('settings.hotwordsSavedSome', { count: hotwords.length, ignored })
+              : t('settings.hotwordsSaved', { count: hotwords.length })
           : t('settings.hotwordsCleared'),
       )
     } catch (error) {

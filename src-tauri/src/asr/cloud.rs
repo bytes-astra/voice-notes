@@ -311,6 +311,23 @@ fn log_ignored_hotwords(ignored: usize, api_key: &str) {
     );
 }
 
+/// 云端 provider 在**协议层**丢掉多少条术语（按当前选中的 provider 算）。
+///
+/// 术语表是本地流式与云端共用的设置，但**各家的协议限制不同**（长度、条数、
+/// 字符）—— 被丢掉的用户得知道，不能只记一条日志（`cloudKeywords` 那些）。
+///
+/// 用的是 `create_provider` 里**同一批过滤函数**（不写第二份规则）。漂移风险
+/// 只有「加了 provider 忘了加分支」→ 计数是 0（**不出声**，方向安全）。
+pub fn cloud_hotwords_ignored(settings: &crate::settings::Settings) -> usize {
+    let words = &settings.hotwords;
+    match settings.cloud_provider.as_str() {
+        "realtime" => realtime::clean_cloud_keywords(words).1,
+        "volcengine" => volcengine::clean_volcengine_keywords(words).1,
+        "aliyun" => aliyun::build_vocabulary(words).1,
+        _ => 0,
+    }
+}
+
 /// 生成一个 UUID v4 形状的唯一串。
 ///
 /// 火山用它做请求 ID / 连接 ID（官方建议用 UUID 追踪调用），阿里用它做

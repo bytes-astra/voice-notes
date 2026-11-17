@@ -269,6 +269,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.hotwordsSave': '保存术语表',
   'settings.hotwordsSaved': '已保存 {count} 个术语',
   'settings.hotwordsSavedSome': '已保存 {count} 个术语，其中 {ignored} 个含模型不认识的字，不会生效',
+  'settings.hotwordsSavedSomeCloud': '已保存 {count} 个术语，其中 {ignored} 个超出云端服务的限制，不会生效',
   'settings.hotwordsCleared': '已清空术语表（流式恢复默认解码）',
   'settings.hotwordsExampleFilled': '已填入示例，记得点保存',
   'settings.modelPath': '{source} · {dir}',
