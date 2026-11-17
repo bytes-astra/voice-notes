@@ -145,18 +145,42 @@ pub struct Status {
     pub punct_bytes: u64,
     pub punct_total_bytes: u64,
     pub app_version: String,
-    /// 云端是否已配置（API key 非空即 true）。只回传布尔值，key 本身不进状态。
+    /// 云端是否已配置（活动连接的 API key 非空即 true）。只回传布尔值，key 本身不进状态。
     pub cloud_configured: bool,
-    /// 云端服务地址（空 = 用 provider 默认端点）。不是凭据，可以回传。
+    /// 活动连接的服务地址（空 = 用 provider 默认端点）。不是凭据，可以回传。
     pub cloud_base_url: String,
-    /// 当前云端 provider 的标识（不是凭据，可以回传）。
+    /// 活动连接的 provider 标识（不是凭据，可以回传）。
     pub cloud_provider: String,
     /// 当前 provider 是否支持请求级术语表（界面据此提示限制）。
     pub cloud_supports_keywords: bool,
-    /// 云端资源标识（火山的 `X-Api-Resource-Id`；空 = 用默认）。不是凭据。
+    /// 活动连接的资源标识（火山的 `X-Api-Resource-Id`；空 = 用默认）。不是凭据。
     pub cloud_resource_id: String,
-    /// 云端模型名（空 = 用 provider 默认模型）。不是凭据，可以回传。
+    /// 活动连接的模型名（空 = 用 provider 默认模型）。不是凭据，可以回传。
     pub cloud_model: String,
+    /// 云端连接列表（每条一整套配置）。**凭据只回传掩码**，明文不回传。
+    pub cloud_profiles: Vec<CloudProfileView>,
+    /// 正在使用的那条连接的 id（空 = 没配过云端）。
+    pub cloud_active_profile: String,
+}
+
+/// 一条云端连接的回传形态。
+///
+/// **凭据只有掩码**（`sk-c…HePU`）—— 明文留在 settings 里，不回传前端
+/// （RC-K6 守着这条）。这里单独定一个回传类型，就是为了让明文**没有机会**
+/// 被序列化出去。
+#[derive(Clone, Debug, Serialize)]
+pub struct CloudProfileView {
+    pub id: String,
+    /// 用户自己起的名字（列表里显示）。
+    pub label: String,
+    /// provider（`realtime` / `volcengine` / `aliyun`）。
+    pub provider: String,
+    /// 服务地址（空 = 用该 provider 的默认端点）。
+    pub base_url: String,
+    /// 模型 / 资源标识 —— **按 provider 解释**（火山的这里是资源标识）。
+    pub model: String,
+    /// 掩码后的凭据（头 4 + 尾 4；没有凭据则空串）。
+    pub key_mask: String,
 }
 
 /// 云端是否已配置：API key 非空即认为已配置。
@@ -164,7 +188,26 @@ pub struct Status {
 /// 抽成纯函数是为了能脱开 `AppHandle` 单测，同时把「key 非空 → true」这条
 /// 判定固定下来 —— 状态里只许有布尔值，key 明文绝不能出现在 Status 序列化里。
 fn cloud_configured(settings: &Settings) -> bool {
-    !settings.cloud_api_key.trim().is_empty()
+    settings
+        .active_cloud_profile()
+        .map(|profile| !profile.api_key.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// 连接列表的回传形态（凭据只回掩码）。
+fn cloud_profile_views(settings: &Settings) -> Vec<CloudProfileView> {
+    settings
+        .cloud_profiles
+        .iter()
+        .map(|profile| CloudProfileView {
+            id: profile.id.clone(),
+            label: profile.label.clone(),
+            provider: profile.provider.clone(),
+            base_url: profile.base_url.clone(),
+            model: profile.model.clone(),
+            key_mask: crate::settings::mask_secret(&profile.api_key),
+        })
+        .collect()
 }
 
 pub fn output_dir(app: &AppHandle, settings: &Settings) -> PathBuf {
@@ -245,13 +288,32 @@ pub fn status_of(app: &AppHandle, state: &AppState) -> Status {
         punct_total_bytes: models::PUNCT.bytes,
         app_version: app.package_info().version.to_string(),
         cloud_configured: cloud_configured(&settings),
-        cloud_base_url: settings.cloud_base_url.clone(),
-        cloud_provider: settings.cloud_provider.clone(),
-        cloud_supports_keywords: crate::asr::cloud::provider_capabilities(&settings.cloud_provider)
+        // 下面几个字段都取**活动连接**（正在使用的那条）。
+        cloud_base_url: settings
+            .active_cloud_profile()
+            .map(|profile| profile.base_url.clone())
+            .unwrap_or_default(),
+        cloud_provider: settings
+            .active_cloud_profile()
+            .map(|profile| profile.provider.clone())
+            .unwrap_or_default(),
+        cloud_supports_keywords: settings
+            .active_cloud_profile()
+            .and_then(|profile| crate::asr::cloud::provider_capabilities(&profile.provider))
             .map(|caps| caps.supports_keywords)
             .unwrap_or(false),
-        cloud_model: settings.cloud_model.clone(),
-        cloud_resource_id: settings.cloud_resource_id.clone(),
+        cloud_model: settings
+            .active_cloud_profile()
+            .map(|profile| profile.model.clone())
+            .unwrap_or_default(),
+        // 火山那一列是资源标识；两家模型名不同 → 界面按 provider 解释这个字段。
+        cloud_resource_id: settings
+            .active_cloud_profile()
+            .filter(|profile| profile.provider == "volcengine")
+            .map(|profile| profile.model.clone())
+            .unwrap_or_default(),
+        cloud_profiles: cloud_profile_views(&settings),
+        cloud_active_profile: settings.cloud_active_profile.clone(),
     }
 }
 

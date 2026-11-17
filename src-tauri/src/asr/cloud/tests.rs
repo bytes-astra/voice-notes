@@ -472,16 +472,32 @@ fn failed_commit_merges_span_into_the_last_one() {
     );
 }
 
+/// 造一份「只有一条活动连接」的设置（测试用）。
+///
+/// 云端配置现在是**连接列表** —— provider / 地址 / 凭据 / 模型都挂在某一条
+/// 连接上，不是平铺在设置里。
+fn settings_with_profile(provider: &str, model: &str) -> crate::settings::Settings {
+    crate::settings::Settings {
+        cloud_profiles: vec![crate::settings::CloudProfile {
+            id: "p-1".into(),
+            label: String::new(),
+            provider: provider.into(),
+            base_url: String::new(),
+            api_key: "test-key".into(),
+            model: model.into(),
+        }],
+        cloud_active_profile: "p-1".into(),
+        ..Default::default()
+    }
+}
+
 /// 能力表与 provider 实例自报的值必须一致（两处漂移会让状态与行为分叉）。
 #[test]
 fn capability_table_matches_instances() {
     for id in crate::settings::CLOUD_PROVIDERS {
         let caps = provider_capabilities(id).unwrap_or_else(|| panic!("{id} 应有能力项"));
-        let provider = create_provider(&crate::settings::Settings {
-            cloud_provider: id.into(),
-            ..Default::default()
-        })
-        .unwrap_or_else(|error| panic!("{id} 应能建出 provider：{error}"));
+        let provider = create_provider(&settings_with_profile(id, ""))
+            .unwrap_or_else(|error| panic!("{id} 应能建出 provider：{error}"));
         assert_eq!(provider.capabilities(), caps, "{id} 的表项与实例不一致");
     }
 }
@@ -490,10 +506,7 @@ fn capability_table_matches_instances() {
 #[test]
 fn unknown_provider_cannot_be_created() {
     assert!(provider_capabilities("不存在的服务").is_none());
-    let settings = crate::settings::Settings {
-        cloud_provider: "不存在的服务".into(),
-        ..Default::default()
-    };
+    let settings = settings_with_profile("不存在的服务", "");
     assert!(create_provider(&settings).is_err(), "未知 provider 不该建出来");
 }
 
@@ -639,11 +652,7 @@ fn sanitize_leaves_text_without_secret_alone() {
 /// （本模型有 stash 草稿、即时热词、方言开关），不按「名字随便填」处理。
 #[test]
 fn aliyun_rejects_models_outside_the_whitelist() {
-    let settings = crate::settings::Settings {
-        cloud_provider: "aliyun".into(),
-        cloud_model: "some-other-asr-model".into(),
-        ..Default::default()
-    };
+    let settings = settings_with_profile("aliyun", "some-other-asr-model");
     let error = match create_provider(&settings) {
         Ok(_) => panic!("白名单外的模型不该建出来"),
         Err(error) => error,
@@ -655,11 +664,7 @@ fn aliyun_rejects_models_outside_the_whitelist() {
 #[test]
 fn aliyun_16k_model_builds() {
     for model in ["", "qwen-audio-3.1-asr-flash-streaming"] {
-        let settings = crate::settings::Settings {
-            cloud_provider: "aliyun".into(),
-            cloud_model: model.into(),
-            ..Default::default()
-        };
+        let settings = settings_with_profile("aliyun", model);
         assert!(
             create_provider(&settings).is_ok(),
             "模型 {model:?} 应该能建出来"
@@ -1142,22 +1147,16 @@ fn cloud_hotwords_ignored_counts_protocol_level_drops() {
     // 一条「各家都会丢」的词：超 15 字（阿里）+ 含换行（火山 / Realtime）。
     let long = format!("{}\n", "很长的术语".repeat(4));
     for provider in ["realtime", "volcengine", "aliyun"] {
-        let settings = crate::settings::Settings {
-            cloud_provider: provider.into(),
-            hotwords: vec![long.clone()],
-            ..Default::default()
-        };
+        let mut settings = settings_with_profile(provider, "");
+        settings.hotwords = vec![long.clone()];
         assert!(
             cloud_hotwords_ignored(&settings) >= 1,
             "{provider} 应当丢掉这条超长且带换行的术语"
         );
     }
     // 正常长度的词：三家都不该丢。
-    let settings = crate::settings::Settings {
-        cloud_provider: "aliyun".into(),
-        hotwords: vec!["玄戒芯片".into()],
-        ..Default::default()
-    };
+    let mut settings = settings_with_profile("aliyun", "");
+    settings.hotwords = vec!["玄戒芯片".into()];
     assert_eq!(
         cloud_hotwords_ignored(&settings),
         0,

@@ -354,11 +354,30 @@ fn cloud_status_exposes_bool_not_key() {
     const DUMMY_KEY: &str = "vn-test-dummy-key";
 
     assert!(!cloud_configured(&Settings::default()), "key 空 = 未配置");
-    let whitespace = Settings { cloud_api_key: "   ".into(), ..Settings::default() };
+    let whitespace = Settings {
+        cloud_profiles: vec![crate::settings::CloudProfile {
+            id: "p-1".into(),
+            label: String::new(),
+            provider: "realtime".into(),
+            base_url: String::new(),
+            api_key: "   ".into(),
+            model: String::new(),
+        }],
+        cloud_active_profile: "p-1".into(),
+        ..Settings::default()
+    };
     assert!(!cloud_configured(&whitespace), "纯空白 key 不应算已配置");
 
     let with_key = Settings {
-        cloud_api_key: DUMMY_KEY.into(),
+        cloud_profiles: vec![crate::settings::CloudProfile {
+            id: "p-1".into(),
+            label: String::new(),
+            provider: "realtime".into(),
+            base_url: String::new(),
+            api_key: DUMMY_KEY.into(),
+            model: String::new(),
+        }],
+        cloud_active_profile: "p-1".into(),
         ..Settings::default()
     };
     assert!(cloud_configured(&with_key), "key 非空 = 已配置");
@@ -386,6 +405,8 @@ fn cloud_status_exposes_bool_not_key() {
         hotwords: vec![],
         hotwords_ignored: 0,
         cloud_hotwords_ignored: 0,
+        cloud_profiles: Vec::new(),
+        cloud_active_profile: String::new(),
         input_device: None,
         punct_bytes: 0,
         punct_total_bytes: 0,

@@ -191,32 +191,37 @@ pub trait CloudProvider: Send {
 
 /// 按设置造一个 provider。
 ///
-/// provider 名字来自 `settings.cloud_provider`；地址与模型留空时用该 provider
-/// 的默认值。凭据直接进配置 —— 它不会进日志，也不会回传前端。
+/// **用哪一条连接**：设置里的**活动连接**（`cloud_active_profile` 指向的那条）。
+/// 地址与模型留空时用该 provider 的默认值。凭据直接进配置 —— 它不会进日志，
+/// 也不会回传前端。
 pub fn create_provider(
     settings: &crate::settings::Settings,
 ) -> Result<Box<dyn CloudProvider>, String> {
-    let id = settings.cloud_provider.as_str();
+    // 没有活动连接 = 没配过云端（凭据、地址都在连接里）。
+    let profile = settings
+        .active_cloud_profile()
+        .ok_or_else(|| crate::code("cloud.notConfigured"))?;
+    let id = profile.provider.as_str();
     // 能力先查表：这是「要不要下 VAD」「状态回传什么能力」的同一个来源。
     let caps = provider_capabilities(id).ok_or_else(|| logging::code_detail(
         "cloud.unsupportedProvider",
         id,
-        Some(&settings.cloud_api_key),
+        Some(&profile.api_key),
     ))?;
     if !valid_capabilities(&caps) {
-        return Err(logging::code_detail("cloud.unsupportedProvider", id, Some(&settings.cloud_api_key)));
+        return Err(logging::code_detail("cloud.unsupportedProvider", id, Some(&profile.api_key)));
     }
     match id {
         "realtime" => {
-            let base_url = if settings.cloud_base_url.trim().is_empty() {
+            let base_url = if profile.base_url.trim().is_empty() {
                 realtime::DEFAULT_BASE_URL.to_string()
             } else {
-                settings.cloud_base_url.trim().to_string()
+                profile.base_url.trim().to_string()
             };
-            let model = if settings.cloud_model.trim().is_empty() {
+            let model = if profile.model.trim().is_empty() {
                 realtime::DEFAULT_MODEL.to_string()
             } else {
-                settings.cloud_model.trim().to_string()
+                profile.model.trim().to_string()
             };
             realtime::validate_realtime_model(&model)?;
             // 语言：auto = 不指定，让服务自己判断。
@@ -229,12 +234,12 @@ pub fn create_provider(
             let (keywords, proto_ignored) = realtime::clean_cloud_keywords(&words);
             let ignored = cap_ignored + proto_ignored;
             if ignored > 0 {
-                log_ignored_hotwords(ignored, &settings.cloud_api_key);
+                log_ignored_hotwords(ignored, &profile.api_key);
             }
             Ok(Box::new(realtime::RealtimeProvider::new(
                 realtime::RealtimeConfig {
                     base_url,
-                    api_key: settings.cloud_api_key.clone(),
+                    api_key: profile.api_key.clone(),
                     model,
                     languages,
                     keywords,
@@ -242,27 +247,28 @@ pub fn create_provider(
             )))
         }
         "volcengine" => {
-            let base_url = if settings.cloud_base_url.trim().is_empty() {
+            let base_url = if profile.base_url.trim().is_empty() {
                 volcengine::DEFAULT_BASE_URL.to_string()
             } else {
-                settings.cloud_base_url.trim().to_string()
+                profile.base_url.trim().to_string()
             };
-            let resource_id = if settings.cloud_resource_id.trim().is_empty() {
+            // 合并后的字段在火山这里表示**资源标识**（`X-Api-Resource-Id`）。
+            let resource_id = if profile.model.trim().is_empty() {
                 volcengine::DEFAULT_RESOURCE_ID.to_string()
             } else {
-                settings.cloud_resource_id.trim().to_string()
+                profile.model.trim().to_string()
             };
             // 术语表：能力层决定要不要带，火山协议层决定哪些能带（上限 100 条（MAX_KEYWORDS））。
             let (words, cap_ignored) = cloud_keywords(settings, &caps);
             let (keywords, proto_ignored) = volcengine::clean_volcengine_keywords(&words);
             let ignored = cap_ignored + proto_ignored;
             if ignored > 0 {
-                log_ignored_hotwords(ignored, &settings.cloud_api_key);
+                log_ignored_hotwords(ignored, &profile.api_key);
             }
             Ok(Box::new(volcengine::VolcengineProvider::new(
                 volcengine::VolcengineConfig {
                     base_url,
-                    api_key: settings.cloud_api_key.clone(),
+                    api_key: profile.api_key.clone(),
                     resource_id,
                     keywords,
                     itn: settings.itn,
@@ -271,32 +277,32 @@ pub fn create_provider(
             )))
         }
         "aliyun" => {
-            let model = if settings.cloud_model.trim().is_empty() {
+            let model = if profile.model.trim().is_empty() {
                 aliyun::DEFAULT_MODEL.to_string()
             } else {
-                settings.cloud_model.trim().to_string()
+                profile.model.trim().to_string()
             };
             // 模型白名单：协议骨架相同，但参数与结果结构不同（本模型有 stash
             // 草稿、即时热词、方言开关），不按「名字随便填」处理。
             if !aliyun::SUPPORTED_MODELS.contains(&model.as_str()) {
-                return Err(logging::code_detail("cloud.unsupportedModel", &model, Some(&settings.cloud_api_key)));
+                return Err(logging::code_detail("cloud.unsupportedModel", &model, Some(&profile.api_key)));
             }
             // 术语表：能力层决定要不要带，协议层决定能带多少（2000 条，带权重）。
             let (words, cap_ignored) = cloud_keywords(settings, &caps);
             let (vocabulary, proto_ignored) = aliyun::build_vocabulary(&words);
             let ignored = cap_ignored + proto_ignored;
             if ignored > 0 {
-                log_ignored_hotwords(ignored, &settings.cloud_api_key);
+                log_ignored_hotwords(ignored, &profile.api_key);
             }
             Ok(Box::new(aliyun::AliyunProvider::new(aliyun::AliyunConfig {
-                base_url: settings.cloud_base_url.clone(),
-                api_key: settings.cloud_api_key.clone(),
+                base_url: profile.base_url.clone(),
+                api_key: profile.api_key.clone(),
                 model,
                 language_hint: aliyun::language_hint(&settings.language),
                 vocabulary,
             })))
         }
-        other => Err(logging::code_detail("cloud.unsupportedProvider", other, Some(&settings.cloud_api_key))),
+        other => Err(logging::code_detail("cloud.unsupportedProvider", other, Some(&profile.api_key))),
     }
 }
 
@@ -320,7 +326,11 @@ fn log_ignored_hotwords(ignored: usize, api_key: &str) {
 /// 只有「加了 provider 忘了加分支」→ 计数是 0（**不出声**，方向安全）。
 pub fn cloud_hotwords_ignored(settings: &crate::settings::Settings) -> usize {
     let words = &settings.hotwords;
-    match settings.cloud_provider.as_str() {
+    // 按**活动连接**的 provider 算 —— 用户当前用的是哪一家，限制就是哪一家的。
+    let Some(profile) = settings.active_cloud_profile() else {
+        return 0;
+    };
+    match profile.provider.as_str() {
         "realtime" => realtime::clean_cloud_keywords(words).1,
         "volcengine" => volcengine::clean_volcengine_keywords(words).1,
         "aliyun" => aliyun::build_vocabulary(words).1,

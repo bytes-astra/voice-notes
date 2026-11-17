@@ -34,16 +34,37 @@ pub struct Settings {
     pub hotwords: Vec<String>,
     pub output_dir: Option<String>,
     pub model_dir: Option<String>,
-    /// 云端 base URL（空 = 用 provider 默认端点）
-    pub cloud_base_url: String,
-    /// 云端 API key（不回传明文、不写日志）
-    pub cloud_api_key: String,
-    /// 云端模型名（provider 相关）
-    pub cloud_model: String,
-    /// 云端资源标识（火山的 `X-Api-Resource-Id`；空 = 用该 provider 的默认）。
-    pub cloud_resource_id: String,
-    /// 云端 provider：`realtime`（Realtime JSON 族）/ `volcengine`（火山二进制帧族）
-    pub cloud_provider: String,
+    /// 云端连接列表：每条是一**整套**配置（provider / 地址 / 凭据 / 模型 / 备注）。
+    ///
+    /// **不做旧格式迁移**：旧版本把云端配置平铺成 5 个字段，改成列表后那 5 个
+    /// 字段被忽略（用户重新填一遍）。两套真值来源迟早不一致 —— 不留。
+    #[serde(default)]
+    pub cloud_profiles: Vec<CloudProfile>,
+    /// 正在使用的那条连接（`cloud_profiles` 里的 `id`）。
+    #[serde(default)]
+    pub cloud_active_profile: String,
+}
+
+/// 一条云端连接：一整套配置。
+///
+/// **为什么一条 = 一整套**：地址、密钥、模型 / 资源标识是**同一家**的 —— 换
+/// provider 换的是整套，不是单个字段（拆开会让用户在两条半配置之间来回切）。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudProfile {
+    /// 稳定 id（`p-1` 那种）：删除某条后活动 id 仍要能对上。
+    pub id: String,
+    /// 用户自己起的名字（区分「工作 / 个人」「火山·小时版」）。
+    pub label: String,
+    /// provider：`realtime` / `volcengine` / `aliyun`。
+    pub provider: String,
+    /// base URL（空 = 用该 provider 的默认端点）。
+    pub base_url: String,
+    /// API key（明文，只存 settings；**不回传前端、不写日志**）。
+    pub api_key: String,
+    /// 模型 / 资源标识 —— **按 provider 解释**：
+    /// Realtime 与阿里是模型名，火山是 `X-Api-Resource-Id`。
+    pub model: String,
 }
 
 impl Default for Settings {
@@ -57,11 +78,8 @@ impl Default for Settings {
             hotwords: Vec::new(),
             output_dir: None,
             model_dir: None,
-            cloud_base_url: String::new(),
-            cloud_api_key: String::new(),
-            cloud_model: String::new(),
-            cloud_resource_id: String::new(),
-            cloud_provider: "realtime".into(),
+            cloud_profiles: Vec::new(),
+            cloud_active_profile: String::new(),
         }
     }
 }
@@ -74,11 +92,75 @@ impl Settings {
         if !MODES.contains(&self.mode.as_str()) {
             self.mode = "offline".into();
         }
-        if !CLOUD_PROVIDERS.contains(&self.cloud_provider.as_str()) {
-            self.cloud_provider = "realtime".into();
-        }
         self.hotwords = clean_hotwords(self.hotwords);
+        self.clean_cloud_profiles();
         self
+    }
+
+    /// 清洗连接列表：provider 取值合法、id 不重复、活动项指向真实存在的连接。
+    fn clean_cloud_profiles(&mut self) {
+        // 先收下已有的 id（`next_profile_id` 要读整个列表，不能一边改一边读）。
+        let existing: Vec<String> = self
+            .cloud_profiles
+            .iter()
+            .map(|profile| profile.id.clone())
+            .collect();
+        let mut seen: Vec<String> = Vec::new();
+        for profile in self.cloud_profiles.iter_mut() {
+            if !CLOUD_PROVIDERS.contains(&profile.provider.as_str()) {
+                profile.provider = "realtime".into();
+            }
+            profile.id = profile.id.trim().to_string();
+            profile.label = profile.label.trim().to_string();
+            profile.base_url = profile.base_url.trim().to_string();
+            profile.model = profile.model.trim().to_string();
+            // id 重复就换一个新 id（活动项可能指的就是它）。
+            if profile.id.is_empty() || seen.contains(&profile.id) {
+                profile.id = next_profile_id(&existing);
+            }
+            seen.push(profile.id.clone());
+        }
+        // 活动项必须指向真实存在的连接；否则落到第一条；一条都没有就清空。
+        self.cloud_active_profile = self.cloud_active_profile.trim().to_string();
+        if !self
+            .cloud_profiles
+            .iter()
+            .any(|profile| profile.id == self.cloud_active_profile)
+        {
+            self.cloud_active_profile = self
+                .cloud_profiles
+                .first()
+                .map(|profile| profile.id.clone())
+                .unwrap_or_default();
+        }
+    }
+
+    /// 正在使用的那条连接（没有就 `None`）。
+    pub fn active_cloud_profile(&self) -> Option<&CloudProfile> {
+        self.cloud_profiles
+            .iter()
+            .find(|profile| profile.id == self.cloud_active_profile)
+    }
+}
+
+/// 新的连接 id（`p-1`、`p-2`…）—— 避开已有的。
+fn next_profile_id(existing: &[String]) -> String {
+    let mut index = existing.len() + 1;
+    loop {
+        let candidate = format!("p-{index}");
+        if !existing.iter().any(|id| *id == candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+/// provider 的默认显示名（迁移时当连接的默认备注）。
+fn provider_label(provider: &str) -> String {
+    match provider {
+        "volcengine" => "火山引擎 · 豆包".into(),
+        "aliyun" => "阿里云百炼 · Qwen-Audio".into(),
+        _ => "OpenAI Realtime".into(),
     }
 }
 
@@ -175,33 +257,120 @@ pub fn clean_hotwords(hotwords: Vec<String>) -> Vec<String> {
     out
 }
 
-/// 写入云端配置（服务地址 / 凭据 / 模型名）。
+/// 保存（新增或改）一条云端连接，返回它的 id。
 ///
 /// 凭据的处理只有一条规矩：`api_key` 为 `None` 表示「不改」。
 /// 前端拿不到当前的值（凭据不回传），所以「清空」必须显式传空串 ——
 /// 把空串当成「不改」的话，用户就没法删掉已经存进去的凭据。
-pub fn apply_cloud_config(
+pub fn upsert_cloud_profile(
     settings: &mut Settings,
+    id: Option<String>,
+    label: String,
+    provider: String,
     base_url: String,
     api_key: Option<String>,
     model: String,
-    provider: Option<String>,
-    resource_id: Option<String>,
-) {
-    settings.cloud_base_url = base_url.trim().to_string();
-    settings.cloud_model = model.trim().to_string();
-    if let Some(key) = api_key {
-        settings.cloud_api_key = key.trim().to_string();
-    }
-    // provider 只接受已知值：非法值回退默认（normalize 也会做一次）。
-    if let Some(provider) = provider {
-        let provider = provider.trim();
-        if CLOUD_PROVIDERS.contains(&provider) {
-            settings.cloud_provider = provider.to_string();
+) -> String {
+    let provider = provider.trim().to_string();
+    let provider = if CLOUD_PROVIDERS.contains(&provider.as_str()) {
+        provider
+    } else {
+        "realtime".to_string()
+    };
+    let model = model.trim().to_string();
+    let base_url = base_url.trim().to_string();
+    let label = label.trim().to_string();
+
+    // 已有的连接 → 改它；没有 → 新建一条。
+    let id = match id.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
+        Some(id) if settings.cloud_profiles.iter().any(|profile| profile.id == id) => id,
+        _ => {
+            let id = next_profile_id(
+            &settings
+                .cloud_profiles
+                .iter()
+                .map(|profile| profile.id.clone())
+                .collect::<Vec<_>>(),
+        );
+            settings.cloud_profiles.push(CloudProfile {
+                id: id.clone(),
+                label: label.clone(),
+                provider: provider.clone(),
+                base_url: base_url.clone(),
+                api_key: String::new(),
+                model: model.clone(),
+            });
+            id
+        }
+    };
+    if let Some(profile) = settings
+        .cloud_profiles
+        .iter_mut()
+        .find(|profile| profile.id == id)
+    {
+        // 备注留空就退回 provider 的默认名 —— 列表里总要有个能认出来的名字。
+        profile.label = if label.is_empty() {
+            provider_label(&profile.provider)
+        } else {
+            label
+        };
+        profile.provider = provider;
+        profile.base_url = base_url;
+        profile.model = model;
+        if let Some(key) = api_key {
+            profile.api_key = key.trim().to_string();
         }
     }
-    if let Some(resource_id) = resource_id {
-        settings.cloud_resource_id = resource_id.trim().to_string();
+    // 列表里第一条就是活动项（新增时自动选中它）。
+    if settings.cloud_active_profile.trim().is_empty() {
+        settings.cloud_active_profile = id.clone();
+    }
+    settings.clean_cloud_profiles();
+    id
+}
+
+/// 删一条连接。删的是活动项 → 落到下一条；删空了 → 回到「未配置」。
+pub fn delete_cloud_profile(settings: &mut Settings, id: &str) {
+    let id = id.trim();
+    settings.cloud_profiles.retain(|profile| profile.id != id);
+    settings.clean_cloud_profiles();
+}
+
+/// 指定正在使用的那条连接（id 不存在就不动）。
+pub fn set_active_cloud_profile(settings: &mut Settings, id: &str) {
+    let id = id.trim();
+    if settings
+        .cloud_profiles
+        .iter()
+        .any(|profile| profile.id == id)
+    {
+        settings.cloud_active_profile = id.to_string();
+    }
+}
+
+/// 凭据的掩码：头 4 + 尾 4（`sk-c…HePU`）。
+///
+/// **凭据明文不回传前端**（RC-K6）—— 掩码是唯一回传的形态。
+///
+/// 规则：
+/// - 空 → 空串（没配凭据）；
+/// - 1~2 个字符 → 一律用固定点数（露多少都是全露）；
+/// - 3~8 个字符 → 只露头 2 个（短的凭据露头尾就把大半条露出去了）；
+/// - 更长 → 头 4 + `…` + 尾 4。
+pub fn mask_secret(secret: &str) -> String {
+    let chars: Vec<char> = secret.chars().collect();
+    let length = chars.len();
+    match length {
+        0 => String::new(),
+        // 1~2 个字符：露出多少都是全露 —— 一律用固定点数。
+        n if n <= 2 => "••".to_string(),
+        // 3~8 个字符：只露头 2 个（露头尾就把大半条露出去了）。
+        n if n <= 8 => format!("{}…", chars[..2].iter().collect::<String>()),
+        n => {
+            let head: String = chars[..4].iter().collect();
+            let tail: String = chars[n - 4..].iter().collect();
+            format!("{head}…{tail}")
+        }
     }
 }
 

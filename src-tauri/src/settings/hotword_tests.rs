@@ -62,26 +62,34 @@ fn rejects_an_unusable_output_dir() {
     let _ = std::fs::remove_file(&file);
 }
 
-/// 云端配置：默认空、非法 provider 回退默认、旧 settings.json 缺字段走默认。
+/// 云端配置：默认没有连接、非法 provider 回退默认、旧 settings.json 缺字段走默认。
 #[test]
 fn cloud_settings_default_and_normalize() {
     let s = Settings::default();
     assert_eq!(s.mode, "offline");
-    assert_eq!(s.cloud_provider, "realtime");
-    assert!(s.cloud_base_url.is_empty());
-    assert!(s.cloud_api_key.is_empty());
-    assert!(s.cloud_model.is_empty());
+    // 云端现在是**连接列表**：默认一条都没有（没配过云端）。
+    assert!(s.cloud_profiles.is_empty(), "默认不该有连接");
+    assert!(s.cloud_active_profile.is_empty());
+    assert!(s.active_cloud_profile().is_none());
 
     // 非法 provider 回退默认
     let n = Settings {
-        cloud_provider: "bogus".into(),
+        cloud_profiles: vec![CloudProfile {
+            id: "p-1".into(),
+            label: String::new(),
+            provider: "bogus".into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+        }],
+        cloud_active_profile: "p-1".into(),
         ..Settings::default()
     }
     .normalize();
-    assert_eq!(n.cloud_provider, "realtime");
+    assert_eq!(n.cloud_profiles[0].provider, "realtime");
 
     // 旧 settings.json（无云端字段）反序列化后走默认
     let s: Settings = serde_json::from_str(r#"{"language":"zh","mode":"offline"}"#).unwrap();
-    assert_eq!(s.cloud_api_key, "");
-    assert_eq!(s.cloud_provider, "realtime");
+    assert!(s.cloud_profiles.is_empty());
+    assert!(s.cloud_active_profile.is_empty());
 }

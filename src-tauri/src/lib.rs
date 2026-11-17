@@ -345,31 +345,78 @@ async fn set_mode(
     Ok(status_of(&app, &state))
 }
 
-/// 保存云端配置（服务地址 / 凭据 / 模型名）。
+/// 保存（新增或改）一条云端连接。
 ///
-/// API key 是凭据：**不写日志、不回传前端**。前端只拿到 `cloud_configured` 布尔值。
+/// API key 是凭据：**不写日志、不回传前端**。前端只拿到掩码。
 /// `api_key` 传 `None` 表示「不改」（key 不会回传前端，前端无从知道当前值，
 /// 所以清空要显式传空串）。
 #[tauri::command]
-fn set_cloud_config(
+fn save_cloud_profile(
     app: AppHandle,
     state: State<AppState>,
+    id: Option<String>,
+    label: String,
+    provider: String,
     base_url: String,
     api_key: Option<String>,
     model: String,
-    provider: Option<String>,
-    resource_id: Option<String>,
 ) -> Result<Status, String> {
     {
         let mut guard = state
             .settings
             .lock()
             .map_err(|_| code("error.settingsState"))?;
-        settings::apply_cloud_config(&mut guard, base_url, api_key, model, provider, resource_id);
+        settings::upsert_cloud_profile(
+            &mut guard,
+            id,
+            label,
+            provider,
+            base_url,
+            api_key,
+            model,
+        );
     }
     persist(&app, &state)?;
-    // 凭据不进日志：这里只记「配置已保存」，不打印任何 key 内容。
-    log::info("设置变更：云端配置已保存");
+    // 凭据不进日志：这里只记「连接已保存」，不打印任何 key。
+    log::info("设置变更：云端连接已保存");
+    Ok(status_of(&app, &state))
+}
+
+/// 删一条云端连接。删的是正在使用的那条 → 自动落到下一条。
+#[tauri::command]
+fn delete_cloud_profile(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+) -> Result<Status, String> {
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| code("error.settingsState"))?;
+        settings::delete_cloud_profile(&mut guard, &id);
+    }
+    persist(&app, &state)?;
+    log::info("设置变更：云端连接已删除");
+    Ok(status_of(&app, &state))
+}
+
+/// 指定正在使用的那条云端连接（转写时用它）。
+#[tauri::command]
+fn set_active_cloud_profile(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+) -> Result<Status, String> {
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| code("error.settingsState"))?;
+        settings::set_active_cloud_profile(&mut guard, &id);
+    }
+    persist(&app, &state)?;
+    log::info("设置变更：云端连接已切换");
     Ok(status_of(&app, &state))
 }
 
@@ -778,15 +825,19 @@ async fn start_cloud_recording(
         .clone()
         .unwrap_or_else(|| "默认".into());
     // 凭据：没填就不能用云端。凭据本身不进日志，也不回传。
-    if settings.cloud_api_key.trim().is_empty() {
+    // **用哪一条连接**：设置里的活动连接（`cloud_active_profile` 指向的那条）。
+    let profile = settings
+        .active_cloud_profile()
+        .ok_or_else(|| code("cloud.notConfigured"))?;
+    if profile.api_key.trim().is_empty() {
         return Err(code("cloud.notConfigured"));
     }
     // gpt-live-transcribe 不支持 server_vad：必须有本地 VAD 做客户端断句。
     // 只下载这份 2.3 MB 的 VAD，不要求整份流式模型；复用流式下载忙碌标志，
     // 避免与设置页的下载同时写同一个文件。
     // 能力先查表：VAD 前置条件与状态回传用的是同一份来源。
-    let caps = asr::cloud::provider_capabilities(&settings.cloud_provider)
-        .ok_or_else(|| code_detail("cloud.unsupportedProvider", &settings.cloud_provider))?;
+    let caps = asr::cloud::provider_capabilities(&profile.provider)
+        .ok_or_else(|| code_detail("cloud.unsupportedProvider", &profile.provider))?;
     let mut vad_path = models::resolve_cloud_vad(&app);
     // 需要本地 VAD 而本机没有 → 先下载那一份（2.3 MB），仍没有就报错。
     if caps.needs_local_vad && vad_path.is_none() {
@@ -1277,7 +1328,9 @@ pub fn run() {
             set_mode,
             set_punct,
             set_hotwords,
-            set_cloud_config,
+            save_cloud_profile,
+            delete_cloud_profile,
+            set_active_cloud_profile,
             default_hotwords,
             list_input_devices,
             warm_up_mic,
