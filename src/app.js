@@ -8,13 +8,15 @@ import { getCurrentWindow, getCurrentWebview, invoke, logEvent } from './tauri.j
 import { renderHistory, saveHistory, setHistoryLoadHandler } from './history.js'
 import { clearResult, relocalizeResult, renderResultActions, showTranscript } from './result.js'
 import {
-  clearCloudKey, downloadModel, downloadStreamingModel, loadDevices,
+  closeCloudEditor, downloadModel, downloadStreamingModel, loadDevices,
   cloudProviderItems, localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
-  saveCloudConfig, setMode, setSelects, warmUp,
+  deleteCloudProfile, openCloudEditor, refreshCloudModelOptions, saveCloudProfile,
+  setActiveCloudProfile, setMode, setSelects, warmUp,
 } from './status.js'
 import {
   buildWave, cancelRecording, renderHint, renderMicLabel, startRecording, stopRecording,
 } from './recorder.js'
+import { backIcon, saveIcon } from './icons.js'
 import { openOutputDir, pickAndTranscribeFile, pickOutputDir, transcribeFilePath } from './files.js'
 import { listenEvents } from './events.js'
 import { copyText, saveText } from './export.js'
@@ -214,8 +216,28 @@ export function bindUI() {
     }
   })
 
-  els.cloudSave.addEventListener('click', () => void saveCloudConfig())
-  els.cloudClearKey.addEventListener('click', () => void clearCloudKey())
+  // 图标按钮：SVG 只在 icons.js 里写一份（HTML 里只放空按钮 + 可访问名称）。
+  els.cloudSave.innerHTML = saveIcon()
+  els.cloudCancel.innerHTML = backIcon()
+  els.cloudSave.addEventListener('click', () => void saveCloudProfile())
+  els.cloudCancel.addEventListener('click', () => closeCloudEditor())
+  els.cloudAdd.addEventListener('click', () => openCloudEditor(null))
+  // 列表里的三个动作：设为使用中 / 编辑 / 删除。
+  els.cloudProfiles.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-action]')
+    if (!button) return
+    const row = button.closest('[data-profile-id]')
+    const id = row?.dataset.profileId
+    if (!id) return
+    if (button.dataset.action === 'activate') {
+      void setActiveCloudProfile(id)
+    } else if (button.dataset.action === 'edit') {
+      const profile = state.status?.cloudProfiles?.find((item) => item.id === id)
+      openCloudEditor(profile || null)
+    } else if (button.dataset.action === 'delete') {
+      void deleteCloudProfile(id)
+    }
+  })
 
   els.hotwordsSave.addEventListener('click', async () => {
     const hotwords = els.hotwordsInput.value
@@ -282,28 +304,15 @@ export function bindUI() {
   })
   localeSelect.setItems(localeItems(), localStorage.getItem(LOCALE_KEY) || 'system')
   cloudProviderSelect = UISelect.create(els.cloudProviderSelect, {
-    onChange: async (value) => {
-      // 换服务 = 换一套配置含义：地址 / 凭据 / 模型 / 资源标识不能跨家沿用
-      // （把上一家的地址带给新家会连不上，旧 key 留着又会让「已配置」变成
-      // 假就绪 —— 点麦克风才发现凭据不对）。所以这里明确清空并提示用户
-      // 重新填写，而不是让两家的配置混在一处。
+    onChange: (value) => {
+      // 换服务 = 换一套配置含义（地址 / 凭据 / 模型不能跨家沿用）。
+      // **但不再清空任何东西** —— 每家现在是**独立的一条连接**（列表里各自
+      // 留着），编辑区里换服务只是换这一条的服务，别的连接不受影响。
+      // 这里只换模型候选项：火山的候选项是资源标识，别家是模型名。
+      els.cloudModel.value = ''
       els.cloudBaseUrl.value = ''
       els.cloudApiKey.value = ''
-      els.cloudModel.value = ''
-      els.cloudResourceId.value = ''
-      try {
-        state.status = await invoke('set_cloud_config', {
-          baseUrl: '',
-          apiKey: '',
-          model: '',
-          provider: value,
-          resourceId: '',
-        })
-        renderStatus()
-        toast(t('settings.cloudSwitched'))
-      } catch (error) {
-        toast(fmtError(error), 'error')
-      }
+      refreshCloudModelOptions(value)
     },
   })
   cloudProviderSelect.setItems(cloudProviderItems(), state.status?.cloudProvider || 'realtime')

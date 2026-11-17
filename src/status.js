@@ -2,6 +2,7 @@
 
 import { $, CLOUD_OPT_IN_KEY, LANGS, STREAM_LANGS, els, errorCode, errorText, fmtBytes, fmtError, idleHint, state, t, toast } from './core.js'
 import { confirmDialog, invoke, logEvent, openDialog } from './tauri.js'
+import { editIcon, iconAction, trashIcon } from './icons.js'
 
 /* 下拉框实例由入口创建后交给这里（status 不该认识 applyLocale，否则会和入口互相依赖） */
 let deviceSelect = null
@@ -129,9 +130,69 @@ export function cloudProviderItems() {
   ]
 }
 
-/// 云端配置表单：回填服务地址与模型名。
+/// 各家「模型 / 资源标识」的候选项。
 ///
-/// 凭据不会回传前端 —— 密钥输入框留空，配没配用一行状态字说明。
+/// **不让用户手打**：阿里的模型走白名单（填错直接报错），火山的资源标识
+/// 填成模型 1.0 的 id 会握手 403 —— 手打很容易踩，踩了只有连不上时才看得见。
+///
+/// Realtime 的官方还有别的模型，所以它的候选项后面**允许手打**（datalist）。
+const CLOUD_MODEL_OPTIONS = {
+  realtime: ['gpt-live-transcribe'],
+  aliyun: ['qwen-audio-3.1-asr-flash-streaming'],
+  volcengine: ['volc.seadasr.sauc.duration', 'volc.seadasr.sauc.concurrent'],
+}
+
+/// 火山那一列叫「资源标识」，别家叫「模型」—— 同一个字段，按服务解释。
+function cloudModelLabel(provider) {
+  return provider === 'volcengine'
+    ? t('settings.cloudResourceId')
+    : t('settings.cloudModel')
+}
+
+/// 刷新模型候选项（换服务就换一批）。
+export function refreshCloudModelOptions(provider) {
+  const options = CLOUD_MODEL_OPTIONS[provider] || []
+  els.cloudModelOptions.replaceChildren(
+    ...options.map((value) => {
+      const option = document.createElement('option')
+      option.value = value
+      // 有的引擎的 datalist 只显示文本、不看 value —— 不写会显示成空白。
+      option.textContent = value
+      return option
+    }),
+  )
+  els.cloudModelLabel.textContent = cloudModelLabel(provider)
+}
+
+/// 正在编辑的那条连接（`null` = 没在编辑）。
+let editingProfileId = null
+
+/// 打开编辑区（`profile` 为空 = 新增一条）。
+export function openCloudEditor(profile) {
+  editingProfileId = profile?.id || null
+  els.cloudEditor.classList.remove('hidden')
+  const provider = profile?.provider || cloudProviderValue()
+  if (cloudProviderSelect && cloudProviderSelect.value !== provider) {
+    cloudProviderSelect.setItems(cloudProviderItems(), provider)
+  }
+  refreshCloudModelOptions(provider)
+  els.cloudLabel.value = profile?.label || ''
+  els.cloudBaseUrl.value = profile?.baseUrl || ''
+  // 凭据不回传前端 —— 留空表示「不改」（要清空就在编辑区里显式清）。
+  els.cloudApiKey.value = ''
+  els.cloudModel.value = profile?.model || ''
+}
+
+/// 收起编辑区。
+export function closeCloudEditor() {
+  editingProfileId = null
+  els.cloudEditor.classList.add('hidden')
+  els.cloudApiKey.value = ''
+}
+
+/// 云端配置：连接列表 + 状态行。
+///
+/// 凭据不会回传前端 —— 列表里只显示**掩码**（头 4 + 尾 4）。
 function renderCloudConfig() {
   const status = state.status
   if (!status) return
@@ -143,27 +204,66 @@ function renderCloudConfig() {
   els.cloudKeywordHint.textContent = status.cloudSupportsKeywords
     ? ''
     : t('settings.cloudNoKeywords')
-  // 用户正在编辑时不要覆盖输入
-  if (document.activeElement !== els.cloudBaseUrl) {
-    els.cloudBaseUrl.value = status.cloudBaseUrl || ''
-  }
-  if (document.activeElement !== els.cloudModel) {
-    els.cloudModel.value = status.cloudModel || ''
-  }
-  if (document.activeElement !== els.cloudResourceId) {
-    els.cloudResourceId.value = status.cloudResourceId || ''
-  }
-  // 配置项按 provider 解释：Realtime 与阿里都有「模型名」（可换模型），
-  // 只有火山需要「资源标识」。
-  const provider = status.cloudProvider || 'realtime'
-  // 下拉框必须跟着状态走：启动时 bindUI 先于 refreshStatus，那时还没有
-  // 状态（界面显示 realtime，实际存的是 volcengine）—— 保存一次就把
-  // 服务静默改回去了。
-  if (cloudProviderSelect && cloudProviderSelect.value !== provider) {
-    cloudProviderSelect.setItems(cloudProviderItems(), provider)
-  }
-  els.cloudModelField.classList.toggle('hidden', provider !== 'realtime' && provider !== 'aliyun')
-  els.cloudResourceField.classList.toggle('hidden', provider !== 'volcengine')
+  renderCloudProfiles(status)
+}
+
+/// 渲染连接列表：每行一条（掩码 + 服务 + 备注 + 「使用中」）。
+function renderCloudProfiles(status) {
+  const profiles = status.cloudProfiles || []
+  els.cloudProfiles.replaceChildren(
+    ...profiles.map((profile) => {
+      const row = document.createElement('div')
+      row.className = 'cloud-profile'
+      row.dataset.profileId = profile.id
+
+      const active = profile.id === status.cloudActiveProfile
+      row.classList.toggle('active', active)
+
+      const mark = document.createElement('button')
+      mark.type = 'button'
+      mark.className = 'cloud-profile-mark'
+      mark.dataset.action = 'activate'
+      mark.title = t('settings.cloudUseThis')
+      mark.textContent = active ? '●' : '○'
+      row.appendChild(mark)
+
+      const body = document.createElement('div')
+      body.className = 'cloud-profile-body'
+      const name = document.createElement('div')
+      name.className = 'cloud-profile-name'
+      name.textContent = profile.label || profile.provider
+      const detail = document.createElement('div')
+      detail.className = 'muted small'
+      // 掩码 + 服务名（凭据明文永远不回传前端）。
+      detail.textContent = [profile.keyMask, cloudProviderLabel(profile.provider)]
+        .filter(Boolean)
+        .join(' · ')
+      body.append(name, detail)
+      row.appendChild(body)
+
+      if (active) {
+        const badge = document.createElement('span')
+        badge.className = 'cloud-profile-badge'
+        badge.textContent = t('settings.cloudInUse')
+        row.appendChild(badge)
+      }
+
+      const edit = iconAction(t('settings.cloudEdit'), editIcon())
+      edit.dataset.action = 'edit'
+      row.appendChild(edit)
+
+      const remove = iconAction(t('settings.cloudDelete'), trashIcon())
+      remove.dataset.action = 'delete'
+      row.appendChild(remove)
+      return row
+    }),
+  )
+}
+
+/// provider 的显示名（列表里用）。
+function cloudProviderLabel(provider) {
+  const found = cloudProviderItems().find((item) => item.value === provider)
+  return found ? found.label : provider
 }
 
 /// 云端模式会把录音上传出去：第一次必须用户明确同意。
@@ -191,40 +291,46 @@ function cloudProviderValue() {
   return cloudProviderSelect?.value || state.status?.cloudProvider || 'realtime'
 }
 
-/// 保存云端配置。
+/// 保存（新增或改）一条连接。
 ///
-/// 凭据不会回传前端，所以密钥框留空 = 不改；要清空走「清除凭据」。
-export async function saveCloudConfig() {
+/// 凭据不会回传前端，所以密钥框留空 = 不改；想清空就填一个空串再保存
+/// （前端传空串 = 后端清空）。
+export async function saveCloudProfile() {
   const typed = els.cloudApiKey.value.trim()
   try {
-    state.status = await invoke('set_cloud_config', {
+    state.status = await invoke('save_cloud_profile', {
+      id: editingProfileId,
+      label: els.cloudLabel.value.trim(),
       baseUrl: els.cloudBaseUrl.value.trim(),
       apiKey: typed ? typed : undefined,
       model: els.cloudModel.value.trim(),
       provider: cloudProviderValue(),
-      resourceId: els.cloudResourceId.value.trim(),
     })
     renderStatus()
-    els.cloudApiKey.value = ''
+    closeCloudEditor()
     toast(t('settings.cloudSaved'))
   } catch (error) {
     toast(fmtError(error), 'error')
   }
 }
 
-/// 清除已保存的凭据：显式传空串（保存时空串表示「清空」）。
-export async function clearCloudKey() {
+/// 删一条连接。
+export async function deleteCloudProfile(id) {
   try {
-    state.status = await invoke('set_cloud_config', {
-      baseUrl: els.cloudBaseUrl.value.trim(),
-      apiKey: '',
-      model: els.cloudModel.value.trim(),
-      provider: cloudProviderValue(),
-      resourceId: els.cloudResourceId.value.trim(),
-    })
+    state.status = await invoke('delete_cloud_profile', { id })
     renderStatus()
-    els.cloudApiKey.value = ''
-    toast(t('settings.cloudKeyCleared'))
+    if (editingProfileId === id) closeCloudEditor()
+    toast(t('settings.cloudProfileDeleted'))
+  } catch (error) {
+    toast(fmtError(error), 'error')
+  }
+}
+
+/// 指定正在使用的那条连接（转写时用它）。
+export async function setActiveCloudProfile(id) {
+  try {
+    state.status = await invoke('set_active_cloud_profile', { id })
+    renderStatus()
   } catch (error) {
     toast(fmtError(error), 'error')
   }

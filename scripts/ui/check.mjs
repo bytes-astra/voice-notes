@@ -70,6 +70,9 @@ const installMock = () => {
     cloudSupportsKeywords: true,
     cloudResourceId: '',
     cloudModel: '',
+    // 连接列表 + 正在使用的那条（凭据只回传掩码，明文不回来）。
+    cloudProfiles: [],
+    cloudActiveProfile: '',
   }
   window.__mockCalls = []
   window.__mockTranscript = ''
@@ -86,7 +89,46 @@ const installMock = () => {
   window.__mockError = null
   window.__mockStatusError = null
   window.__mockStatus = { ...base }
-  const clone = (value) => JSON.parse(JSON.stringify(value))
+  // 造一条连接（界面检查用）：凭据只留掩码，跟真后端一个口径。
+function mockProfile(args, index) {
+  const key = args.apiKey || 'sk-mock-key-value'
+  return {
+    id: args.id || `p-${index}`,
+    label: args.label || '测试连接',
+    provider: args.provider || 'aliyun',
+    baseUrl: args.baseUrl || '',
+    model: args.model || '',
+    keyMask: `${key.slice(0, 4)}…${key.slice(-4)}`,
+  }
+}
+
+// 新增或改一条连接。
+function upsertMockProfile(profiles, args) {
+  const list = [...(profiles || [])]
+  const found = list.findIndex((profile) => profile.id === args.id)
+  const next = mockProfile(args, list.length + 1)
+  if (found >= 0) list[found] = { ...list[found], ...next, id: list[found].id }
+  else list.push(next)
+  return list
+}
+
+// 活动项变了 → 把「使用中」那条的状态同步到 Status 的顶层字段
+// （真后端也是从活动连接取 provider / 地址 / 模型的）。
+function syncMockActiveProfile() {
+  const active = (window.__mockStatus.cloudProfiles || []).find(
+    (profile) => profile.id === window.__mockStatus.cloudActiveProfile,
+  )
+  window.__mockStatus = {
+    ...window.__mockStatus,
+    cloudProvider: active?.provider ?? '',
+    cloudBaseUrl: active?.baseUrl ?? '',
+    cloudModel: active?.model ?? '',
+    cloudResourceId: active?.provider === 'volcengine' ? active?.model ?? '' : '',
+    cloudConfigured: !!active?.keyMask,
+  }
+}
+
+const clone = (value) => JSON.parse(JSON.stringify(value))
   const result = { text: '浏览器结果', segments: [], durationSeconds: 2, elapsedMs: 100, language: 'zh' }
   window.__TAURI__ = {
     core: {
@@ -114,19 +156,35 @@ const installMock = () => {
               cloudHotwordsIgnored: window.__mockCloudHotwordsIgnored,
             }
             return clone(window.__mockStatus)
-          case 'set_cloud_config':
+          case 'save_cloud_profile': {
+            // 云端配置现在是**连接列表**：每条一整套配置。凭据只回传掩码
+            // （明文不留 —— 跟真后端一个口径）。
+            const profiles = upsertMockProfile(window.__mockStatus.cloudProfiles, args)
+            const added = profiles.find((profile) => profile.id === args.id) || profiles[profiles.length - 1]
             window.__mockStatus = {
               ...window.__mockStatus,
-              cloudBaseUrl: args.baseUrl ?? '',
-              cloudModel: args.model ?? '',
-              cloudProvider: args.provider ?? window.__mockStatus.cloudProvider,
-              cloudResourceId: args.resourceId ?? window.__mockStatus.cloudResourceId,
-              // 凭据只记「有没有」，明文不留（跟真后端一个口径）。
-              cloudConfigured:
-                args.apiKey === undefined
-                  ? window.__mockStatus.cloudConfigured
-                  : !!args.apiKey,
+              cloudProfiles: profiles,
+              // 新增的那条自动成为「使用中」。
+              cloudActiveProfile: window.__mockStatus.cloudActiveProfile || added?.id || '',
             }
+            syncMockActiveProfile()
+            return clone(window.__mockStatus)
+          }
+          case 'delete_cloud_profile':
+            window.__mockStatus = {
+              ...window.__mockStatus,
+              cloudProfiles: (window.__mockStatus.cloudProfiles || []).filter(
+                (profile) => profile.id !== args.id,
+              ),
+            }
+            syncMockActiveProfile()
+            return clone(window.__mockStatus)
+          case 'set_active_cloud_profile':
+            window.__mockStatus = {
+              ...window.__mockStatus,
+              cloudActiveProfile: args.id,
+            }
+            syncMockActiveProfile()
             return clone(window.__mockStatus)
           case 'default_hotwords':
             return ['产品评审会', '玄戒芯片', '张三']
@@ -1357,69 +1415,140 @@ check(
 await page.locator('.nav-item[data-view="settings"]').click()
 await page.waitForTimeout(200)
 check(
-  '云端配置表单可见',
-  (await page.locator('#cloud-base-url').count()) === 1 &&
-    (await page.locator('#cloud-api-key').count()) === 1 &&
-    (await page.locator('#cloud-model').count()) === 1,
+  '云端连接列表存在',
+  (await page.locator('#cloud-profiles').count()) === 1 &&
+    (await page.locator('#cloud-add').count()) === 1,
 )
+// 编辑区默认收起 —— 列表没展开时不占地方。
+check(
+  '编辑区默认收起',
+  !(await page.locator('#cloud-editor').isVisible()),
+)
+// 添��一条连接：编辑区展开 → 填 → 保存 → 列表里出现一行。
+await page.locator('#cloud-add').click()
+await page.waitForTimeout(150)
+check('添加连接后编辑区展开', await page.locator('#cloud-editor').isVisible())
+await page.locator('#cloud-label').fill('阿里·生产')
 await page.locator('#cloud-base-url').fill('https://example.invalid/v1')
 await page.locator('#cloud-api-key').fill('mock-key')
-await page.locator('#cloud-model').fill('mock-model')
+await page.locator('#cloud-model').fill('qwen-audio-3.1-asr-flash-streaming')
 await page.locator('#cloud-save').click()
 await page.waitForTimeout(300)
+check(
+  '保存后列表里有一条连接',
+  (await page.locator('#cloud-profiles .cloud-profile').count()) === 1,
+  `行数=${await page.locator('#cloud-profiles .cloud-profile').count()}`,
+)
+const profileRowText = await page.locator('#cloud-profiles .cloud-profile').first().innerText()
+// 列表里只显示**掩码**，不显示明文。
+check(
+  '列表显示掩码、不显示明文',
+  !profileRowText.includes('mock-key') && profileRowText.includes('…'),
+  profileRowText,
+)
+check(
+  '使用中的那条有徽章',
+  profileRowText.includes('使用中'),
+  profileRowText,
+)
+check('密钥不回显', (await page.locator('#cloud-api-key').inputValue()) === '')
 check(
   '云端配置已保存',
   (await page.evaluate(() => window.__mockStatus.cloudConfigured)) === true,
 )
-check('密钥不回显', (await page.locator('#cloud-api-key').inputValue()) === '')
-// 云端服务可选：不同 provider 的配置项不同（火的要资源标识，不要模型名）。
+
+// **第二家**：火山。添���一条 → 列表里两行，**第一条仍然是使用中**。
+await page.locator('#cloud-add').click()
+await page.waitForTimeout(150)
+await page.locator('#cloud-label').fill('火山·小时版')
+await page.locator('#cloud-api-key').fill('volc-key')
+// 火山的「模型」字段是资源标识 —— 候选项按服务给，不让用户手打。
 await page.locator('#cloud-provider-select .select-button').click()
 await page.waitForTimeout(150)
 await page.locator('.select-popup .select-item', { hasText: '火山' }).first().click()
-await page.waitForTimeout(300)
+await page.waitForTimeout(250)
+const volcModelOptions = await page
+  .locator('#cloud-model-options option')
+  .allTextContents()
 check(
-  '切到火山后出现资源标识、隐藏模型名',
-  (await page.locator('#cloud-resource-field').isVisible()) &&
-    !(await page.locator('#cloud-model-field').isVisible()),
-  `资源标识可见=${await page.locator('#cloud-resource-field').isVisible()} 模型可见=${await page.locator('#cloud-model-field').isVisible()}`,
+  '火山的模型候选项是那两个资源标识',
+  volcModelOptions.includes('volc.seadasr.sauc.duration') &&
+    volcModelOptions.includes('volc.seadasr.sauc.concurrent'),
+  volcModelOptions.join(','),
 )
 check(
-  '云端服务选择已保存',
-  (await page.evaluate(() => window.__mockStatus.cloudProvider)) === 'volcengine',
-  await page.evaluate(() => window.__mockStatus.cloudProvider),
+  '火山那一列叫资源标识',
+  (await page.locator('#cloud-model-label').innerText()).includes('资源标识'),
+  await page.locator('#cloud-model-label').innerText(),
 )
-// 阿里的字段可见性与火山相反：有模型名（可换模型），没有资源标识。
-await page.locator('#cloud-provider-select .select-button').click()
-await page.waitForTimeout(150)
-await page.locator('.select-popup .select-item', { hasText: '阿里' }).first().click()
-await page.waitForTimeout(300)
-check(
-  '切到阿里后出现模型名、隐藏资源标识',
-  (await page.locator('#cloud-model-field').isVisible()) &&
-    !(await page.locator('#cloud-resource-field').isVisible()),
-  `模型可见=${await page.locator('#cloud-model-field').isVisible()} 资源标识可见=${await page.locator('#cloud-resource-field').isVisible()}`,
-)
-check(
-  '切到阿里后服务已保存',
-  (await page.evaluate(() => window.__mockStatus.cloudProvider)) === 'aliyun',
-  await page.evaluate(() => window.__mockStatus.cloudProvider),
-)
-
-// 切回默认服务。切换会清掉地址与凭据（各家的配置不能混用），
-// 后面还有断言要用「已配置」的状态 —— 这里重新填一次。
-await page.locator('#cloud-provider-select .select-button').click()
-await page.waitForTimeout(150)
-await page.locator('.select-popup .select-item', { hasText: 'OpenAI' }).first().click()
-await page.waitForTimeout(300)
-await page.locator('#cloud-api-key').fill('mock-key')
+await page.locator('#cloud-model').fill('volc.seadasr.sauc.duration')
 await page.locator('#cloud-save').click()
 await page.waitForTimeout(300)
+check(
+  '两条连接都在列表里',
+  (await page.locator('#cloud-profiles .cloud-profile').count()) === 2,
+  `行数=${await page.locator('#cloud-profiles .cloud-profile').count()}`,
+)
+
+// **切 provider 不再清空别人的配置** —— 这是这次改动的核心：每家是独立的一条。
+check(
+  '切到火山没有清掉阿里那条',
+  (await page.evaluate(() => window.__mockStatus.cloudProfiles.length)) === 2,
+  await page.evaluate(() => JSON.stringify(window.__mockStatus.cloudProfiles.map((p) => p.provider))),
+)
+
+// 点另一条的圆点 → 徽章移到那条。
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('[data-action="activate"]').click()
+await page.waitForTimeout(300)
+const secondRowText = await page.locator('#cloud-profiles .cloud-profile').nth(1).innerText()
+const firstRowText = await page.locator('#cloud-profiles .cloud-profile').nth(0).innerText()
+check(
+  '可以切换使用中的那条',
+  secondRowText.includes('使用中') && !firstRowText.includes('使用中'),
+  `第一行=${firstRowText} 第二行=${secondRowText}`,
+)
+
+// 编辑：改备注 → 列表里跟着变。
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('[data-action="edit"]').click()
+await page.waitForTimeout(200)
+check('编辑会打开编辑区', await page.locator('#cloud-editor').isVisible())
+await page.locator('#cloud-label').fill('火山·改过了')
+await page.locator('#cloud-save').click()
+await page.waitForTimeout(300)
+check(
+  '编辑后列表里跟着变',
+  (await page.locator('#cloud-profiles .cloud-profile').nth(1).innerText()).includes('火山·改过了'),
+  await page.locator('#cloud-profiles .cloud-profile').nth(1).innerText(),
+)
+
+// 取消：编辑区收起，列表不变。
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('[data-action="edit"]').click()
+await page.waitForTimeout(200)
+await page.locator('#cloud-label').fill('不该被保存')
+await page.locator('#cloud-cancel').click()
+await page.waitForTimeout(200)
+check('取消后编辑区收起', !(await page.locator('#cloud-editor').isVisible()))
+check(
+  '取消后列表不变',
+  !(await page.locator('#cloud-profiles .cloud-profile').nth(1).innerText()).includes('不该被保存'),
+  await page.locator('#cloud-profiles .cloud-profile').nth(1).innerText(),
+)
+
+// 删除：点垃圾桶 → 那一行没了。
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('[data-action="delete"]').click()
+await page.waitForTimeout(300)
+check(
+  '删除后只剩一条',
+  (await page.locator('#cloud-profiles .cloud-profile').count()) === 1,
+  `行数=${await page.locator('#cloud-profiles .cloud-profile').count()}`,
+)
 
 // 当前 provider 不支持术语表时，界面要提示 —— 术语表是本地流式与云端
 // 共用的全局设置，只能提示，不能隐藏入口。
 await page.evaluate(() => { window.__mockStatus.cloudSupportsKeywords = false })
-// 状态是拉回来才更新的：保存一次配置触发刷新。
-await page.locator('#cloud-save').click()
+// 状态是拉回来才更新的：切一次「使用中」触发刷新（编辑区默认收起，
+// 点列表里的圆点就行）。
+await page.locator('#cloud-profiles .cloud-profile').first().locator('[data-action="activate"]').click()
 await page.waitForTimeout(300)
 check(
   '云端不支持术语表时给出提示',
@@ -1427,7 +1556,7 @@ check(
   await page.locator('#cloud-keyword-hint').innerText(),
 )
 await page.evaluate(() => { window.__mockStatus.cloudSupportsKeywords = true })
-await page.locator('#cloud-save').click()
+await page.locator('#cloud-profiles .cloud-profile').first().locator('[data-action="activate"]').click()
 await page.waitForTimeout(300)
 check(
   '云端支持术语表时不提示',

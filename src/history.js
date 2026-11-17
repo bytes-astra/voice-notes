@@ -2,7 +2,7 @@
 
 import { I18N, els, fmtDuration, gapMarkerTexts, historyStorageSet, localizeText, renderResultMeta, state, t, toast } from './core.js'
 import { copyText, saveText } from './export.js'
-import { copyIcon, saveIcon, trashIcon } from './icons.js'
+import { copyIcon, iconAction, saveIcon, trashIcon } from './icons.js'
 
 /// 载入历史后要切回结果页 —— 但 history.js 不能 import app.js（依赖方向）。
 /// 由 app.js 在绑定界面时注入。
@@ -103,14 +103,4 @@ export function renderHistory() {
   }
 }
 
-export function iconAction(label, icon, onClick) {
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = 'icon-btn sm'
-  button.title = label
-  button.setAttribute('aria-label', label)
-  button.innerHTML = icon
-  button.addEventListener('click', onClick)
-  return button
-}
 

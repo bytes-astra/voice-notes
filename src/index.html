@@ -216,29 +216,38 @@
               <p class="muted small" data-i18n="settings.cloudHint">可选。填好后可以在转写页选「云端」模式；不填就只在本机处理。</p>
               <p class="muted small" id="cloud-status"></p>
               <p class="muted small" id="cloud-keyword-hint"></p>
-              <div class="field">
-                <span class="field-label" data-i18n="settings.cloudProvider">云端服务</span>
-                <div id="cloud-provider-select" class="select" data-i18n-aria="settings.cloudProvider"></div>
-              </div>
-              <label class="field">
-                <span class="field-label" data-i18n="settings.cloudBaseUrl">服务地址</span>
-                <input type="text" id="cloud-base-url" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudBaseUrlPlaceholder" />
-              </label>
-              <label class="field">
-                <span class="field-label" data-i18n="settings.cloudApiKey">API 密钥</span>
-                <input type="password" id="cloud-api-key" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudApiKeyPlaceholder" />
-              </label>
-              <label class="field" id="cloud-model-field">
-                <span class="field-label" data-i18n="settings.cloudModel">模型</span>
-                <input type="text" id="cloud-model" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudModelPlaceholder" />
-              </label>
-              <label class="field" id="cloud-resource-field">
-                <span class="field-label" data-i18n="settings.cloudResourceId">资源标识</span>
-                <input type="text" id="cloud-resource-id" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudResourceIdPlaceholder" />
-              </label>
-              <div class="row">
-                <button type="button" class="btn small primary" id="cloud-save" data-i18n="settings.cloudSave">保存云端配置</button>
-                <button type="button" class="btn small ghost" id="cloud-clear-key" data-i18n="settings.cloudClearKey">清除凭据</button>
+              <!-- 连接列表：每条是一整套配置（服务 / 地址 / 密钥 / 模型）。 -->
+              <div id="cloud-profiles"></div>
+              <button type="button" class="btn small ghost" id="cloud-add" data-i18n="settings.cloudAdd">＋ 添加一个连接</button>
+              <!-- 编辑区：新增或改一条连接时展开。 -->
+              <div id="cloud-editor" class="hidden">
+                <div class="field">
+                  <span class="field-label" data-i18n="settings.cloudProvider">云端服务</span>
+                  <div id="cloud-provider-select" class="select" data-i18n-aria="settings.cloudProvider"></div>
+                </div>
+                <label class="field">
+                  <span class="field-label" data-i18n="settings.cloudLabel">备注</span>
+                  <input type="text" id="cloud-label" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudLabelPlaceholder" />
+                </label>
+                <label class="field">
+                  <span class="field-label" data-i18n="settings.cloudBaseUrl">服务地址</span>
+                  <input type="text" id="cloud-base-url" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudBaseUrlPlaceholder" />
+                </label>
+                <label class="field">
+                  <span class="field-label" data-i18n="settings.cloudApiKey">API 密钥</span>
+                  <input type="password" id="cloud-api-key" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudApiKeyPlaceholder" />
+                </label>
+                <!-- 「模型」按服务解释：Realtime 与阿里是模型名，火山是资源标识。
+                     候选项走 datalist（点开有下拉），同时允许手打（Realtime 还能用别的模型）。 -->
+                <label class="field">
+                  <span class="field-label" id="cloud-model-label" data-i18n="settings.cloudModel">模型</span>
+                  <input type="text" id="cloud-model" list="cloud-model-options" spellcheck="false" autocomplete="off" data-i18n-placeholder="settings.cloudModelPlaceholder" />
+                  <datalist id="cloud-model-options"></datalist>
+                </label>
+                <div class="row">
+                  <button type="button" class="icon-btn sm primary" id="cloud-save" data-i18n-aria="settings.cloudSave" data-i18n-title="settings.cloudSave"></button>
+                  <button type="button" class="icon-btn sm" id="cloud-cancel" data-i18n-aria="settings.cloudCancel" data-i18n-title="settings.cloudCancel"></button>
+                </div>
               </div>
             </section>
             <section>
