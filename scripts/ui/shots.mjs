@@ -1,4 +1,4 @@
-// 重新生成 README 用截图：9 张，@2x。
+// 重新生成 README 用截图：10 张，@2x。
 // 视口用「应用真实的默认窗口尺寸」（src-tauri/tauri.conf.json），README 里的图
 // 就是用户启动后看到的样子。
 // 运行：npm run shots
@@ -41,12 +41,15 @@ const BASE_STATUS = {
   punctReady: true,
   hotwords: [],
   // 云端：默认没配凭据；默认 provider（OpenAI Realtime）支持术语表。
+  // 云端配置是「连接列表」：没配过就是空列表（不给默认假连接）。
   cloudConfigured: false,
   cloudBaseUrl: '',
   cloudProvider: 'realtime',
   cloudSupportsKeywords: true,
   cloudResourceId: '',
   cloudModel: '',
+  cloudProfiles: [],
+  cloudActiveProfile: '',
   inputDevice: null,
   punctBytes: 294_372_519,
   punctTotalBytes: 294_372_519,
@@ -299,6 +302,51 @@ async function shot(page, name) {
   await page.locator('.nav-item[data-view="transcribe"]').click()
   await page.waitForTimeout(400)
   await shot(page, 'english')
+  await context.close()
+}
+
+// 10. 云端配置（连接列表：掩码 + 「使用中」标记）
+{
+  const { context, page } = await makePage({
+    status: {
+      cloudConfigured: true,
+      cloudProvider: 'aliyun',
+      cloudSupportsKeywords: true,
+      cloudModel: 'qwen-audio-3.1-asr-flash-streaming',
+      cloudActiveProfile: 'p-1',
+      cloudProfiles: [
+        {
+          id: 'p-1',
+          label: '阿里·生产',
+          provider: 'aliyun',
+          baseUrl: '',
+          model: 'qwen-audio-3.1-asr-flash-streaming',
+          keyMask: 'sk-a…HePU',
+        },
+        {
+          id: 'p-2',
+          label: 'Realtime·自建',
+          provider: 'realtime',
+          baseUrl: 'https://api.example.invalid/v1',
+          model: 'gpt-4o-transcribe',
+          keyMask: 'sk-r…9Xk',
+        },
+      ],
+    },
+  })
+  await page.locator('.nav-item[data-view="settings"]').click()
+  await page.waitForTimeout(300)
+  // 设置页很长，云端那一段在下面 —— 滚过去再截（列表靠近视口上部）。
+  await page.evaluate(() => {
+    const scroller = document.querySelector('.main-scroll')
+    const list = document.querySelector('#cloud-profiles')
+    if (!scroller || !list) return
+    const top =
+      list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+    scroller.scrollTop = top - 72
+  })
+  await page.waitForTimeout(300)
+  await shot(page, 'cloud-settings')
   await context.close()
 }
 
