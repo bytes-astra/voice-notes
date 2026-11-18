@@ -193,7 +193,7 @@
 - **流式结果就是最终结果**（不要用 SenseVoice 覆盖它，这个功能已删）：实测流式明显更准，而且覆盖要保留全部音频，和「不限时长、内存恒定」直接冲突。
 - **流式文本要从 token 列表重建，别用 sherpa 的 `text` 字段**（`asr.rs` 的 `text_from_tokens`）：流式模型词表只有 1426 个汉字，表外的字（番、茄、腩、苹、莓、酪……）只能拆成**字节 token** `<0xE7><0x95><0xAA>` 拼；sherpa 的符号表把 `<0xE7>` 还原成**裸字节**放进 `text`（`symbol-table.cc` 的 `is_bpe_with_byte_fallback_` 分支），切分点落在半个字上时 `text` 就是非法 UTF-8，sherpa 自己的 `Utf8ToUtf32()` 会把它**固化成 U+FFFD** —— 界面上就是「�」。**token 列表是无损的**：从它重建，末尾没解完的半个字先扣住、等下一帧补齐。`clean()` 里另有兜底（丢掉 U+FFFD 并记 WARN）。回归测试 `streaming_smoke::keeps_out_of_vocab_chars_intact` + fixture `tests/fixtures/zh-oov.wav`（macOS TTS 造的「番茄牛腩。苹果派要苹果。草莓奶酪。」）。**整段模式没这个问题** —— SenseVoice 的词表没有字节 token。
 - **术语表（热词）**（`settings.rs` 清洗，`engine.rs` 的 `StreamingEngine::new` 用它）：`settings.hotwords`（≤ 100 条、单条 ≤ 32 字，`settings::clean_hotwords` 清洗）。非空时 `StreamingEngine` 用 `modified_beam_search` + `config.hotwords_buf`（短音频约慢 6%），为空保持 greedy。**只能用在流式** —— SenseVoice 上给热词或 beam 会 `_Exit(-1)` 杀进程（已复现）。改词表会清空流式引擎，下次录音重载 161 MB。设置页「填入示例」用的是 `src-tauri/assets/hotwords.txt`。
-  - **热词要按模型的词表过滤**（`engine.rs` 的 `streaming_vocab_chars` / `split_hotwords_by_vocab`）：流式模型是 cjkchar **单字**词表（1426 字），sherpa 的 `EncodeHotwords` **逐字**查表 —— 任何一个字不在表里，**整条热词**就被跳过（只往 stderr 打一句 `Cannot find ID for token`，界面上看不出为什么没生效）。喂给 sherpa 之前先剔掉含表外字的条目，并记 WARN 列出是哪几条；`Status.hotwordsIgnored` 把这个数给界面，保存后提示「其中 N 个含模型不认识的字，不会生效」。**读不到词表时全部放行** —— 别因为词表读不出来就把用户的术语表清空。
+  - **热词要按模型的词表过滤**（`engine.rs` 的 `streaming_vocab_chars` / `split_hotwords_by_vocab`）：流式模型是 cjkchar **单字**词表（1426 字），sherpa 的 `EncodeHotwords` **逐字**查表 —— 任何一个字不在表里，**整条热词**就被跳过（只往 stderr 打一句 `Cannot find ID for token`，界面上看不出为什么没生效）。喂给 sherpa 之前先剔掉含表外字的条目，并记 WARN 列出是哪几条；`Status.hotwordsIgnored` 把这个数给界面，保存后提示「其中 N 个包含模型词表之外的字，不会生效」。**读不到词表时全部放行** —— 别因为词表读不出来就把用户的术语表清空。
 - 标点模型（`PUNCT`，CT-Transformer zh-en，281 MB，`engine.rs` 的 `PunctuationEngine`）独立放在 `models/punct/`，默认关闭；开启后 `StreamEmitter` 在每句定稿时调 `PunctuationEngine::apply`，实时中间结果不加标点。模型缺失/加载失败时静默降级，不阻断录音。
 
 ### 云端模式
@@ -204,7 +204,10 @@
   **加一家的实际清单**（不只是「加个文件」）：provider 文件 + `provider_capabilities` 表项 + `create_provider` 分支 + `settings::CLOUD_PROVIDERS` + 前端 `cloudProviderItems()` 与 locale 文案 + 字段可见性条件 + 协议层单测 + 界面断言。
 - **配置形态是「连接列表」**：一条 = provider + 地址 + 密钥 + 模型/资源标识 + 备注，**绑成一套**（换 provider 换的是整套）。`Status.cloudProfiles` 回传列表，**凭据只有掩码**（`settings::mask_secret`，头 4 + 尾 4）；`cloudActiveProfile` 指向**正在使用**的那条 —— 转写与 `create_provider` 都读它。
   - **切 provider 不再清空别人的配置**（旧行为是切一下就把地址/密钥/模型全清掉）—— 每家各是一条独立连接。
-  - **「模型」与「资源标识」合并成一个字段**，按 provider 解释：Realtime 与阿里是模型名，火山是 `X-Api-Resource-Id`。**给候选项、不让用户手打** —— 阿里模型走白名单（填错直接报错），火山填成模型 1.0 的 id 会握手 403。
+  - **「模型」与「资源标识」合并成一个字段**，按 provider 解释：Realtime 与阿里是模型名，火山是 `X-Api-Resource-Id`。界面**给候选项**（datalist）：阿里模型另有后端白名单（填错立刻报 `cloud.unsupportedModel`），火山的资源标识**仍可手打**（有些中转服务用自定义标识）—— 填成模型 1.0 的 id 会被**服务端**在握手时拒掉（403），那是火山侧的规则，本地拦不住；Realtime 的模型官方还有别的，保持可手打。
+  - **凭据能显式清除**：凭据明文不回传 → 界面没法「读出来再改」。清空走编辑区的「清除凭据」（`clear_cloud_profile_key` 命令，**只动凭据**，不连带提交编辑区里其它还没保存的字段）；保存时传空串也是「清空」，但界面**不能**用空串表达 —— 空串与「没改」在前端分不开。
+  - **删连接要二次确认**：凭据明文永不回传 → 删掉就找不回来（`confirmDialog`）。
+  - **列表行的三个位置各有各的语义**：状态点（`dotIcon`）只是**指示**（实心 = 使用中）SHALL NOT 是控件；「设为使用中」绑在**整行**上（点空白处也行），靠事件委托取**最近**的 `[data-action]` —— 点在编辑/删除上就是那两个动作，不会顺带切换使用中；行尾动作图标 hover 这行才显形（使用中的那行一直显），图标点击区 32px。
   - **不做旧格式迁移**：旧 `settings.json` 的 5 个平铺云端字段被忽略（用户重新填一遍）—— 两套真值来源迟早不一致。
 - **能力声明**：`Capabilities`（句边界方式 / 是否需要本地 VAD / 中间结果语义 / 是否支持术语表 / 上传采样率）由 provider 自报，按 id 静态查的表（`provider_capabilities`）与实例**同源**（表项就是实现自报的那个常量，别手写第二份）。合法组合只有两种：客户端提交 + 需要本地 VAD；服务端断句 + 不需要本地 VAD。**「缺 VAD」不是「改用服务端断句」** —— 那是另一个能力，混起来会让客户端提交族静默退化。
 - **中间结果统一为「当前未定稿句的累计串」**：各家协议形态不同，在 provider 内部归一，上层只认这一种。归一器按句标识分桶；**没有句标识的协议（服务端断句族）走单桶**，不支持跨句交错。
@@ -243,7 +246,7 @@
 - **服务端断句族的防御性定稿**（阿里最容易回退的一条）：新 `sentence_id` 出现而上一句还没定稿时，**先按最后快照把上一句 emit 成 Final**（判定**只看 id**，与新句有没有文本无关 —— 服务端可能先发「新句 + 空文本 + `sentence_end`」的收尾事件）；
   - **取舍**：按快照定稿后，那个 id 进了去重表 → 服务端随后对同一 id 的**完整** `sentence_end` 会被早退丢弃 → 定稿文本是快照而不是服务端最终文本。**宁可少几个标点，也不要同一句出两条 Final**（重复句子更糟）—— 见 RC-K11；**已定稿且有内容**的 id，其后续事件**一律忽略**（否则重复/迟到的 `end` 会让会话层产生重复句子，迟到的 `end` 还会 `partial.clear()` 掉新句的实时行）。**空文本的定稿不算「已定稿」** —— 它不占去重键，否则同 id 的后续真实文本会被整段丢弃（2026-11-17 外部复审发现 —— **缺陷随 v1.6.0 发布出去了；修复已进 main，尚未发版**（等 v1.6.1 的 tag））。心跳必须在「新 id」判断**之前**判掉。
 - **断句**：客户端提交族本地门控（静音在本地丢掉、静音时提交）；服务端断句族**不门控**（静音照上传，服务端靠静音判句尾），区间走本地轴兜底（终点偏长是已知取舍）。「末包 / 结束标识」不等于「结果已全回」—— 要等最终响应才收尾。**阿里还要多一条：`sentence_end=true` 只表示句子结束，任务结束以 `task-finished` 为准** —— `finish-task` 之后必须继续收 `result-generated`，发完就关会丢尾部结果；而且残包要在 `finish-task` 之前发出去。
-- **凭据**：只存 settings，**不进日志、不回传前端**（`Status` 里没有 key 明文：凭据只有 `cloud_configured` 布尔；连接列表里只有 `keyMask`）；错误详情里的 key 要脱敏（`sanitize`）。**云端模块的日志只许走 `asr/cloud/logging.rs` 的关口**（`warn` / `info` / `code_detail`）—— 写入前用该 provider 的凭据脱敏；绕过关口会被源码级守卫抓住（`asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`：云端模块里出现 `crate::log` 或 `crate::code_detail` 就红 —— **两条路都写日志文件**（`crate::code_detail` 内部就是 `log::error`）却不脱敏，所以云端模块一律用 `logging::code_detail` 先脱敏再委托）。**已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现。切换 provider 会清空地址、凭据、模型与资源标识（各家的配置不能混用）—— 这是**有提示的已知取舍**。
+- **凭据**：只存 settings，**不进日志、不回传前端**（`Status` 里没有 key 明文：凭据只有 `cloud_configured` 布尔；连接列表里只有 `keyMask`）；错误详情里的 key 要脱敏（`sanitize`）。**云端模块的日志只许走 `asr/cloud/logging.rs` 的关口**（`warn` / `info` / `code_detail`）—— 写入前用该 provider 的凭据脱敏；绕过关口会被源码级守卫抓住（`asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`：云端模块里出现 `crate::log` 或 `crate::code_detail` 就红 —— **两条路都写日志文件**（`crate::code_detail` 内部就是 `log::error`）却不脱敏，所以云端模块一律用 `logging::code_detail` 先脱敏再委托）。**已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现。（旧行为「切 provider 就清空地址/凭据/模型」已改成连接列表 —— 每家各一条独立连接，切 provider 不清空别人的配置。）
 - **上传丢包要留缺口**：队列满时丢掉的那段音频推进真实录音时间轴并生成 `[[gap:N]]`；**连续丢包并成一条**（逐条上报会刷屏）。provider 要区分「投递了」与「只是攒包」—— 只回一个丢包数不够（`SendOutcome`）。
 - **验证**：协议层单测（帧编解码、结果映射）+ 真服务冒烟（凭据走环境变量，见 HOW_TO_VERIFY）。真 key 不入库、不进日志、不打印。
 

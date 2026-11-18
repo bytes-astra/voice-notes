@@ -346,6 +346,10 @@ async function shot(page, name) {
     scroller.scrollTop = top - 72
   })
   await page.waitForTimeout(300)
+  // 行尾的铅笔 / 垃圾桶平时是 `opacity: 0`，hover 才显形 —— 不 hover 的话
+  // 截图里根本没有「怎么改、怎么删」这两个入口。把指针停到未使用的那条上。
+  await page.locator('#cloud-profiles .cloud-profile').nth(1).hover()
+  await page.waitForTimeout(300)
   await shot(page, 'cloud-settings')
   await context.close()
 }

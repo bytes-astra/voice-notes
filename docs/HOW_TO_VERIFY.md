@@ -259,7 +259,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   - **计费按 token**（输入 6 元 / 百万、输出 4.5 元 / 百万，北京与新加坡同价），不是按秒。
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（本模型客户端事件页 **800** / 旧的 Paraformer SDK 页 800）→ **显式设 800**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按「不传 = 自动识别」**；`sentence_id` 是否必填 → **必填**（缺了按兼容路径处理并记 WARN）。
 
-**云端相关测试基线**：`cargo test --lib` = **290**（其中 `asr::cloud` = 130 = 会话层 38 + Realtime 协议层 29 + 归一器 6 + 火山 19 + 阿里 38；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
+**云端相关测试基线**：`cargo test --lib` = **295**（其中 `asr::cloud` = 130 = 会话层 38 + Realtime 协议层 29 + 归一器 6 + 火山 19 + 阿里 38；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 > [!NOTE]
 > 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。
@@ -269,8 +269,8 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 165 项检查
-npm run shots        # 重出 README 9 张截图
+npm run check:ui     # 188 项检查
+npm run shots        # 重出 README 10 张截图
 ```
 
 - 脚本在 `scripts/ui/`（`check.mjs` / `shots.mjs` / `server.mjs`），假 `window.__TAURI__` 在 `check.mjs` 里。**浏览器不在默认位置时要设 `PLAYWRIGHT_BROWSERS_PATH`**（本机是 `/tmp/pw-browsers`）。
@@ -283,7 +283,7 @@ npm run shots        # 重出 README 9 张截图
 - **mock 的 `reserve_session` 必须返回会话 ID，`stream:segment` / `stream:partial` 事件必须带同一个 `sessionId`**：前端只认当前会话（`events.js` 里比对 `state.recordingSessionId`），缺了就当成旧会话丢掉 —— 表现是流式截图的结果区一片空白。
 - **mock 的字段名要跟后端序列化后的一致**：后端 `InputDevice` 带 `#[serde(rename_all = "camelCase")]`，载荷是 `isDefault` 不是 `is_default`。写错了设备「· 系统默认」标记就不显示 —— 而且断言还可能因为下拉首项本来就叫「系统默认」而**恒真**，等于没测。断言要盯设备项本身（`Mock Mic · 系统默认`），别盯整段文本里有没有「系统默认」。
 - **mock 的 `cancel_download` 要把在飞的下载拒掉**：真后端取消后返回的是字典 key `setup.cancelled`（models.rs 里的内部哨兵在命令层翻译过）。mock 不拒那个挂起的 promise 的话，界面永远停在「正在下载」，「已取消」这条断言也测不到。
-- **mock 的 `set_hotwords` 返回要带 `hotwordsIgnored`**：真后端回报「有几条含模型不认识的字」（流式模型是单字词表，表外的字让整条术语作废）。少了这个字段，界面永远弹「已保存 N 个术语」，「其中 M 个不会生效」这条提示就测不到。
+- **mock 的 `set_hotwords` 返回要带 `hotwordsIgnored`**：真后端回报「有几条包含模型词表之外的字」（流式模型是单字词表，表外的字让整条术语作废）。少了这个字段，界面永远弹「已保存 N 个术语」，「其中 M 个不会生效」这条提示就测不到。
 
 ## 📚 相关文档
 
