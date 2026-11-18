@@ -99,13 +99,15 @@ impl Settings {
 
     /// 清洗连接列表：provider 取值合法、id 不重复、活动项指向真实存在的连接。
     fn clean_cloud_profiles(&mut self) {
-        // 先收下已有的 id（`next_profile_id` 要读整个列表，不能一边改一边读）。
-        let existing: Vec<String> = self
+        // 清洗**前**的 id：用来判断「这个 id 是不是被别人也用了」。
+        let originals: Vec<String> = self
             .cloud_profiles
             .iter()
-            .map(|profile| profile.id.clone())
+            .map(|profile| profile.id.trim().to_string())
+            .filter(|id| !id.is_empty())
             .collect();
-        let mut seen: Vec<String> = Vec::new();
+        // 已经定下来的 id（前面几条清洗完的结果）。
+        let mut taken: Vec<String> = Vec::new();
         for profile in self.cloud_profiles.iter_mut() {
             if !CLOUD_PROVIDERS.contains(&profile.provider.as_str()) {
                 profile.provider = "realtime".into();
@@ -114,11 +116,18 @@ impl Settings {
             profile.label = profile.label.trim().to_string();
             profile.base_url = profile.base_url.trim().to_string();
             profile.model = profile.model.trim().to_string();
-            // id 重复就换一个新 id（活动项可能指的就是它）。
-            if profile.id.is_empty() || seen.contains(&profile.id) {
-                profile.id = next_profile_id(&existing);
+            // id 为空、跟前面那条重了、或**原始列表里本来就有两条同名** → 换一个新 id。
+            //
+            // 新 id 的候选集 = 「已经定下来的」∪「原始列表里的全部」——
+            // 原始列表也要避开：不然这条抢走的 id 可能是**后面**某条本来要留着的
+            // （两条空 id 曾因此拿到同一个 id → 按 id 匹配的操作全部串台）。
+            let unique_original = originals.iter().filter(|id| **id == profile.id).count() == 1;
+            if profile.id.is_empty() || taken.contains(&profile.id) || !unique_original {
+                let mut avoid = taken.clone();
+                avoid.extend(originals.iter().cloned());
+                profile.id = next_profile_id(&avoid);
             }
-            seen.push(profile.id.clone());
+            taken.push(profile.id.clone());
         }
         // 活动项必须指向真实存在的连接；否则落到第一条；一条都没有就清空。
         self.cloud_active_profile = self.cloud_active_profile.trim().to_string();
@@ -308,13 +317,15 @@ pub fn upsert_cloud_profile(
         .iter_mut()
         .find(|profile| profile.id == id)
     {
+        profile.provider = provider;
         // 备注留空就退回 provider 的默认名 —— 列表里总要有个能认出来的名字。
+        // 用**新** provider 的名字：先取旧名字再改 provider，列表里会出现
+        // 「provider 是阿里、名字却写着 OpenAI Realtime」这种对不上的连接。
         profile.label = if label.is_empty() {
             provider_label(&profile.provider)
         } else {
             label
         };
-        profile.provider = provider;
         profile.base_url = base_url;
         profile.model = model;
         if let Some(key) = api_key {
@@ -330,10 +341,29 @@ pub fn upsert_cloud_profile(
 }
 
 /// 删一条连接。删的是活动项 → 落到下一条；删空了 → 回到「未配置」。
-pub fn delete_cloud_profile(settings: &mut Settings, id: &str) {
+pub fn delete_cloud_profile(settings: &mut Settings, id: &str) -> Result<(), String> {
     let id = id.trim();
+    if !settings.cloud_profiles.iter().any(|profile| profile.id == id) {
+        return Err(crate::code("cloud.profileNotFound"));
+    }
     settings.cloud_profiles.retain(|profile| profile.id != id);
     settings.clean_cloud_profiles();
+    Ok(())
+}
+
+/// 清掉一条连接的凭据（**其它字段一个字都不动**）。
+///
+/// 凭据明文不回传前端 → 界面没法「读出来再改」，只能显式清。
+/// 前后端各留一条路：保存时传空串是「清空」，这条命令是「只清凭据」
+/// （不连带提交编辑区里其它还没保存的字段）。
+pub fn clear_cloud_profile_key(settings: &mut Settings, id: &str) -> Result<(), String> {
+    let id = id.trim();
+    let Some(profile) = settings.cloud_profiles.iter_mut().find(|profile| profile.id == id)
+    else {
+        return Err(crate::code("cloud.profileNotFound"));
+    };
+    profile.api_key = String::new();
+    Ok(())
 }
 
 /// 指定正在使用的那条连接（id 不存在就不动）。

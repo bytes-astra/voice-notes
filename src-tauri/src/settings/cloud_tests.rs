@@ -124,7 +124,7 @@ fn deleting_the_active_profile_falls_back_to_the_next_one() {
     assert_eq!(settings.cloud_active_profile, first, "第一条是使用中的");
     set_active_cloud_profile(&mut settings, &first);
 
-    delete_cloud_profile(&mut settings, &first);
+    delete_cloud_profile(&mut settings, &first).expect("删掉一条存在的连接不该失败");
     assert_eq!(settings.cloud_profiles.len(), 1, "该只剩一条");
     assert_eq!(settings.cloud_active_profile, second, "删掉使用中的 → 落到下一条");
 }
@@ -142,7 +142,7 @@ fn deleting_the_last_profile_leaves_nothing_configured() {
         Some("k".into()),
         String::new(),
     );
-    delete_cloud_profile(&mut settings, &id);
+    delete_cloud_profile(&mut settings, &id).expect("删掉一条存在的连接不该失败");
     assert!(settings.cloud_profiles.is_empty(), "该空了");
     assert!(settings.cloud_active_profile.is_empty(), "没有使用中的连接");
     assert!(
@@ -230,4 +230,132 @@ fn mask_secret_never_reveals_the_whole_secret() {
         assert_ne!(masked, secret, "掩码不能等于原文：{secret}");
         assert!(!masked.contains(secret), "掩码里不能含整条原文：{secret}");
     }
+}
+
+/// id 为空的两条连接 → 必须拿到**两个不同**的 id。
+///
+/// 两条拿到同一个 id 时，按 id 匹配的操作全部串台：删一条删两条、
+/// 编辑改到另一条、点圆点切「使用中」切错。
+#[test]
+fn empty_ids_are_reassigned_to_unique_values() {
+    let mut settings = Settings {
+        cloud_profiles: vec![
+            CloudProfile {
+                id: String::new(),
+                provider: "realtime".into(),
+                label: "甲".into(),
+                ..Default::default()
+            },
+            CloudProfile {
+                id: String::new(),
+                provider: "aliyun".into(),
+                label: "乙".into(),
+                ..Default::default()
+            },
+        ],
+        cloud_active_profile: String::new(),
+        ..Settings::default()
+    };
+    settings.clean_cloud_profiles();
+    let ids: Vec<&str> = settings
+        .cloud_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "两条连接的 id 不能相同：{ids:?}");
+    assert!(ids.iter().all(|id| !id.is_empty()), "id 不能留空：{ids:?}");
+}
+
+/// id 重复的两条连接 → 必须拆成两个不同的 id。
+#[test]
+fn duplicate_ids_are_reassigned_to_unique_values() {
+    let mut settings = Settings {
+        cloud_profiles: vec![
+            CloudProfile {
+                id: "p-1".into(),
+                provider: "realtime".into(),
+                ..Default::default()
+            },
+            CloudProfile {
+                id: "p-1".into(),
+                provider: "aliyun".into(),
+                ..Default::default()
+            },
+        ],
+        cloud_active_profile: "p-1".into(),
+        ..Settings::default()
+    };
+    settings.clean_cloud_profiles();
+    let ids: Vec<&str> = settings
+        .cloud_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect();
+    assert_ne!(ids[0], ids[1], "重复的 id 必须拆开：{ids:?}");
+    // 活动项仍要指向真实存在的那一条。
+    assert!(settings
+        .cloud_profiles
+        .iter()
+        .any(|profile| profile.id == settings.cloud_active_profile));
+}
+
+/// 换 provider 且备注留空 → 备注名跟**新** provider 走。
+///
+/// 先按旧 provider 取名字再改 provider，列表里会出现「provider 是阿里、
+/// 名字却写着 OpenAI Realtime」这种对不上的连接。
+#[test]
+fn changing_the_provider_uses_the_new_provider_default_label() {
+    let mut settings = Settings {
+        cloud_profiles: vec![profile("realtime", "key-1", "")],
+        cloud_active_profile: "p-1".into(),
+        ..Settings::default()
+    };
+    upsert_cloud_profile(
+        &mut settings,
+        Some("p-1".into()),
+        String::new(),
+        "aliyun".into(),
+        String::new(),
+        None,
+        String::new(),
+    );
+    let saved = &settings.cloud_profiles[0];
+    assert_eq!(saved.provider, "aliyun");
+    assert_eq!(
+        saved.label, "阿里云百炼 · Qwen-Audio",
+        "备注留空时要用新 provider 的默认名"
+    );
+}
+
+/// 清凭据：只动凭据，地址 / 模型 / 备注一个字都不改。
+#[test]
+fn clearing_the_credential_only_touches_the_credential() {
+    let mut settings = Settings {
+        cloud_profiles: vec![profile("aliyun", "old-key", "model-x")],
+        cloud_active_profile: "p-1".into(),
+        ..Settings::default()
+    };
+    settings.cloud_profiles[0].base_url = "https://example.invalid/v1".into();
+    settings.cloud_profiles[0].label = "阿里·生产".into();
+
+    clear_cloud_profile_key(&mut settings, "p-1").expect("清凭据该成功");
+    let saved = &settings.cloud_profiles[0];
+    assert!(saved.api_key.is_empty(), "凭据该被清掉");
+    assert_eq!(saved.base_url, "https://example.invalid/v1", "地址不该动");
+    assert_eq!(saved.model, "model-x", "模型不该动");
+    assert_eq!(saved.label, "阿里·生产", "备注不该动");
+}
+
+/// 清凭据 / 删连接遇到不存在的 id → **要报错**，不能静默当成功。
+#[test]
+fn unknown_profile_is_reported_instead_of_silently_ignored() {
+    let mut settings = Settings {
+        cloud_profiles: vec![profile("aliyun", "key-1", "m")],
+        cloud_active_profile: "p-1".into(),
+        ..Settings::default()
+    };
+    assert!(clear_cloud_profile_key(&mut settings, "p-9").is_err());
+    assert!(delete_cloud_profile(&mut settings, "p-9").is_err());
+    assert_eq!(settings.cloud_profiles.len(), 1, "不该动现有的连接");
 }

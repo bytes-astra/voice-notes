@@ -395,10 +395,32 @@ fn delete_cloud_profile(
             .settings
             .lock()
             .map_err(|_| code("error.settingsState"))?;
-        settings::delete_cloud_profile(&mut guard, &id);
+        settings::delete_cloud_profile(&mut guard, &id)?;
     }
     persist(&app, &state)?;
     log::info("设置变更：云端连接已删除");
+    Ok(status_of(&app, &state))
+}
+
+/// 清掉一条云端连接的**凭据**（地址 / 模型 / 备注都不动）。
+///
+/// 凭据明文不回传前端 → 界面没法「读出来再改」，只能显式清。
+#[tauri::command]
+fn clear_cloud_profile_key(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+) -> Result<Status, String> {
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| code("error.settingsState"))?;
+        settings::clear_cloud_profile_key(&mut guard, &id)?;
+    }
+    persist(&app, &state)?;
+    // 凭据不进日志：只记「凭据已清除」，不打印任何 key 内容。
+    log::info("设置变更：云端连接的凭据已清除");
     Ok(status_of(&app, &state))
 }
 
@@ -1331,6 +1353,7 @@ pub fn run() {
             set_hotwords,
             save_cloud_profile,
             delete_cloud_profile,
+            clear_cloud_profile_key,
             set_active_cloud_profile,
             default_hotwords,
             list_input_devices,
