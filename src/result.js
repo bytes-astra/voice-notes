@@ -131,7 +131,7 @@ export function clearResult(label = 'result.waiting') {
 /// 渲染一次转写结果。`record: false` 只重绘、不写历史。
 ///
 /// `emptyKey` 是「什么都没识别出来」时结果区显示的那句话：
-/// 录音说「换个安静点的环境」（麦克风的锅），文件说「没有识别到内容」
+/// 录音说「请检查麦克风与录音环境」（麦克风的锅），文件说「没有识别到内容」
 /// （文件的内容已经定下来了，别给建议）。
 export function showTranscript(transcript, { record = true, emptyKey = 'record.empty' } = {}) {
   // 入口就清段列表：空转写会走下面的早退分支，末尾清不到。

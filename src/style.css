@@ -594,31 +594,43 @@ textarea::placeholder { color: var(--muted); opacity: 0.7; }
 
 /* 一条连接 = 一整套配置（服务 / 地址 / 密钥 / 模型）。 */
 .cloud-profile {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
+  display: flex;
   gap: 8px;
   align-items: center;
   padding: 9px 10px;
   border: 1px solid var(--line);
   border-radius: 11px;
   margin-bottom: 6px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
 }
+.cloud-profile:hover { background: var(--panel-2); }
 .cloud-profile.active { border-color: var(--accent); }
 
-/* 圆点：点它 = 设为「使用中」。 */
+/* 状态点：只是指示（实心 = 使用中），不可点 —— 点整行才是「设为使用中」。 */
 .cloud-profile-mark {
-  border: 0;
-  background: none;
-  cursor: pointer;
-  font-size: 15px;
-  line-height: 1;
-  padding: 2px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
   color: var(--muted);
 }
-.cloud-profile-mark:hover { color: var(--accent); }
+.cloud-profile:hover .cloud-profile-mark { color: var(--accent); }
 .cloud-profile.active .cloud-profile-mark { color: var(--accent); }
 
-.cloud-profile-body { min-width: 0; }
+/* 名称 + 明细是个按钮：键盘能 Tab 到，鼠标点整行也行。 */
+.cloud-profile-body {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 .cloud-profile-name { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cloud-profile-body .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -626,10 +638,35 @@ textarea::placeholder { color: var(--muted); opacity: 0.7; }
   font-size: 11.5px;
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid var(--accent);
+  background: var(--accent-soft);
   color: var(--accent);
+  font-weight: 600;
   white-space: nowrap;
 }
+
+/* 行尾的动作：平时藏起来，hover 这行才显形（使用中的那行一直显）。
+   **`:focus-within` 不能少** —— 按钮只是 `opacity: 0`，仍在 Tab 序列里；
+   少了这条，键盘用户 Tab 到铅笔 / 垃圾桶时焦点落在两个看不见的按钮上
+   （跟 `.history-actions` 同一条口径）。 */
+.cloud-profile-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
+.cloud-profile:hover .cloud-profile-actions,
+.cloud-profile:focus-within .cloud-profile-actions,
+.cloud-profile.active .cloud-profile-actions { opacity: 1; }
+
+/* 编辑区：一张独立的卡片，跟上方的列表分开。 */
+#cloud-editor {
+  margin-top: 10px;
+  padding: 12px 12px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+
+/* 动作行：破坏性的「清除凭据」靠左，保存 / 取消靠右。 */
+.cloud-editor-actions { justify-content: flex-end; }
+/* 破坏性的那枚离保存远一点；hover 才变红（默认是灰的，别吓着人）。 */
+.cloud-editor-actions #cloud-clear-key { margin-right: auto; color: var(--muted); }
+.cloud-editor-actions #cloud-clear-key:hover { color: var(--danger); }
 
 .history-item {
   display: grid;
@@ -666,7 +703,8 @@ textarea::placeholder { color: var(--muted); opacity: 0.7; }
 .history-item:hover .history-actions,
 .history-item:focus-within .history-actions { opacity: 1; }
 
-.icon-btn.sm { width: 28px; height: 28px; border-radius: 8px; }
+/* 图标按钮的小号：点击区 32px —— 28px 在笔记本上偏小。 */
+.icon-btn.sm { width: 32px; height: 32px; border-radius: 9px; }
 
 .empty-hint {
   margin: 4px 0 2px;

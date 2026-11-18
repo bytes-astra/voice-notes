@@ -2,7 +2,7 @@
 
 import { $, CLOUD_OPT_IN_KEY, LANGS, STREAM_LANGS, els, errorCode, errorText, fmtBytes, fmtError, idleHint, state, t, toast } from './core.js'
 import { confirmDialog, invoke, logEvent, openDialog } from './tauri.js'
-import { editIcon, iconAction, trashIcon } from './icons.js'
+import { dotIcon, editIcon, iconAction, trashIcon } from './icons.js'
 
 /* 下拉框实例由入口创建后交给这里（status 不该认识 applyLocale，否则会和入口互相依赖） */
 let deviceSelect = null
@@ -181,6 +181,24 @@ export function openCloudEditor(profile) {
   // 凭据不回传前端 —— 留空表示「不改」（要清空就在编辑区里显式清）。
   els.cloudApiKey.value = ''
   els.cloudModel.value = profile?.model || ''
+  // 「清除凭据」只对**已存凭据**的已有连接有意义。
+  els.cloudClearKey.classList.toggle('hidden', !profile?.keyMask)
+  placeEditor()
+}
+
+/// 编辑区放在**触发它的那一处下方**：改已有配置 → 就在那一行下面展开；
+/// 新增 → 就在「＋ 添加配置」按钮上面展开。
+///
+/// 放在别处（列表统一在下方）的话，点完铅笔视线要来回找 —— 编辑的是哪一行？
+function placeEditor() {
+  const row = editingProfileId
+    ? els.cloudProfiles.querySelector(`[data-profile-id="${CSS.escape(editingProfileId)}"]`)
+    : null
+  if (row) {
+    row.after(els.cloudEditor)
+  } else {
+    els.cloudAdd.before(els.cloudEditor)
+  }
 }
 
 /// 收起编辑区。
@@ -188,6 +206,7 @@ export function closeCloudEditor() {
   editingProfileId = null
   els.cloudEditor.classList.add('hidden')
   els.cloudApiKey.value = ''
+  placeEditor()
 }
 
 /// 云端配置：连接列表 + 状态行。
@@ -215,20 +234,25 @@ function renderCloudProfiles(status) {
       const row = document.createElement('div')
       row.className = 'cloud-profile'
       row.dataset.profileId = profile.id
+      // 点整行 = 设为使用中（图标上的动作由更近的 [data-action] 接走）。
+      row.dataset.action = 'activate'
 
       const active = profile.id === status.cloudActiveProfile
       row.classList.toggle('active', active)
 
-      const mark = document.createElement('button')
-      mark.type = 'button'
+      // 状态点：纯指示（实心 = 使用中），不可点 —— 设为使用中是「点整行」做的。
+      const mark = document.createElement('span')
       mark.className = 'cloud-profile-mark'
-      mark.dataset.action = 'activate'
-      mark.title = t('settings.cloudUseThis')
-      mark.textContent = active ? '●' : '○'
+      mark.setAttribute('aria-hidden', 'true')
+      mark.innerHTML = dotIcon(active)
       row.appendChild(mark)
 
-      const body = document.createElement('div')
+      // 名称 + 明细做成按钮：鼠标点整行都行，键盘也能 Tab 到这里按回车。
+      const body = document.createElement('button')
+      body.type = 'button'
       body.className = 'cloud-profile-body'
+      body.dataset.action = 'activate'
+      body.title = t('settings.cloudUseThis')
       const name = document.createElement('div')
       name.className = 'cloud-profile-name'
       name.textContent = profile.label || profile.provider
@@ -248,16 +272,21 @@ function renderCloudProfiles(status) {
         row.appendChild(badge)
       }
 
+      const actions = document.createElement('div')
+      actions.className = 'cloud-profile-actions'
       const edit = iconAction(t('settings.cloudEdit'), editIcon())
       edit.dataset.action = 'edit'
-      row.appendChild(edit)
+      actions.appendChild(edit)
 
       const remove = iconAction(t('settings.cloudDelete'), trashIcon())
       remove.dataset.action = 'delete'
-      row.appendChild(remove)
+      actions.appendChild(remove)
+      row.appendChild(actions)
       return row
     }),
   )
+  // 列表重建会把编辑区一起换掉 → 重新放回它该在的那一行下面。
+  placeEditor()
 }
 
 /// provider 的显示名（列表里用）。
@@ -286,6 +315,19 @@ async function confirmCloudUpload() {
   }
 }
 
+/// 破坏性操作前的确认框（删除 / 清除凭据）。
+///
+/// 确认框打不开时**当作没同意** —— 破坏性操作保守放弃，比误删强。
+/// 但也不能静默：原因写进日志，界面那条操作就是「没发生」。
+async function confirmDestructive(message, title) {
+  try {
+    return await confirmDialog(message, { title, kind: 'warning' })
+  } catch (error) {
+    logEvent('ERROR', `确认框打开失败: ${errorText(error)}`)
+    return false
+  }
+}
+
 /// 当前选中的云端服务（没选就按默认走）。
 function cloudProviderValue() {
   return cloudProviderSelect?.value || state.status?.cloudProvider || 'realtime'
@@ -293,8 +335,8 @@ function cloudProviderValue() {
 
 /// 保存（新增或改）一条连接。
 ///
-/// 凭据不会回传前端，所以密钥框留空 = 不改；想清空就填一个空串再保存
-/// （前端传空串 = 后端清空）。
+/// 凭据不会回传前端，所以密钥框留空 = 不改；要清空走「清除凭据」按钮
+/// （`clearCloudProfileKey`）—— 空串与「没改」在前端分不开。
 export async function saveCloudProfile() {
   const typed = els.cloudApiKey.value.trim()
   try {
@@ -314,8 +356,38 @@ export async function saveCloudProfile() {
   }
 }
 
+/// 清掉一条连接的凭据（地址 / 模型 / 备注都不动）。
+///
+/// 凭据明文不回传前端 → 界面没法「读出来再改」，只能显式清。
+export async function clearCloudProfileKey() {
+  const id = editingProfileId
+  if (!id) return
+  // 凭据明文不回传 → 清除后找不回来，跟删配置一样要问一句。
+  const ok = await confirmDestructive(
+    t('settings.cloudClearKeyConfirm'),
+    t('settings.cloudClearKey'),
+  )
+  if (!ok) return
+  try {
+    state.status = await invoke('clear_cloud_profile_key', { id })
+    renderStatus()
+    closeCloudEditor()
+    toast(t('settings.cloudKeyCleared'))
+  } catch (error) {
+    toast(fmtError(error), 'error')
+  }
+}
+
 /// 删一条连接。
 export async function deleteCloudProfile(id) {
+  // 删掉就找不回来了（凭据明文永不回传）→ 删之前问一句。
+  const profile = state.status?.cloudProfiles?.find((item) => item.id === id)
+  const name = profile?.label || profile?.provider || ''
+  const ok = await confirmDestructive(
+    t('settings.cloudDeleteConfirm', { name }),
+    t('settings.cloudDelete'),
+  )
+  if (!ok) return
   try {
     state.status = await invoke('delete_cloud_profile', { id })
     renderStatus()

@@ -128,6 +128,7 @@ export const els = {
   cloudModelOptions: $('cloud-model-options'),
   cloudSave: $('cloud-save'),
   cloudCancel: $('cloud-cancel'),
+  cloudClearKey: $('cloud-clear-key'),
   cloudAdd: $('cloud-add'),
   toast: $('toast'),
   dropOverlay: $('drop-overlay'),

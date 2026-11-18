@@ -23,17 +23,35 @@ export function trashIcon() {
   return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2m-7 0 .8 12h8.4L17 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 }
 
-/// 退出：左箭头。
+/// 确认：打勾。
 ///
-/// 「取消编辑」用左箭头（退出这次编辑、回到列表），**不用叉** —— 叉是
-/// 「关闭 / 删除」的意思。
-export function backIcon() {
-  return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M19 12H5m0 0 6-6m-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+/// 表单里的「保存」用打勾，**不用 saveIcon** —— 那个是「保存到文件」
+/// （向下箭头落进托盘），在这里会被读成「下载」。
+export function checkIcon() {
+  return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+}
+
+/// 关闭：叉。
+///
+/// 「取消编辑」用叉 —— 取消就是**收起这次编辑**，不删除任何东西
+/// （删除是垃圾桶那一枚）。左箭头是「返回上一级」，在这里是误导。
+export function closeIcon() {
+  return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>'
 }
 
 /// 编辑：铅笔。
 export function editIcon() {
   return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m4 20 1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L8 19l-4 1Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m14.5 6.5 3 3" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>'
+}
+
+/// 状态点：实心 = 使用中，空心 = 未使用。
+///
+/// 只是**指示**，不点它 —— 设为使用中是「点整行」做的。
+export function dotIcon(filled) {
+  const circle = filled
+    ? '<circle cx="12" cy="12" r="7" fill="currentColor"/>'
+    : '<circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1.7"/>'
+  return `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">${circle}</svg>`
 }
 
 /// 清空：橡皮擦。

@@ -8,7 +8,7 @@ import { getCurrentWindow, getCurrentWebview, invoke, logEvent } from './tauri.j
 import { renderHistory, saveHistory, setHistoryLoadHandler } from './history.js'
 import { clearResult, relocalizeResult, renderResultActions, showTranscript } from './result.js'
 import {
-  closeCloudEditor, downloadModel, downloadStreamingModel, loadDevices,
+  clearCloudProfileKey, closeCloudEditor, downloadModel, downloadStreamingModel, loadDevices,
   cloudProviderItems, localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
   deleteCloudProfile, openCloudEditor, refreshCloudModelOptions, saveCloudProfile,
   setActiveCloudProfile, setMode, setSelects, warmUp,
@@ -16,7 +16,7 @@ import {
 import {
   buildWave, cancelRecording, renderHint, renderMicLabel, startRecording, stopRecording,
 } from './recorder.js'
-import { backIcon, saveIcon } from './icons.js'
+import { checkIcon, clearIcon, closeIcon } from './icons.js'
 import { openOutputDir, pickAndTranscribeFile, pickOutputDir, transcribeFilePath } from './files.js'
 import { listenEvents } from './events.js'
 import { copyText, saveText } from './export.js'
@@ -217,24 +217,29 @@ export function bindUI() {
   })
 
   // 图标按钮：SVG 只在 icons.js 里写一份（HTML 里只放空按钮 + 可访问名称）。
-  els.cloudSave.innerHTML = saveIcon()
-  els.cloudCancel.innerHTML = backIcon()
+  els.cloudSave.innerHTML = checkIcon()
+  els.cloudCancel.innerHTML = closeIcon()
+  // 清除凭据用橡皮擦（抹掉）：跟垃圾桶（删掉整条配置）分开。
+  els.cloudClearKey.innerHTML = clearIcon()
   els.cloudSave.addEventListener('click', () => void saveCloudProfile())
   els.cloudCancel.addEventListener('click', () => closeCloudEditor())
+  els.cloudClearKey.addEventListener('click', () => void clearCloudProfileKey())
   els.cloudAdd.addEventListener('click', () => openCloudEditor(null))
   // 列表里的三个动作：设为使用中 / 编辑 / 删除。
+  // 「设为使用中」绑在整行上（点空白处也行）—— 事件委托取**最近**的
+  // [data-action]：点在编辑/删除上就是那两个动作，不会顺带切换使用中。
   els.cloudProfiles.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-action]')
-    if (!button) return
-    const row = button.closest('[data-profile-id]')
+    const target = event.target.closest('[data-action]')
+    if (!target) return
+    const row = target.closest('[data-profile-id]')
     const id = row?.dataset.profileId
     if (!id) return
-    if (button.dataset.action === 'activate') {
+    if (target.dataset.action === 'activate') {
       void setActiveCloudProfile(id)
-    } else if (button.dataset.action === 'edit') {
+    } else if (target.dataset.action === 'edit') {
       const profile = state.status?.cloudProfiles?.find((item) => item.id === id)
       openCloudEditor(profile || null)
-    } else if (button.dataset.action === 'delete') {
+    } else if (target.dataset.action === 'delete') {
       void deleteCloudProfile(id)
     }
   })

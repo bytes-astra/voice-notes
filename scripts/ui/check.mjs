@@ -179,6 +179,16 @@ const clone = (value) => JSON.parse(JSON.stringify(value))
             }
             syncMockActiveProfile()
             return clone(window.__mockStatus)
+          case 'clear_cloud_profile_key':
+            // 只清凭据：地址 / 模型 / 备注一个字都不动（跟真后端一个口径）。
+            window.__mockStatus = {
+              ...window.__mockStatus,
+              cloudProfiles: (window.__mockStatus.cloudProfiles || []).map((profile) =>
+                profile.id === args.id ? { ...profile, keyMask: '' } : profile,
+              ),
+            }
+            syncMockActiveProfile()
+            return clone(window.__mockStatus)
           case 'set_active_cloud_profile':
             window.__mockStatus = {
               ...window.__mockStatus,
@@ -484,7 +494,7 @@ check('保存后回填', (await page.locator('#hotwords-input').inputValue()).in
 const hotwordsToast = await text('#toast')
 check(
   '术语表提示词表外字有几条',
-  hotwordsToast.includes('2') && hotwordsToast.includes('不认识') && !hotwordsToast.includes('{ignored}'),
+  hotwordsToast.includes('2') && hotwordsToast.includes('词表之外') && !hotwordsToast.includes('{ignored}'),
   hotwordsToast,
 )
 await page.evaluate(() => { window.__mockHotwordsIgnored = 0 })
@@ -1497,21 +1507,95 @@ check(
   await page.evaluate(() => JSON.stringify(window.__mockStatus.cloudProfiles.map((p) => p.provider))),
 )
 
-// 点另一条的圆点 → 徽章移到那条。
-await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('[data-action="activate"]').click()
+// 点另一条**整行** → 徽章移到那条（圆点只是指示，不再是按钮）。
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('.cloud-profile-mark').click()
 await page.waitForTimeout(300)
 const secondRowText = await page.locator('#cloud-profiles .cloud-profile').nth(1).innerText()
 const firstRowText = await page.locator('#cloud-profiles .cloud-profile').nth(0).innerText()
 check(
-  '可以切换使用中的那条',
+  '点整行能切换使用中的那条',
   secondRowText.includes('使用中') && !firstRowText.includes('使用中'),
   `第一行=${firstRowText} 第二行=${secondRowText}`,
 )
+// 圆点是**指示**，不是控件 —— 别让它再当按钮用。
+check(
+  '圆点只是指示、不可点',
+  (await page.locator('#cloud-profiles .cloud-profile-mark').first().evaluate((el) => el.tagName)) === 'SPAN' &&
+    (await page.locator('#cloud-profiles .cloud-profile-mark').first().getAttribute('data-action')) === null,
+  await page.locator('#cloud-profiles .cloud-profile-mark').first().evaluate((el) => el.outerHTML),
+)
+// 行尾的动作平时藏起来，hover 才显形；使用中的那行一直显。
+const inactiveActionsOpacity = await page
+  .locator('#cloud-profiles .cloud-profile')
+  .nth(0)
+  .locator('.cloud-profile-actions')
+  .evaluate((el) => getComputedStyle(el).opacity)
+const activeActionsOpacity = await page
+  .locator('#cloud-profiles .cloud-profile')
+  .nth(1)
+  .locator('.cloud-profile-actions')
+  .evaluate((el) => getComputedStyle(el).opacity)
+check(
+  '动作图标 hover 才显形',
+  inactiveActionsOpacity === '0' && activeActionsOpacity === '1',
+  `未使用=${inactiveActionsOpacity} 使用中=${activeActionsOpacity}`,
+)
+// 按钮只是 opacity:0，仍在 Tab 序列里 —— 键盘聚焦到它时必须显形，
+// 否则焦点落在两个看不见的按钮上（`:focus-within` 那条规则守着这里）。
+await page
+  .locator('#cloud-profiles .cloud-profile')
+  .nth(0)
+  .locator('[data-action="edit"]')
+  .focus()
+// 显形是 `transition: opacity 0.12s` —— 刚聚焦时读到的还是过渡中的值（≈0）。
+await page.waitForTimeout(250)
+const focusedActionsOpacity = await page
+  .locator('#cloud-profiles .cloud-profile')
+  .nth(0)
+  .locator('.cloud-profile-actions')
+  .evaluate((el) => getComputedStyle(el).opacity)
+check(
+  '键盘聚焦时动作图标也显形',
+  focusedActionsOpacity === '1',
+  `聚焦后=${focusedActionsOpacity}`,
+)
+// 图标按钮的点击区别太小。
+const editIconBox = await page
+  .locator('#cloud-profiles .cloud-profile')
+  .nth(1)
+  .locator('[data-action="edit"]')
+  .boundingBox()
+check(
+  '图标按钮点击区不小于 32px',
+  !!editIconBox && editIconBox.width >= 32 && editIconBox.height >= 32,
+  editIconBox ? `${editIconBox.width}x${editIconBox.height}` : 'null',
+)
 
 // 编辑：改备注 → 列表里跟着变。
+const editingRowId = await page
+  .locator('#cloud-profiles .cloud-profile')
+  .nth(1)
+  .getAttribute('data-profile-id')
+// 点编辑**不能**顺带把这条切成使用中。
+const activeBeforeEdit = await page.evaluate(() => window.__mockStatus.cloudActiveProfile)
 await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('[data-action="edit"]').click()
 await page.waitForTimeout(200)
 check('编辑会打开编辑区', await page.locator('#cloud-editor').isVisible())
+check(
+  '点编辑不会顺带切换使用中',
+  (await page.evaluate(() => window.__mockStatus.cloudActiveProfile)) === activeBeforeEdit,
+  `编辑前=${activeBeforeEdit} 编辑后=${await page.evaluate(() => window.__mockStatus.cloudActiveProfile)}`,
+)
+// 编辑区就地展开在**被编辑的那一行下面** —— 放在别处的话视线要来回找。
+const editorPrevId = await page.evaluate(() => {
+  const editor = document.querySelector('#cloud-editor')
+  return editor?.previousElementSibling?.dataset?.profileId || ''
+})
+check(
+  '编辑区就地展开在被编辑的那一行下面',
+  editorPrevId === editingRowId,
+  `编辑的行=${editingRowId} 编辑区前一格=${editorPrevId}`,
+)
 await page.locator('#cloud-label').fill('火山·改过了')
 await page.locator('#cloud-save').click()
 await page.waitForTimeout(300)
@@ -1534,9 +1618,53 @@ check(
   await page.locator('#cloud-profiles .cloud-profile').nth(1).innerText(),
 )
 
-// 删除：点垃圾桶 → 那一行没了。
+// 清凭据：凭据明文不回传 → 界面没法「读出来再改」，只能显式清。
+// 编辑区里要能看到「清除凭据」，清完列表里那一行的掩码消失。
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('[data-action="edit"]').click()
+await page.waitForTimeout(200)
+check(
+  '编辑已存凭据的连接时能看到「清除凭据」',
+  await page.locator('#cloud-clear-key').isVisible(),
+)
+await page.evaluate(() => { window.__mockConfirmCalls = [] })
+await page.locator('#cloud-clear-key').click()
+await page.waitForTimeout(300)
+check(
+  '清除凭据前要确认',
+  (await page.evaluate(() => window.__mockConfirmCalls || [])).length === 1,
+  JSON.stringify(await page.evaluate(() => window.__mockConfirmCalls || [])),
+)
+check(
+  '清完凭据后列表里不再有掩码',
+  !(await page.locator('#cloud-profiles .cloud-profile').nth(1).innerText()).includes('sk-m'),
+  await page.locator('#cloud-profiles .cloud-profile').nth(1).innerText(),
+)
+check(
+  '清凭据后编辑区收起',
+  !(await page.locator('#cloud-editor').isVisible()),
+)
+
+// 新增连接时不该出现「清除凭据」（新连接本来就没有凭据可清）。
+await page.locator('#cloud-add').click()
+await page.waitForTimeout(150)
+check(
+  '新增连接时没有「清除凭据」',
+  !(await page.locator('#cloud-clear-key').isVisible()),
+)
+await page.locator('#cloud-cancel').click()
+await page.waitForTimeout(150)
+
+// 删除：点垃圾桶 → **先问一句** → 那一行没了。
+await page.evaluate(() => { window.__mockConfirmCalls = [] })
 await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('[data-action="delete"]').click()
 await page.waitForTimeout(300)
+const deleteConfirmCalls = await page.evaluate(() => window.__mockConfirmCalls || [])
+check(
+  '删除连接前要确认',
+  deleteConfirmCalls.length === 1 &&
+    deleteConfirmCalls[0].message.includes('火山·改过了'),
+  JSON.stringify(deleteConfirmCalls),
+)
 check(
   '删除后只剩一条',
   (await page.locator('#cloud-profiles .cloud-profile').count()) === 1,
