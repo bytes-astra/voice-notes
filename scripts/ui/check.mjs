@@ -90,15 +90,25 @@ const installMock = () => {
   window.__mockStatusError = null
   window.__mockStatus = { ...base }
   // 造一条连接（界面检查用）：凭据只留掩码，跟真后端一个口径。
-function mockProfile(args, index) {
-  const key = args.apiKey || 'sk-mock-key-value'
+// 真后端的语义：apiKey 为 undefined = **不改**（老掩码留着），'' = 清空。
+// 不能拿 `||` 伪造一把默认 key —— 伪造的 key 会把「换 provider 不沿用凭据」
+// 这条缺陷整个挡在界面断言之外（RC-K25）。
+function mockKeyMask(key) {
+  return key.length > 8 ? `${key.slice(0, 4)}…${key.slice(-4)}` : `${key.slice(0, 2)}…`
+}
+
+function mockProfile(args, index, previous) {
+  let keyMask = previous?.keyMask || ''
+  if (typeof args.apiKey === 'string') {
+    keyMask = args.apiKey ? mockKeyMask(args.apiKey) : ''
+  }
   return {
-    id: args.id || `p-${index}`,
+    id: previous?.id || args.id || `p-${index}`,
     label: args.label || '测试连接',
-    provider: args.provider || 'aliyun',
+    provider: args.provider || 'realtime',
     baseUrl: args.baseUrl || '',
     model: args.model || '',
-    keyMask: `${key.slice(0, 4)}…${key.slice(-4)}`,
+    keyMask,
   }
 }
 
@@ -106,9 +116,8 @@ function mockProfile(args, index) {
 function upsertMockProfile(profiles, args) {
   const list = [...(profiles || [])]
   const found = list.findIndex((profile) => profile.id === args.id)
-  const next = mockProfile(args, list.length + 1)
-  if (found >= 0) list[found] = { ...list[found], ...next, id: list[found].id }
-  else list.push(next)
+  if (found >= 0) list[found] = mockProfile(args, found + 1, list[found])
+  else list.push(mockProfile(args, list.length + 1))
   return list
 }
 
@@ -170,15 +179,23 @@ const clone = (value) => JSON.parse(JSON.stringify(value))
             syncMockActiveProfile()
             return clone(window.__mockStatus)
           }
-          case 'delete_cloud_profile':
+          case 'delete_cloud_profile': {
+            // 与真后端同语义：删掉「使用中」那条 → 落到**下一条**
+            // （删的是最后一条则落到前一条），不是留在已删的 id 上。
+            const profiles = window.__mockStatus.cloudProfiles || []
+            const index = profiles.findIndex((profile) => profile.id === args.id)
+            const wasActive = window.__mockStatus.cloudActiveProfile === args.id
+            const next = profiles.filter((profile) => profile.id !== args.id)
+            let active = window.__mockStatus.cloudActiveProfile
+            if (wasActive) active = next[index]?.id || next[index - 1]?.id || ''
             window.__mockStatus = {
               ...window.__mockStatus,
-              cloudProfiles: (window.__mockStatus.cloudProfiles || []).filter(
-                (profile) => profile.id !== args.id,
-              ),
+              cloudProfiles: next,
+              cloudActiveProfile: active,
             }
             syncMockActiveProfile()
             return clone(window.__mockStatus)
+          }
           case 'clear_cloud_profile_key':
             // 只清凭据：地址 / 模型 / 备注一个字都不动（跟真后端一个口径）。
             window.__mockStatus = {
@@ -189,13 +206,17 @@ const clone = (value) => JSON.parse(JSON.stringify(value))
             }
             syncMockActiveProfile()
             return clone(window.__mockStatus)
-          case 'set_active_cloud_profile':
-            window.__mockStatus = {
-              ...window.__mockStatus,
-              cloudActiveProfile: args.id,
+          case 'set_active_cloud_profile': {
+            // 与真后端同语义：不存在的 id 静默忽略，不能把活动项指到幽灵 id。
+            const exists = (window.__mockStatus.cloudProfiles || []).some(
+              (profile) => profile.id === args.id,
+            )
+            if (exists) {
+              window.__mockStatus = { ...window.__mockStatus, cloudActiveProfile: args.id }
             }
             syncMockActiveProfile()
             return clone(window.__mockStatus)
+          }
           case 'default_hotwords':
             return ['产品评审会', '玄戒芯片', '张三']
           case 'reserve_session':
@@ -1471,12 +1492,13 @@ check(
 await page.locator('#cloud-add').click()
 await page.waitForTimeout(150)
 await page.locator('#cloud-label').fill('火山·小时版')
-await page.locator('#cloud-api-key').fill('volc-key')
 // 火山的「模型」字段是资源标识 —— 候选项按服务给，不让用户手打。
 await page.locator('#cloud-provider-select .select-button').click()
 await page.waitForTimeout(150)
 await page.locator('.select-popup .select-item', { hasText: '火山' }).first().click()
 await page.waitForTimeout(250)
+// 密钥在**换完服务商之后**填：换 provider 会清掉输入框（换的是整套配置）。
+await page.locator('#cloud-api-key').fill('volc-key')
 const volcModelOptions = await page
   .locator('#cloud-model-options option')
   .allTextContents()
@@ -1517,6 +1539,56 @@ check(
   secondRowText.includes('使用中') && !firstRowText.includes('使用中'),
   `第一行=${firstRowText} 第二行=${secondRowText}`,
 )
+
+// ── RC-K22：provider 下拉绑定**正在编辑的那条连接** ──
+// 编辑非活动连接时切界面语言，下拉不能被静默换成活动连接的服务商
+// （`UISelect.setItems` 不触发 `onChange`，换掉用户看不见）。
+await page.locator('#cloud-profiles .cloud-profile').nth(0).locator('[data-action="edit"]').click()
+await page.waitForTimeout(200)
+const providerBeforeLocale = await page
+  .locator('#cloud-provider-select .select-button')
+  .innerText()
+check(
+  '编辑非活动连接时下拉是它自己的服务商',
+  providerBeforeLocale.includes('OpenAI Realtime'),
+  providerBeforeLocale,
+)
+await page.locator('#locale-select .select-button').click()
+await page.waitForTimeout(150)
+await page.locator('.select-popup .select-item', { hasText: 'English' }).first().click()
+await page.waitForTimeout(300)
+const providerAfterLocale = await page
+  .locator('#cloud-provider-select .select-button')
+  .innerText()
+check(
+  '切语言后 provider 下拉不变',
+  providerAfterLocale.includes('OpenAI Realtime'),
+  providerAfterLocale,
+)
+await page.locator('#cloud-save').click()
+await page.waitForTimeout(250)
+check(
+  '切语言后保存，被编辑那条的 provider 没变',
+  (await page.evaluate(() => window.__mockStatus.cloudProfiles[0].provider)) === 'realtime',
+  await page.evaluate(() => window.__mockStatus.cloudProfiles[0].provider),
+)
+// 切回中文：后面的断言按中文写。
+await page.locator('#locale-select .select-button').click()
+await page.waitForTimeout(150)
+await page.locator('.select-popup .select-item', { hasText: '简体中文' }).first().click()
+await page.waitForTimeout(300)
+
+// RC-K22 同根：新增连接的默认 provider 跟**活动连接**走，不是恒为 realtime。
+await page.locator('#cloud-add').click()
+await page.waitForTimeout(200)
+const newProviderText = await page.locator('#cloud-provider-select .select-button').innerText()
+check(
+  '新增连接的默认服务商跟活动连接走',
+  newProviderText.includes('火山'),
+  newProviderText,
+)
+await page.locator('#cloud-cancel').click()
+await page.waitForTimeout(150)
 // 圆点是**指示**，不是控件 —— 别让它再当按钮用。
 check(
   '圆点只是指示、不可点',
@@ -1670,6 +1742,26 @@ check(
   (await page.locator('#cloud-profiles .cloud-profile').count()) === 1,
   `行数=${await page.locator('#cloud-profiles .cloud-profile').count()}`,
 )
+// RC-K25：mock 与真后端同语义 —— 删掉「使用中」那条后活动项必须落到
+// 真实存在的连接上（真后端：下一条，没有则前一条），不能停在已删的 id。
+const activeAfterDelete = await page.evaluate(() => window.__mockStatus.cloudActiveProfile)
+const remainingIds = await page.evaluate(() =>
+  window.__mockStatus.cloudProfiles.map((profile) => profile.id),
+)
+check(
+  '删掉使用中的连接后活动项指向剩下的第一条',
+  remainingIds.includes(activeAfterDelete),
+  `活动项=${activeAfterDelete} 剩下=${remainingIds.join(',')}`,
+)
+// RC-K25：不存在的 id 不能让活动项指到幽灵连接上。
+await page.evaluate(() =>
+  window.__TAURI__.core.invoke('set_active_cloud_profile', { id: 'ghost-profile' }),
+)
+check(
+  'mock：不存在的 id 不会改活动项',
+  (await page.evaluate(() => window.__mockStatus.cloudActiveProfile)) === activeAfterDelete,
+  await page.evaluate(() => window.__mockStatus.cloudActiveProfile),
+)
 
 // 当前 provider 不支持术语表时，界面要提示 —— 术语表是本地流式与云端
 // 共用的全局设置，只能提示，不能隐藏入口。
@@ -1708,6 +1800,92 @@ check(
 )
 await page.locator('#mic-btn').click()
 await page.waitForTimeout(300)
+
+// ── 云端连接编辑：焦点 / 凭据 / provider 的守卫 ──
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.waitForTimeout(200)
+
+// 先写入一把**已知**密钥：后面「留空 = 不改」才有可比的基准
+// （只断言「没变」的话，mock 若每次都伪造同一把 key 也能蒙混过去）。
+await page.locator('#cloud-profiles .cloud-profile').first().locator('[data-action="edit"]').click()
+await page.waitForTimeout(150)
+await page.locator('#cloud-api-key').fill('sk-known-key-123')
+await page.locator('#cloud-save').click()
+await page.waitForTimeout(250)
+const knownMask = await page.evaluate(() => window.__mockStatus.cloudProfiles[0]?.keyMask)
+check('测试前置：写入已知密钥后有掩码', !!knownMask, knownMask || '(空)')
+
+// RC-K25 / 5.4：编辑时密钥留空 = **不改**（掩码保持不变）。
+await page.locator('#cloud-profiles .cloud-profile').first().locator('[data-action="edit"]').click()
+await page.waitForTimeout(150)
+await page.locator('#cloud-label').fill('改个备注')
+await page.locator('#cloud-save').click()
+await page.waitForTimeout(250)
+const maskAfterLabelEdit = await page.evaluate(
+  () => window.__mockStatus.cloudProfiles[0].keyMask,
+)
+check(
+  '编辑时留空密钥 → 掩码保持不变',
+  maskAfterLabelEdit === knownMask,
+  `原=${knownMask} 现=${maskAfterLabelEdit}`,
+)
+
+// RC-K23：编辑区展开、密钥框有焦点时，列表重建不能把焦点弄丢
+// （摘掉再插回 DOM 会失焦，接着敲的字符会被整个吞掉）。
+await page
+  .locator('#cloud-profiles .cloud-profile')
+  .first()
+  .locator('[data-action="edit"]')
+  .click()
+await page.waitForTimeout(150)
+await page.locator('#cloud-api-key').fill('sk-abc')
+// 真实的异步触发源：流式引擎预热完成 → streaming:state → renderStatus → 重建列表。
+await page.evaluate(() => window.__emit('streaming:state', { phase: 'ready' }))
+await page.waitForTimeout(150)
+check(
+  '列表重建后密钥框仍保持焦点',
+  (await page.evaluate(() => document.activeElement?.id)) === 'cloud-api-key',
+  await page.evaluate(() => document.activeElement?.id || '(没有焦点)'),
+)
+await page.keyboard.type('XYZ')
+check(
+  '重建后继续输入的字符不丢',
+  (await page.locator('#cloud-api-key').inputValue()) === 'sk-abcXYZ',
+  await page.locator('#cloud-api-key').inputValue(),
+)
+await page.locator('#cloud-cancel').click()
+await page.waitForTimeout(150)
+
+// RC-K21（用户定案）：**已有连接的服务商锁定** —— 换服务商只能删掉重加。
+// 这样旧服务商的凭据根本不可能被带到新服务商名下；后端仍留兜底
+// （provider 变了且没给新凭据 → 清空），防别的调用方绕过去。
+await page
+  .locator('#cloud-profiles .cloud-profile')
+  .first()
+  .locator('[data-action="edit"]')
+  .click()
+await page.waitForTimeout(150)
+check(
+  '编辑已有连接时服务商下拉被禁用',
+  await page.locator('#cloud-provider-select .select-button').isDisabled(),
+)
+await page.locator('#cloud-save').click()
+await page.waitForTimeout(250)
+const afterLockedSave = await page.evaluate(() => window.__mockStatus.cloudProfiles[0])
+check(
+  '锁定服务商后保存，provider 与凭据都没变',
+  afterLockedSave.provider === 'realtime' && afterLockedSave.keyMask === knownMask,
+  JSON.stringify(afterLockedSave),
+)
+// 新增连接才允许选服务商；也不该出现「不可更改」提示。
+await page.locator('#cloud-add').click()
+await page.waitForTimeout(150)
+check(
+  '新增连接时服务商下拉可点',
+  !(await page.locator('#cloud-provider-select .select-button').isDisabled()),
+)
+await page.locator('#cloud-cancel').click()
+await page.waitForTimeout(150)
 
 // ── Windows 场景：侧栏顶部的红绿灯占位不能套到 Windows 上 ──
 // macOS 的标题栏是覆盖式的，侧栏顶部要留 78px 给红绿灯；

@@ -1227,6 +1227,14 @@ body.macos .sidebar-top {
 .select-button:hover {
   border-color: var(--accent-soft);
 }
+/* 禁用（已有的云端连接不能换服务商）：别让 hover 再暗示可点。 */
+.select-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.select-button:disabled:hover {
+  border-color: var(--line-strong);
+}
 .select-button:focus-visible {
   outline: none;
   border-color: var(--accent);

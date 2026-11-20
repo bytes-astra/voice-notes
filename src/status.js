@@ -164,17 +164,37 @@ export function refreshCloudModelOptions(provider) {
   els.cloudModelLabel.textContent = cloudModelLabel(provider)
 }
 
-/// 正在编辑的那条连接（`null` = 没在编辑）。
+/// 编辑区的状态：编辑哪条 / 当前选中的 provider。
+///
+/// provider 必须由编辑区自己持有：`UISelect.setItems` **不触发** `onChange`，
+/// 程序换值是静默的 —— 列表重绘或切语言时若跟着「活动连接」走，
+/// 保存时就会把正在编辑那条的 provider 悄悄改掉（RC-K22）。
+///
+/// **已有连接的服务商不可更改**：一条连接 = 一整套配置，换服务商就是换一套；
+/// 已有连接换 provider 只会带来「旧密钥发给新端点」这类麻烦，所以界面直接
+/// 锁住下拉 —— 要换服务商请删除这条后重新添加。新连接还没有已存凭据，
+/// 换服务商不存在跨家沿用的问题。
 let editingProfileId = null
+let editorOpen = false
+let editorProvider = 'realtime'
+
+/// 活动连接的 provider（没有就按默认走）。
+function activeCloudProvider() {
+  return state.status?.cloudProvider || 'realtime'
+}
 
 /// 打开编辑区（`profile` 为空 = 新增一条）。
 export function openCloudEditor(profile) {
   editingProfileId = profile?.id || null
+  editorOpen = true
   els.cloudEditor.classList.remove('hidden')
-  const provider = profile?.provider || cloudProviderValue()
+  const provider = profile?.provider || activeCloudProvider()
+  editorProvider = provider
   if (cloudProviderSelect && cloudProviderSelect.value !== provider) {
     cloudProviderSelect.setItems(cloudProviderItems(), provider)
   }
+  // 已有连接：服务商只读（换服务商 = 删掉重加，见上面的注释）。
+  cloudProviderSelect?.setDisabled(!!profile)
   refreshCloudModelOptions(provider)
   els.cloudLabel.value = profile?.label || ''
   els.cloudBaseUrl.value = profile?.baseUrl || ''
@@ -184,6 +204,18 @@ export function openCloudEditor(profile) {
   // 「清除凭据」只对**已存凭据**的已有连接有意义。
   els.cloudClearKey.classList.toggle('hidden', !profile?.keyMask)
   placeEditor()
+}
+
+/// provider 下拉变了（用户操作，`app.js` 的 `onChange` 转过来）。
+///
+/// 只会发生在**新增**连接时：换服务 = 换一套配置含义，
+/// 地址 / 模型 / 输入框里的密钥都清掉、换模型候选项。
+export function cloudProviderChanged(value) {
+  editorProvider = value
+  els.cloudModel.value = ''
+  els.cloudBaseUrl.value = ''
+  els.cloudApiKey.value = ''
+  refreshCloudModelOptions(value)
 }
 
 /// 编辑区放在**触发它的那一处下方**：改已有配置 → 就在那一行下面展开；
@@ -204,14 +236,17 @@ function placeEditor() {
 /// 收起编辑区。
 export function closeCloudEditor() {
   editingProfileId = null
+  editorOpen = false
   els.cloudEditor.classList.add('hidden')
   els.cloudApiKey.value = ''
+  // 下次打开可能是「新增」—— 把只读状态复位。
+  cloudProviderSelect?.setDisabled(false)
   placeEditor()
 }
 
 /// 云端配置：连接列表 + 状态行。
 ///
-/// 凭据不会回传前端 —— 列表里只显示**掩码**（头 4 + 尾 4）。
+/// 凭据不会回传前端 —— 列表里只显示**掩码**（按露出比例分档，见 `mask_secret`）。
 function renderCloudConfig() {
   const status = state.status
   if (!status) return
@@ -224,69 +259,95 @@ function renderCloudConfig() {
     ? ''
     : t('settings.cloudNoKeywords')
   renderCloudProfiles(status)
+  // 编辑区没开时，provider 下拉跟**活动连接**走。`bindUI` 时 `state.status`
+  // 还是 null，只能先填 realtime —— 这里补上回填（RC-K22 的同根问题）。
+  // 编辑区开着时不碰它：编辑的是哪条连接由编辑区自己持有。
+  if (cloudProviderSelect && !editorOpen) {
+    cloudProviderSelect.setItems(cloudProviderItems(), activeCloudProvider())
+  }
 }
 
-/// 渲染连接列表：每行一条（掩码 + 服务 + 备注 + 「使用中」）。
+/// 造一行连接（掩码 + 服务 + 备注 + 「使用中」）。
+function createProfileRow(profile, status) {
+  const row = document.createElement('div')
+  row.className = 'cloud-profile'
+  row.dataset.profileId = profile.id
+  // 点整行 = 设为使用中（图标上的动作由更近的 [data-action] 接走）。
+  row.dataset.action = 'activate'
+
+  const active = profile.id === status.cloudActiveProfile
+  row.classList.toggle('active', active)
+
+  // 状态点：纯指示（实心 = 使用中），不可点 —— 设为使用中是「点整行」做的。
+  const mark = document.createElement('span')
+  mark.className = 'cloud-profile-mark'
+  mark.setAttribute('aria-hidden', 'true')
+  mark.innerHTML = dotIcon(active)
+  row.appendChild(mark)
+
+  // 名称 + 明细做成按钮：鼠标点整行都行，键盘也能 Tab 到这里按回车。
+  const body = document.createElement('button')
+  body.type = 'button'
+  body.className = 'cloud-profile-body'
+  body.dataset.action = 'activate'
+  body.title = t('settings.cloudUseThis')
+  const name = document.createElement('div')
+  name.className = 'cloud-profile-name'
+  name.textContent = profile.label || profile.provider
+  const detail = document.createElement('div')
+  detail.className = 'muted small'
+  // 掩码 + 服务名（凭据明文永远不回传前端）。
+  detail.textContent = [profile.keyMask, cloudProviderLabel(profile.provider)]
+    .filter(Boolean)
+    .join(' · ')
+  body.append(name, detail)
+  row.appendChild(body)
+
+  if (active) {
+    const badge = document.createElement('span')
+    badge.className = 'cloud-profile-badge'
+    badge.textContent = t('settings.cloudInUse')
+    row.appendChild(badge)
+  }
+
+  const actions = document.createElement('div')
+  actions.className = 'cloud-profile-actions'
+  const edit = iconAction(t('settings.cloudEdit'), editIcon())
+  edit.dataset.action = 'edit'
+  actions.appendChild(edit)
+
+  const remove = iconAction(t('settings.cloudDelete'), trashIcon())
+  remove.dataset.action = 'delete'
+  actions.appendChild(remove)
+  row.appendChild(actions)
+  return row
+}
+
+/// 渲染连接列表。
+///
+/// **只换行，不动编辑区**：编辑区可能正挂在列表里（就地展开在被编辑那行
+/// 下面）。把它从 DOM 摘下再插回会失焦，用户接着敲的字符会整个丢掉（RC-K23）。
 function renderCloudProfiles(status) {
   const profiles = status.cloudProfiles || []
-  els.cloudProfiles.replaceChildren(
-    ...profiles.map((profile) => {
-      const row = document.createElement('div')
-      row.className = 'cloud-profile'
-      row.dataset.profileId = profile.id
-      // 点整行 = 设为使用中（图标上的动作由更近的 [data-action] 接走）。
-      row.dataset.action = 'activate'
-
-      const active = profile.id === status.cloudActiveProfile
-      row.classList.toggle('active', active)
-
-      // 状态点：纯指示（实心 = 使用中），不可点 —— 设为使用中是「点整行」做的。
-      const mark = document.createElement('span')
-      mark.className = 'cloud-profile-mark'
-      mark.setAttribute('aria-hidden', 'true')
-      mark.innerHTML = dotIcon(active)
-      row.appendChild(mark)
-
-      // 名称 + 明细做成按钮：鼠标点整行都行，键盘也能 Tab 到这里按回车。
-      const body = document.createElement('button')
-      body.type = 'button'
-      body.className = 'cloud-profile-body'
-      body.dataset.action = 'activate'
-      body.title = t('settings.cloudUseThis')
-      const name = document.createElement('div')
-      name.className = 'cloud-profile-name'
-      name.textContent = profile.label || profile.provider
-      const detail = document.createElement('div')
-      detail.className = 'muted small'
-      // 掩码 + 服务名（凭据明文永远不回传前端）。
-      detail.textContent = [profile.keyMask, cloudProviderLabel(profile.provider)]
-        .filter(Boolean)
-        .join(' · ')
-      body.append(name, detail)
-      row.appendChild(body)
-
-      if (active) {
-        const badge = document.createElement('span')
-        badge.className = 'cloud-profile-badge'
-        badge.textContent = t('settings.cloudInUse')
-        row.appendChild(badge)
-      }
-
-      const actions = document.createElement('div')
-      actions.className = 'cloud-profile-actions'
-      const edit = iconAction(t('settings.cloudEdit'), editIcon())
-      edit.dataset.action = 'edit'
-      actions.appendChild(edit)
-
-      const remove = iconAction(t('settings.cloudDelete'), trashIcon())
-      remove.dataset.action = 'delete'
-      actions.appendChild(remove)
-      row.appendChild(actions)
-      return row
-    }),
-  )
-  // 列表重建会把编辑区一起换掉 → 重新放回它该在的那一行下面。
-  placeEditor()
+  const rows = profiles.map((profile) => createProfileRow(profile, status))
+  for (const child of [...els.cloudProfiles.children]) {
+    if (child.classList.contains('cloud-profile')) child.remove()
+  }
+  const editor = els.cloudEditor
+  if (editor.parentElement !== els.cloudProfiles) {
+    els.cloudProfiles.append(...rows)
+    return
+  }
+  // 编辑区就地插在被编辑那行下面：按那一行把新行分成前后两半，
+  // 编辑区本身待在原地（焦点和光标都不动）。
+  const index = profiles.findIndex((profile) => profile.id === editingProfileId)
+  const split = index < 0 ? rows.length : index + 1
+  const before = document.createDocumentFragment()
+  before.append(...rows.slice(0, split))
+  const after = document.createDocumentFragment()
+  after.append(...rows.slice(split))
+  editor.before(before)
+  editor.after(after)
 }
 
 /// provider 的显示名（列表里用）。
@@ -328,15 +389,14 @@ async function confirmDestructive(message, title) {
   }
 }
 
-/// 当前选中的云端服务（没选就按默认走）。
-function cloudProviderValue() {
-  return cloudProviderSelect?.value || state.status?.cloudProvider || 'realtime'
-}
-
 /// 保存（新增或改）一条连接。
 ///
 /// 凭据不会回传前端，所以密钥框留空 = 不改；要清空走「清除凭据」按钮
 /// （`clearCloudProfileKey`）—— 空串与「没改」在前端分不开。
+///
+/// 已有连接的服务商在界面上是只读的（换服务商 = 删掉重加），所以这里
+/// 不会出现「换了 provider 但没填新密钥」的情况；后端 `upsert_cloud_profile`
+/// 仍留了兜底（provider 变了且没给新凭据 → 清空），防别的调用方绕过去。
 export async function saveCloudProfile() {
   const typed = els.cloudApiKey.value.trim()
   try {
@@ -346,7 +406,7 @@ export async function saveCloudProfile() {
       baseUrl: els.cloudBaseUrl.value.trim(),
       apiKey: typed ? typed : undefined,
       model: els.cloudModel.value.trim(),
-      provider: cloudProviderValue(),
+      provider: editorProvider,
     })
     renderStatus()
     closeCloudEditor()
@@ -550,7 +610,12 @@ export function refreshSelectItems(localeValue) {
   }
   if (localeSelect) localeSelect.setItems(localeItems(), localeValue)
   if (cloudProviderSelect) {
-    cloudProviderSelect.setItems(cloudProviderItems(), state.status?.cloudProvider || 'realtime')
+    // 编辑区开着时用**编辑中那条**的 provider：切语言只是换文案，不能换值
+    // （`setItems` 不触发 `onChange`，换掉用户看不见 —— RC-K22）。
+    cloudProviderSelect.setItems(
+      cloudProviderItems(),
+      editorOpen ? editorProvider : activeCloudProvider(),
+    )
   }
 }
 

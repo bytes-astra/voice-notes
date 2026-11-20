@@ -162,6 +162,11 @@
         value = next
         render()
       },
+      /// 只读场景（比如已有的云端连接不能换服务商）：按钮禁用，弹层打不开。
+      setDisabled(next) {
+        button.disabled = Boolean(next)
+        container.classList.toggle('is-disabled', Boolean(next))
+      },
     }
   }
 

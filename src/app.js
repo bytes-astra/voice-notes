@@ -10,7 +10,7 @@ import { clearResult, relocalizeResult, renderResultActions, showTranscript } fr
 import {
   clearCloudProfileKey, closeCloudEditor, downloadModel, downloadStreamingModel, loadDevices,
   cloudProviderItems, localeItems, pickModelDir, refreshSelectItems, refreshStatus, renderLang, renderStatus,
-  deleteCloudProfile, openCloudEditor, refreshCloudModelOptions, saveCloudProfile,
+  cloudProviderChanged, deleteCloudProfile, openCloudEditor, saveCloudProfile,
   setActiveCloudProfile, setMode, setSelects, warmUp,
 } from './status.js'
 import {
@@ -311,13 +311,11 @@ export function bindUI() {
   cloudProviderSelect = UISelect.create(els.cloudProviderSelect, {
     onChange: (value) => {
       // 换服务 = 换一套配置含义（地址 / 凭据 / 模型不能跨家沿用）。
-      // **但不再清空任何东西** —— 每家现在是**独立的一条连接**（列表里各自
-      // 留着），编辑区里换服务只是换这一条的服务，别的连接不受影响。
-      // 这里只换模型候选项：火山的候选项是资源标识，别家是模型名。
-      els.cloudModel.value = ''
-      els.cloudBaseUrl.value = ''
-      els.cloudApiKey.value = ''
-      refreshCloudModelOptions(value)
+      // 列表里每家是**独立的一条连接**，切走不影响别人的配置；这里只改
+      // **正在编辑的这条**：清掉上一家的地址 / 模型 / 输入框里的密钥，
+      // 并换模型候选项（火山的候选项是资源标识，别家是模型名）。
+      // 只有**新增**连接能换服务商：已有连接的服务商是只读的（删除重加才能换）。
+      cloudProviderChanged(value)
     },
   })
   cloudProviderSelect.setItems(cloudProviderItems(), state.status?.cloudProvider || 'realtime')
