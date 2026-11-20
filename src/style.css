@@ -428,9 +428,10 @@ main { display: flex; flex-direction: column; gap: 16px; }
   font-size: 13px;
   line-height: 1.55;
   text-align: left;
-  overflow-y: auto;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* 一行不换行：超出的宽度往右滚（横向滚动），盒子高度恒定。 */
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
 }

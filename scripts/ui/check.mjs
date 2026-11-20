@@ -896,9 +896,9 @@ const liveMetrics = () =>
     height: el.getBoundingClientRect().height,
     shown: !el.classList.contains('hidden'),
     empty: el.classList.contains('is-empty'),
-    scrollHeight: el.scrollHeight,
-    clientHeight: el.clientHeight,
-    scrollTop: el.scrollTop,
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+    scrollLeft: el.scrollLeft,
   }))
 // 录制一开始就保留占位（此时还没有任何中间结果）。
 const liveStart = await liveMetrics()
@@ -919,9 +919,13 @@ check(
   `短=${liveShort.height} 长=${liveLong.height}`,
 )
 check(
-  '实时行内部滚动并跟到末尾',
-  liveLong.scrollHeight > liveLong.clientHeight &&
-    liveLong.scrollTop + liveLong.clientHeight >= liveLong.scrollHeight - 2,
+  '实时行横向滚动：超出的宽度往右滚',
+  liveLong.scrollWidth > liveLong.clientWidth,
+  JSON.stringify(liveLong),
+)
+check(
+  '横向滚动跟到最新内容的末尾',
+  liveLong.scrollLeft + liveLong.clientWidth >= liveLong.scrollWidth - 2,
   JSON.stringify(liveLong),
 )
 // 句末会发一条空 partial：不能把实时行收起来（否则下一段又把它顶下来）。

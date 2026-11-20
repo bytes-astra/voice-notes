@@ -237,13 +237,13 @@ export function showPartial(partial) {
     // 下一段 partial 到达又顶下来，界面来回跳。
     els.liveLine.textContent = ''
     els.liveLine.classList.add('is-empty')
-    els.liveLine.scrollTop = 0
+    els.liveLine.scrollLeft = 0
     return
   }
-  // 固定高度 + 内部滚动：用户没往回翻时把视口跟到最新一句的末尾。
+  // 一行横向滚动：用户没往回拖时把视口跟到最新内容的末尾（右侧）。
   const stick =
-    els.liveLine.scrollHeight - els.liveLine.scrollTop - els.liveLine.clientHeight < 24
+    els.liveLine.scrollWidth - els.liveLine.scrollLeft - els.liveLine.clientWidth < 24
   els.liveLine.textContent = text
   els.liveLine.classList.remove('is-empty')
-  if (stick) els.liveLine.scrollTop = els.liveLine.scrollHeight
+  if (stick) els.liveLine.scrollLeft = els.liveLine.scrollWidth
 }
