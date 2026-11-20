@@ -8,13 +8,16 @@ window.I18N_LOCALES['en'] = {
   'menu.edit': 'Edit',
   'menu.view': 'View',
 
-  'theme.toDark': 'Switch to dark',
-  'theme.toLight': 'Switch to light',
+  'theme.system': 'Follow system',
+  'theme.light': 'Light',
+  'theme.dark': 'Dark',
   'nav.new': 'New transcription',
   'nav.transcribe': 'Transcribe',
   'nav.history': 'History',
   'nav.settings': 'Settings',
   'nav.label': 'Main navigation',
+  'nav.collapse': 'Collapse sidebar',
+  'nav.expand': 'Expand sidebar',
 
   'view.transcribe': 'Transcribe',
   'view.history': 'History',

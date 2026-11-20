@@ -941,6 +941,43 @@ body { overflow: hidden; }
   padding: 0 10px 10px;
   background: var(--panel);
   border-right: 1px solid var(--line);
+  transition: width 0.18s ease, flex-basis 0.18s ease, padding 0.18s ease;
+}
+
+/* 折叠：侧栏缩成一条只留图标的窄栏（状态存在 localStorage，重启保持）。
+   宽度 80px：macOS 的红绿灯固定在离窗口左缘 10 / 33 / 56pt，绿灯右缘在
+   68pt —— 边框落在 72pt 时绿灯几乎贴着它（只剩 3pt），80px 才留得下
+   对称的 12pt。 */
+.app[data-sidebar="collapsed"] .sidebar {
+  width: 80px;
+  flex-basis: 80px;
+  padding: 0 6px 10px;
+}
+/* 折叠后文字一律不占位：只留图标 + tooltip。 */
+.app[data-sidebar="collapsed"] .brand-name,
+.app[data-sidebar="collapsed"] .new-btn span,
+.app[data-sidebar="collapsed"] .nav-item span,
+.app[data-sidebar="collapsed"] .model-status {
+  display: none;
+}
+.app[data-sidebar="collapsed"] .brand { justify-content: center; padding: 4px 0; gap: 6px; }
+/* 状态点跟着 logo 靠拢：折叠后 brand 变窄，margin-left:auto 会把它顶到边上。 */
+.app[data-sidebar="collapsed"] .brand .dot { margin-left: 0; }
+.app[data-sidebar="collapsed"] .new-btn { padding: 0; }
+/* 图标居中，别贴着左边。 */
+.app[data-sidebar="collapsed"] .nav-item,
+.app[data-sidebar="collapsed"] .new-btn {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+.app[data-sidebar="collapsed"] .sidebar-foot {
+  justify-content: center;
+  gap: 4px;
+}
+.app[data-sidebar="collapsed"] .sidebar-foot .icon-btn {
+  width: 28px;
+  height: 28px;
 }
 
 .sidebar-top {

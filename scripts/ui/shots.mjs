@@ -282,8 +282,13 @@ async function shot(page, name) {
 // 8. 深色主题（用应用自己的切换按钮，WebKit 里 prefers-color-scheme 不可靠）
 {
   const { context, page } = await makePage()
-  await page.locator('#theme-btn').click()
-  await page.waitForTimeout(500)
+  // 主题按钮循环三态（跟随系统 → 浅色 → 深色 → 跟随系统），点到达深色为止。
+  for (let i = 0; i < 3; i++) {
+    const mode = await page.evaluate(() => localStorage.getItem('voicenotes.theme'))
+    if (mode === 'dark') break
+    await page.locator('#theme-btn').click()
+    await page.waitForTimeout(500)
+  }
   const theme = await page.evaluate(() => document.documentElement.dataset.theme)
   if (theme !== 'dark') throw new Error(`深色主题没生效（theme=${theme}）`)
   await shot(page, 'dark')

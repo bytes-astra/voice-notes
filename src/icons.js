@@ -73,3 +73,11 @@ export function iconAction(label, icon, onClick) {
   if (onClick) button.addEventListener('click', onClick)
   return button
 }
+
+/// 折叠侧边栏：窗口轮廓 + 左边一栏（侧栏就在左边，这一栏一直朝左）。
+///
+/// 两态同一枚图标 —— 当前是哪一档由按钮的提示文字说（「折叠侧边栏」/「展开
+/// 侧边栏」），不靠图形区分。
+export function sidebarToggleIcon() {
+  return '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M9 4v16" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>'
+}

@@ -1,7 +1,7 @@
 /* VoiceNotes 前端入口：初始化、事件绑定、全局协调（各功能在独立模块里） */
 
 import {
-  $, I18N, LOCALE_KEY, THEME_KEY,
+  $, I18N, LOCALE_KEY, SIDEBAR_KEY,
   els, errorText, fmtError, state, t, toast,
 } from './core.js'
 import { getCurrentWindow, getCurrentWebview, invoke, logEvent } from './tauri.js'
@@ -16,11 +16,14 @@ import {
 import {
   buildWave, cancelRecording, renderHint, renderMicLabel, startRecording, stopRecording,
 } from './recorder.js'
-import { checkIcon, clearIcon, closeIcon } from './icons.js'
+import { checkIcon, clearIcon, closeIcon, sidebarToggleIcon } from './icons.js'
 import { openOutputDir, pickAndTranscribeFile, pickOutputDir, transcribeFilePath } from './files.js'
 import { listenEvents } from './events.js'
 import { copyText, saveText } from './export.js'
-import { renderThemeIcon, syncWindowBackground, syncWindowTheme, toggleTheme } from './theme.js'
+import {
+  applyStoredTheme, cycleTheme, renderThemeIcon, syncWindowBackground, syncWindowTheme,
+  watchWindowTheme,
+} from './theme.js'
 
 let deviceSelect = null
 let cloudProviderSelect = null
@@ -33,6 +36,40 @@ const VIEW_KEYS = { transcribe: 'view.transcribe', history: 'view.history', sett
 
 function viewTitle(view) {
   return t(VIEW_KEYS[view])
+}
+
+/* ── 侧边栏折叠 ─────────────────────────────────────────── */
+
+/// 侧边栏当前是折叠的（收起后只剩一条图标窄栏）。
+function sidebarCollapsed() {
+  return els.app.dataset.sidebar === 'collapsed'
+}
+
+/// 折叠 / 展开侧边栏：状态存 localStorage（重启后保持）。
+///
+/// 折叠只动侧栏的宽度与文字的显隐 —— 视图、录音状态、模型状态全都不受影响。
+/// `silent` 用于启动时恢复状态：那时候用户还没动过，别记一条「已折叠」。
+function setSidebarCollapsed(collapsed, { silent = false } = {}) {
+  els.app.dataset.sidebar = collapsed ? 'collapsed' : 'expanded'
+  try {
+    localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0')
+  } catch {
+    /* 存储不可用就只在本次会话生效 */
+  }
+  renderSidebarToggle()
+  if (!silent) logEvent('INFO', collapsed ? '侧边栏已折叠' : '侧边栏已展开')
+}
+
+/// 折叠按钮的提示文字跟着状态走（折叠时说「展开」，展开时说「折叠」），
+/// 图标表示**点击后的结果**（与主题按钮同一口径）。
+function renderSidebarToggle() {
+  const button = document.getElementById('sidebar-toggle')
+  if (!button) return
+  const collapsed = sidebarCollapsed()
+  const label = t(collapsed ? 'nav.expand' : 'nav.collapse')
+  button.title = label
+  button.setAttribute('aria-label', label)
+  button.innerHTML = sidebarToggleIcon()
 }
 
 /* ── 异常捕获 ─────────────────────────────────────────── */
@@ -99,6 +136,8 @@ export function applyLocale(preference) {
   renderMicLabel()
   renderHint()
   refreshSelectItems(stored)
+  // 折叠按钮的提示文字跟着语言走（折叠 / 展开是两句话）。
+  renderSidebarToggle()
   void invoke('set_menu_texts', { edit: t('menu.edit'), view: t('menu.view') }).catch((error) => logEvent('ERROR', `原生菜单语言同步失败: ${errorText(error)}`))
   els.viewTitle.textContent = viewTitle(state.view)
   // 原生窗口标题也跟着界面语言走（tauri.conf.json 里的只是启动默认值）。
@@ -174,7 +213,8 @@ export function bindUI() {
       recorder.classList.add('flash')
     }
   })
-  $('theme-btn').addEventListener('click', toggleTheme)
+  // 主题按钮：跟随系统 → 浅色 → 深色 → 跟随系统，一个按钮循环三态。
+  $('theme-btn').addEventListener('click', cycleTheme)
   els.settingsDownload.addEventListener('click', () => {
     switchView('transcribe')
     void downloadModel()
@@ -225,6 +265,10 @@ export function bindUI() {
   els.cloudCancel.addEventListener('click', () => closeCloudEditor())
   els.cloudClearKey.addEventListener('click', () => void clearCloudProfileKey())
   els.cloudAdd.addEventListener('click', () => openCloudEditor(null))
+  // 折叠 / 展开侧边栏。
+  document.getElementById('sidebar-toggle')?.addEventListener('click', () => {
+    setSidebarCollapsed(!sidebarCollapsed())
+  })
   // 列表里的三个动作：设为使用中 / 编辑 / 删除。
   // 「设为使用中」绑在整行上（点空白处也行）—— 事件委托取**最近**的
   // [data-action]：点在编辑/删除上就是那两个动作，不会顺带切换使用中。
@@ -397,21 +441,18 @@ function bindFileDrop() {
 
 async function init() {
   document.body.classList.toggle('macos', navigator.userAgent.includes('Mac'))
-  const theme = localStorage.getItem(THEME_KEY)
-  if (theme) document.documentElement.dataset.theme = theme
+  // 主题：跟随系统 / 浅色 / 深色。
+  applyStoredTheme()
   syncWindowBackground()
   syncWindowTheme()
   renderThemeIcon()
-  // 没手动选过主题时，系统切换深浅色要跟着变（连窗口底色一起）
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (!localStorage.getItem(THEME_KEY)) {
-      renderThemeIcon()
-      syncWindowBackground()
-      syncWindowTheme()
-    }
-  })
+  // 跟着系统走：读一次窗口当前主题 + 监听之后的变化。
+  // 不靠网页里的 `matchMedia` —— WKWebView 那个信号在系统切深浅色时不一定触发。
+  await watchWindowTheme()
 
   applyLocale(localStorage.getItem(LOCALE_KEY) || 'system')
+  // 侧栏折叠状态：先恢复再画界面（避免先展开再收起的闪动）。
+  setSidebarCollapsed(localStorage.getItem(SIDEBAR_KEY) === '1', { silent: true })
   buildWave()
   renderLang()
   renderHistory()

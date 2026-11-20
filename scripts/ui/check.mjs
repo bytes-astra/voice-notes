@@ -320,6 +320,15 @@ const clone = (value) => JSON.parse(JSON.stringify(value))
           window.__mockWindowTitle = title
           return Promise.resolve()
         },
+        // 窗口当前的主题（跟随系统时用它当初值）。
+        theme() {
+          return Promise.resolve(window.__mockSystemTheme || 'Light')
+        },
+        // 窗口主题变化事件：模拟系统切深浅色。
+        onThemeChanged(callback) {
+          window.__mockThemeChanged = callback
+          return Promise.resolve(() => {})
+        },
       }),
     },
     webview: { getCurrentWebview: () => ({ onDragDropEvent() {} }) },
@@ -494,6 +503,84 @@ await page.screenshot({ path: `${SHOTS}/02-zh-result.png` })
 await page.locator('.nav-item[data-view="settings"]').click()
 await page.waitForTimeout(150)
 check('设置页模型路径正常', !(await text('#settings-model')).includes('null'))
+// 主题偏好：一枚按钮循环三态（跟随系统 → 浅色 → 深色 → 跟随系统）。
+// 默认「跟随系统」。
+check('主题按钮存在', (await page.locator('#theme-btn').count()) === 1)
+check(
+  '主题默认跟随系统',
+  (await page.evaluate(() => localStorage.getItem('voicenotes.theme'))) === null,
+  await page.evaluate(() => localStorage.getItem('voicenotes.theme')),
+)
+// **关键**：跟随系统时给窗口外观传的是 **null**（不钉死）。
+// 钉死（'Light'/'Dark'）会把整个 App 的 macOS 外观写死，系统再切深浅色
+// 就传不进来 —— 「跟随系统」会变成「跟随启动时那档」。
+check(
+  '跟随系统时不钉死窗口外观（setTheme 收到 null）',
+  (await page.evaluate(() => window.__mockWindowTheme)) === null,
+  JSON.stringify(await page.evaluate(() => window.__mockWindowTheme)),
+)
+check(
+  '跟随系统时按钮提示是「跟随系统」',
+  (await page.locator('#theme-btn').getAttribute('aria-label')) === '跟随系统',
+  await page.locator('#theme-btn').getAttribute('aria-label'),
+)
+// 点一下 → 浅色；再点 → 深色；再点 → 回到跟随系统。
+await page.locator('#theme-btn').click()
+await page.waitForTimeout(200)
+check(
+  '第一次点击切到浅色',
+  (await page.evaluate(() => localStorage.getItem('voicenotes.theme'))) === 'light' &&
+    (await page.evaluate(() => document.documentElement.dataset.theme)) === 'light' &&
+    (await page.locator('#theme-btn').getAttribute('aria-label')) === '浅色',
+  await page.evaluate(() => `${localStorage.getItem('voicenotes.theme')} / ${document.documentElement.dataset.theme}`),
+)
+check(
+  '显式浅色时钉死窗口外观',
+  (await page.evaluate(() => window.__mockWindowTheme)) === 'Light',
+  JSON.stringify(await page.evaluate(() => window.__mockWindowTheme)),
+)
+await page.locator('#theme-btn').click()
+await page.waitForTimeout(200)
+check(
+  '第二次点击切到深色',
+  (await page.evaluate(() => localStorage.getItem('voicenotes.theme'))) === 'dark' &&
+    (await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark' &&
+    (await page.locator('#theme-btn').getAttribute('aria-label')) === '深色',
+  await page.evaluate(() => `${localStorage.getItem('voicenotes.theme')} / ${document.documentElement.dataset.theme}`),
+)
+await page.locator('#theme-btn').click()
+await page.waitForTimeout(200)
+check(
+  '第三次点击回到跟随系统',
+  (await page.evaluate(() => localStorage.getItem('voicenotes.theme'))) === 'system',
+  await page.evaluate(() => localStorage.getItem('voicenotes.theme')),
+)
+check(
+  '回到跟随系统后不再钉死窗口外观',
+  (await page.evaluate(() => window.__mockWindowTheme)) === null,
+  JSON.stringify(await page.evaluate(() => window.__mockWindowTheme)),
+)
+// 跟随系统时，系统切深浅色 → 界面跟着变（靠窗口的主题变化事件）。
+await page.evaluate(() => {
+  window.__mockSystemTheme = 'Dark'
+  window.__mockThemeChanged?.({ payload: 'Dark' })
+})
+await page.waitForTimeout(200)
+check(
+  '跟随系统时系统切深色 → 界面跟着变深色',
+  (await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark',
+  await page.evaluate(() => document.documentElement.dataset.theme),
+)
+await page.evaluate(() => {
+  window.__mockSystemTheme = 'Light'
+  window.__mockThemeChanged?.({ payload: 'Light' })
+})
+await page.waitForTimeout(200)
+check(
+  '跟随系统时系统切浅色 → 界面跟着变浅色',
+  (await page.evaluate(() => document.documentElement.dataset.theme)) === 'light',
+  await page.evaluate(() => document.documentElement.dataset.theme),
+)
 // 术语表：填入示例 → 保存 → 回填
 check('术语表输入框存在', (await page.locator('#hotwords-input').count()) === 1)
 await page.locator('#hotwords-example').click()
@@ -673,10 +760,32 @@ check('原生菜单同步中文', await page.evaluate(() => {
 // 6. 深色主题 + 截图
 await page.locator('.nav-item[data-view="transcribe"]').click()
 await page.waitForTimeout(100)
-await page.locator('#theme-btn').click()
-await page.waitForTimeout(200)
+// 主题按钮循环三态：跟随系统 → 浅色 → 深色 → 跟随系统。
+// 点到「深色」为止（前面的用例结束时停在「跟随系统」，这里最多点两次）。
+const clickThemeUntil = async (mode) => {
+  for (let i = 0; i < 3; i++) {
+    if ((await page.evaluate(() => localStorage.getItem('voicenotes.theme'))) === mode) return
+    await page.locator('#theme-btn').click()
+    await page.waitForTimeout(200)
+  }
+}
+await clickThemeUntil('dark')
 check('深色主题生效', (await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark')
 check('深色无横向溢出', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+// 主题按钮的图标表示**当前是哪一档**：浅色=太阳、深色=月亮、跟随系统=一半浅一半深的圆。
+const themeIconKind = () =>
+  page.locator('#theme-btn').evaluate((el) => {
+    if (el.querySelector('path[d^="M20.5 14.3"]')) return 'moon'
+    if (el.querySelector('circle[r="4"]')) return 'sun'
+    if (el.querySelector('circle[r="9.6"]')) return 'auto'
+    return 'unknown'
+  })
+check(
+  '深色下主题按钮给月亮图标',
+  (await themeIconKind()) === 'moon' &&
+    (await page.locator('#theme-btn').getAttribute('aria-label')) === '深色',
+  await themeIconKind(),
+)
 // 窗口外观（NSWindow.appearance）跟着主题走：macOS 的原生材质明暗跟的是它，
 // 不同步就是「浅色材质配深色字」。
 check(
@@ -685,12 +794,17 @@ check(
   await page.evaluate(() => window.__mockWindowTheme || '(没调用 setTheme)'),
 )
 await page.screenshot({ path: `${SHOTS}/04-dark.png` })
-await page.locator('#theme-btn').click()
-await page.waitForTimeout(150)
+await clickThemeUntil('system')
 check(
-  '切回浅色同步窗口外观',
-  (await page.evaluate(() => window.__mockWindowTheme)) === 'Light',
-  await page.evaluate(() => window.__mockWindowTheme || '(没调用 setTheme)'),
+  '切回跟随系统：窗口外观交回系统（null）',
+  (await page.evaluate(() => window.__mockWindowTheme)) === null,
+  JSON.stringify(await page.evaluate(() => window.__mockWindowTheme)),
+)
+check(
+  '跟随系统时按钮给一半浅一半深的圆',
+  (await themeIconKind()) === 'auto' &&
+    (await page.locator('#theme-btn').getAttribute('aria-label')) === '跟随系统',
+  await themeIconKind(),
 )
 
 // 7. 焦点在按钮上按空格不录音；空白处空格开始、Esc 取消
@@ -1937,6 +2051,55 @@ check(
 )
 await page.locator('#cloud-cancel').click()
 await page.waitForTimeout(150)
+
+// ── 侧边栏折叠：只留图标的一条窄栏 ──
+const sidebarWidth = () =>
+  page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width)
+const expandedWidth = await sidebarWidth()
+await page.locator('#sidebar-toggle').click()
+await page.waitForTimeout(300)
+const collapsedWidth = await sidebarWidth()
+check(
+  '点折叠按钮后侧栏变窄到 80px',
+  // 80px 是量出来的：macOS 的红绿灯固定在离窗口左缘 10/33/56pt，绿灯右缘
+  // 在 68pt —— 折叠后的右边框必须落在它右边（72px 时只剩 3pt，太挤）。
+  collapsedWidth === 80,
+  `展开=${expandedWidth} 折叠=${collapsedWidth}`,
+)
+check(
+  '折叠后导航文字不占位',
+  await page.evaluate(() => {
+    const span = document.querySelector('.nav-item[data-view="transcribe"] span')
+    return span !== null && getComputedStyle(span).display === 'none'
+  }),
+)
+check(
+  '折叠后按钮的提示改成「展开侧边栏」',
+  (await page.locator('#sidebar-toggle').getAttribute('aria-label')) === '展开侧边栏',
+  await page.locator('#sidebar-toggle').getAttribute('aria-label'),
+)
+check(
+  '折叠状态写进 localStorage',
+  (await page.evaluate(() => localStorage.getItem('voicenotes.sidebarCollapsed'))) === '1',
+)
+// 折叠后图标仍可点：导航还是能切的。
+await page.locator('.nav-item[data-view="settings"]').click()
+await page.waitForTimeout(200)
+check(
+  '折叠状态下仍能切换视图',
+  (await page.locator('.app').getAttribute('data-view')) === 'settings',
+  await page.locator('.app').getAttribute('data-view'),
+)
+await page.locator('.nav-item[data-view="transcribe"]').click()
+await page.waitForTimeout(200)
+// 还原成展开：后面的断言按展开态跑。
+await page.locator('#sidebar-toggle').click()
+await page.waitForTimeout(300)
+check(
+  '再点一次恢复展开',
+  (await sidebarWidth()) === expandedWidth,
+  `展开=${expandedWidth} 现在=${await sidebarWidth()}`,
+)
 
 // ── Windows 场景：侧栏顶部的红绿灯占位不能套到 Windows 上 ──
 // macOS 的标题栏是覆盖式的，侧栏顶部要留 78px 给红绿灯；
