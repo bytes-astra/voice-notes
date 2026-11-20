@@ -886,6 +886,53 @@ await page.waitForTimeout(200)
 check('流式调用流式启动命令', await page.evaluate(() =>
   window.__mockCalls.some(([cmd]) => cmd === 'start_streaming_recording')
 ))
+// 实时行 = 固定长度 + 内部滚动：中间结果长短变化不能把下面的模式行顶来顶去。
+const emitPartial = (partial) =>
+  page.evaluate((p) => {
+    window.__emit('stream:partial', { sessionId: window.__mockSessionId, partial: p })
+  }, partial)
+const liveMetrics = () =>
+  page.locator('#live-line').evaluate((el) => ({
+    height: el.getBoundingClientRect().height,
+    shown: !el.classList.contains('hidden'),
+    empty: el.classList.contains('is-empty'),
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+    scrollTop: el.scrollTop,
+  }))
+// 录制一开始就保留占位（此时还没有任何中间结果）。
+const liveStart = await liveMetrics()
+check(
+  '流式录制开始就保留实时行占位',
+  liveStart.shown && liveStart.height > 0,
+  JSON.stringify(liveStart),
+)
+await emitPartial('短句')
+await page.waitForTimeout(80)
+const liveShort = await liveMetrics()
+await emitPartial('很长的一句实时中间结果'.repeat(40))
+await page.waitForTimeout(80)
+const liveLong = await liveMetrics()
+check(
+  '实时行高度固定，不被长句撑开',
+  liveShort.height === liveLong.height && liveLong.height > 0,
+  `短=${liveShort.height} 长=${liveLong.height}`,
+)
+check(
+  '实时行内部滚动并跟到末尾',
+  liveLong.scrollHeight > liveLong.clientHeight &&
+    liveLong.scrollTop + liveLong.clientHeight >= liveLong.scrollHeight - 2,
+  JSON.stringify(liveLong),
+)
+// 句末会发一条空 partial：不能把实时行收起来（否则下一段又把它顶下来）。
+await emitPartial('')
+await page.waitForTimeout(80)
+const liveCleared = await liveMetrics()
+check(
+  '句末清空 partial 不收起实时行',
+  liveCleared.shown && liveCleared.empty && liveCleared.height === liveLong.height,
+  JSON.stringify(liveCleared),
+)
 await page.locator('#mic-btn').click()
 await page.waitForTimeout(400)
 check('流式停止后回到空闲', (await phase()) === 'idle')

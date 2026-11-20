@@ -37,6 +37,13 @@ export function setPhase(phase) {
   renderHint()
   if (phase !== 'recording') {
     els.liveLine.classList.add('hidden')
+    els.liveLine.classList.remove('is-empty')
+    els.liveLine.textContent = ''
+  } else if (state.status?.mode === 'streaming' || state.status?.mode === 'cloud') {
+    // 录制开始就把固定高度的实时行占住：等第一段 partial 到了才显示，
+    // 下面的模式行会先被顶下去一次（RC 见 check:ui 的「实时行高度固定」）。
+    els.liveLine.classList.remove('hidden')
+    els.liveLine.classList.add('is-empty')
     els.liveLine.textContent = ''
   }
   if (phase === 'idle') resetWave()

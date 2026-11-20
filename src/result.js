@@ -233,10 +233,17 @@ export function showPartial(partial) {
   if (state.phase !== 'recording') return
   const text = (partial || '').trim()
   if (!text) {
-    els.liveLine.classList.add('hidden')
+    // 句末 / 引擎重置：只清内容、**不收起**实时行 —— 收起会让下面整块上移，
+    // 下一段 partial 到达又顶下来，界面来回跳。
     els.liveLine.textContent = ''
+    els.liveLine.classList.add('is-empty')
+    els.liveLine.scrollTop = 0
     return
   }
-  els.liveLine.textContent = text.length > 160 ? `…${text.slice(-160)}` : text
-  els.liveLine.classList.remove('hidden')
+  // 固定高度 + 内部滚动：用户没往回翻时把视口跟到最新一句的末尾。
+  const stick =
+    els.liveLine.scrollHeight - els.liveLine.scrollTop - els.liveLine.clientHeight < 24
+  els.liveLine.textContent = text
+  els.liveLine.classList.remove('is-empty')
+  if (stick) els.liveLine.scrollTop = els.liveLine.scrollHeight
 }
