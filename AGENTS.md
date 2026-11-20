@@ -202,13 +202,14 @@
 
 - **provider 可插拔**：`CloudProvider` trait（`src-tauri/src/asr/cloud.rs`）只管协议 —— 建连、喂音频、提交、收尾。协议差异（帧格式、鉴权、partial 语义、术语表格式）全部关在 provider 内部：`realtime.rs`（OpenAI Realtime，JSON 帧）、`volcengine.rs`（火山 / 豆包，自研二进制帧）、`aliyun.rs`（阿里云百炼 Qwen-Audio，JSON 控制帧 + 裸二进制音频帧）。
   **加一家的实际清单**（不只是「加个文件」）：provider 文件 + `provider_capabilities` 表项 + `create_provider` 分支 + `settings::CLOUD_PROVIDERS` + 前端 `cloudProviderItems()` 与 locale 文案 + 字段可见性条件 + 协议层单测 + 界面断言。
-- **配置形态是「连接列表」**：一条 = provider + 地址 + 密钥 + 模型/资源标识 + 备注，**绑成一套**（换 provider 换的是整套）。`Status.cloudProfiles` 回传列表，**凭据只有掩码**（`settings::mask_secret`，头 4 + 尾 4）；`cloudActiveProfile` 指向**正在使用**的那条 —— 转写与 `create_provider` 都读它。
+- **配置形态是「连接列表」**：一条 = provider + 地址 + 密钥 + 模型/资源标识 + 备注，**绑成一套**（换 provider 换的是整套）。`Status.cloudProfiles` 回传列表，**凭据只有掩码**（`settings::mask_secret`，头尾各露 `min(4, 长度 / 4)` 个字符，露出数不超过原文一半；官方长 key 就是头 4 + 尾 4）；`cloudActiveProfile` 指向**正在使用**的那条 —— 转写与 `create_provider` 都读它。
   - **切 provider 不再清空别人的配置**（旧行为是切一下就把地址/密钥/模型全清掉）—— 每家各是一条独立连接。
   - **「模型」与「资源标识」合并成一个字段**，按 provider 解释：Realtime 与阿里是模型名，火山是 `X-Api-Resource-Id`。界面**给候选项**（datalist）：阿里模型另有后端白名单（填错立刻报 `cloud.unsupportedModel`），火山的资源标识**仍可手打**（有些中转服务用自定义标识）—— 填成模型 1.0 的 id 会被**服务端**在握手时拒掉（403），那是火山侧的规则，本地拦不住；Realtime 的模型官方还有别的，保持可手打。
   - **凭据能显式清除**：凭据明文不回传 → 界面没法「读出来再改」。清空走编辑区的「清除凭据」（`clear_cloud_profile_key` 命令，**只动凭据**，不连带提交编辑区里其它还没保存的字段）；保存时传空串也是「清空」，但界面**不能**用空串表达 —— 空串与「没改」在前端分不开。
   - **删连接要二次确认**：凭据明文永不回传 → 删掉就找不回来（`confirmDialog`）。
   - **列表行的三个位置各有各的语义**：状态点（`dotIcon`）只是**指示**（实心 = 使用中）SHALL NOT 是控件；「设为使用中」绑在**整行**上（点空白处也行），靠事件委托取**最近**的 `[data-action]` —— 点在编辑/删除上就是那两个动作，不会顺带切换使用中；行尾动作图标 hover 这行才显形（使用中的那行一直显），图标点击区 32px。
   - **不做旧格式迁移**：旧 `settings.json` 的 5 个平铺云端字段被忽略（用户重新填一遍）—— 两套真值来源迟早不一致。
+  - **换 provider 时凭据不跨家沿用**：**已有连接的服务商不可更改** —— 界面把下拉锁死，换服务商只能删除后重新添加（一条连接 = 一整套配置）。后端仍留兜底：`upsert_cloud_profile` 发现 provider 变了且 `api_key == None` → 清空凭据（防别的调用方绕过去；否则会把 A 家的 key 发给 B 家的端点，`base_url` 还可自定义）。**`None` = 「不改」的语义不变** —— 只改备注、密钥框留空时凭据照旧保留。
 - **能力声明**：`Capabilities`（句边界方式 / 是否需要本地 VAD / 中间结果语义 / 是否支持术语表 / 上传采样率）由 provider 自报，按 id 静态查的表（`provider_capabilities`）与实例**同源**（表项就是实现自报的那个常量，别手写第二份）。合法组合只有两种：客户端提交 + 需要本地 VAD；服务端断句 + 不需要本地 VAD。**「缺 VAD」不是「改用服务端断句」** —— 那是另一个能力，混起来会让客户端提交族静默退化。
 - **中间结果统一为「当前未定稿句的累计串」**：各家协议形态不同，在 provider 内部归一，上层只认这一种。归一器按句标识分桶；**没有句标识的协议（服务端断句族）走单桶**，不支持跨句交错。
 
