@@ -312,11 +312,21 @@ pub fn upsert_cloud_profile(
             id
         }
     };
+    // 编辑已有连接时先记下它原来的 provider：换了 provider 就是换了一家服务，
+    // 旧凭据不能留在新服务名下（RC-K21）。兜底放在后端 —— 前端绕不过去。
+    let previous_provider = settings
+        .cloud_profiles
+        .iter()
+        .find(|profile| profile.id == id)
+        .map(|profile| profile.provider.clone());
     if let Some(profile) = settings
         .cloud_profiles
         .iter_mut()
         .find(|profile| profile.id == id)
     {
+        let provider_changed = previous_provider
+            .as_deref()
+            .is_some_and(|old| old != provider);
         profile.provider = provider;
         // 备注留空就退回 provider 的默认名 —— 列表里总要有个能认出来的名字。
         // 用**新** provider 的名字：先取旧名字再改 provider，列表里会出现
@@ -328,8 +338,12 @@ pub fn upsert_cloud_profile(
         };
         profile.base_url = base_url;
         profile.model = model;
-        if let Some(key) = api_key {
-            profile.api_key = key.trim().to_string();
+        match api_key {
+            Some(key) => profile.api_key = key.trim().to_string(),
+            // 换了 provider 而调用方没给新凭据 → 旧凭据作废：
+            // 一家的 key 不能发给另一家的端点（`base_url` 还可自定义）。
+            None if provider_changed => profile.api_key.clear(),
+            None => {}
         }
     }
     // 列表里第一条就是活动项（新增时自动选中它）。
@@ -340,13 +354,29 @@ pub fn upsert_cloud_profile(
     id
 }
 
-/// 删一条连接。删的是活动项 → 落到下一条；删空了 → 回到「未配置」。
+/// 删一条连接。删的是活动项 → 落到**下一条**（删的是最后一条则落到前一条）；
+/// 删空了 → 回到「未配置」。
 pub fn delete_cloud_profile(settings: &mut Settings, id: &str) -> Result<(), String> {
     let id = id.trim();
-    if !settings.cloud_profiles.iter().any(|profile| profile.id == id) {
+    let Some(index) = settings
+        .cloud_profiles
+        .iter()
+        .position(|profile| profile.id == id)
+    else {
         return Err(crate::code("cloud.profileNotFound"));
-    }
+    };
+    let was_active = settings.cloud_active_profile.trim() == id;
     settings.cloud_profiles.retain(|profile| profile.id != id);
+    if was_active {
+        // 删掉下标 index 后，同一下标就是原来的「下一条」；删的是最后一条
+        // 时没有下一条 → 用前一条。一条都不剩 → 清空。
+        settings.cloud_active_profile = settings
+            .cloud_profiles
+            .get(index)
+            .or_else(|| settings.cloud_profiles.get(index.saturating_sub(1)))
+            .map(|profile| profile.id.clone())
+            .unwrap_or_default();
+    }
     settings.clean_cloud_profiles();
     Ok(())
 }
@@ -378,30 +408,27 @@ pub fn set_active_cloud_profile(settings: &mut Settings, id: &str) {
     }
 }
 
-/// 凭据的掩码：头 4 + 尾 4（`sk-c…HePU`）。
+/// 凭据的掩码：按**露出比例**分档，露出的字符数永远 ≤ 原文长度的一半。
 ///
 /// **凭据明文不回传前端**（RC-K6）—— 掩码是唯一回传的形态。
 ///
-/// 规则：
-/// - 空 → 空串（没配凭据）；
-/// - 1~2 个字符 → 一律用固定点数（露多少都是全露）；
-/// - 3~8 个字符 → 只露头 2 个（短的凭据露头尾就把大半条露出去了）；
-/// - 更长 → 头 4 + `…` + 尾 4。
+/// 规则：头尾各露 `min(4, 长度 / 4)` 个字符。
+/// - 官方 key 都 20+ 字符：仍是头 4 + 尾 4（露 8/20 = 40%），读起来最省事；
+/// - 短凭据按比例缩小，不会在「9 个字符」处从露 2 跳到露 8；
+/// - 1~3 个字符露任何一个都超过一半 → 一律用固定点数。
 pub fn mask_secret(secret: &str) -> String {
     let chars: Vec<char> = secret.chars().collect();
     let length = chars.len();
-    match length {
-        0 => String::new(),
-        // 1~2 个字符：露出多少都是全露 —— 一律用固定点数。
-        n if n <= 2 => "••".to_string(),
-        // 3~8 个字符：只露头 2 个（露头尾就把大半条露出去了）。
-        n if n <= 8 => format!("{}…", chars[..2].iter().collect::<String>()),
-        n => {
-            let head: String = chars[..4].iter().collect();
-            let tail: String = chars[n - 4..].iter().collect();
-            format!("{head}…{tail}")
-        }
+    if length == 0 {
+        return String::new();
     }
+    let shown = (length / 4).min(4);
+    if shown == 0 {
+        return "••".to_string();
+    }
+    let head: String = chars[..shown].iter().collect();
+    let tail: String = chars[length - shown..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 #[cfg(test)]

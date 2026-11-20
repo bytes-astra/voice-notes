@@ -99,7 +99,10 @@ fn illegal_provider_falls_back_to_the_default() {
     assert_eq!(settings.cloud_profiles[0].provider, "realtime");
 }
 
-/// 删连接：删的是使用中的那条 → 自动落到下一条。
+/// 删连接：删的是使用中的那条 → 自动落到**下一条**。
+///
+/// 必须三条连接、删**中间**那条 —— 两条时「下一条」和「第一条」恰好是同一条，
+/// 测不出实现到底落在哪儿（RC-K26）。
 #[test]
 fn deleting_the_active_profile_falls_back_to_the_next_one() {
     let mut settings = Settings::default();
@@ -121,12 +124,133 @@ fn deleting_the_active_profile_falls_back_to_the_next_one() {
         Some("k2".into()),
         String::new(),
     );
-    assert_eq!(settings.cloud_active_profile, first, "第一条是使用中的");
-    set_active_cloud_profile(&mut settings, &first);
+    let third = upsert_cloud_profile(
+        &mut settings,
+        None,
+        "第三条".into(),
+        "realtime".into(),
+        String::new(),
+        Some("k3".into()),
+        String::new(),
+    );
+    set_active_cloud_profile(&mut settings, &second);
 
-    delete_cloud_profile(&mut settings, &first).expect("删掉一条存在的连接不该失败");
-    assert_eq!(settings.cloud_profiles.len(), 1, "该只剩一条");
-    assert_eq!(settings.cloud_active_profile, second, "删掉使用中的 → 落到下一条");
+    delete_cloud_profile(&mut settings, &second).expect("删掉一条存在的连接不该失败");
+    let ids: Vec<&str> = settings
+        .cloud_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect();
+    assert_eq!(ids, vec![first.as_str(), third.as_str()], "该剩下第一、第三条");
+    assert_eq!(
+        settings.cloud_active_profile, third,
+        "删掉使用中的中间那条 → 落到下一条，不是第一条"
+    );
+}
+
+/// 删的是使用中的**最后**一条 → 没有下一条，落到前一条。
+#[test]
+fn deleting_the_last_active_profile_falls_back_to_the_previous_one() {
+    let mut settings = Settings::default();
+    let first = upsert_cloud_profile(
+        &mut settings,
+        None,
+        "第一条".into(),
+        "aliyun".into(),
+        String::new(),
+        Some("k1".into()),
+        String::new(),
+    );
+    let second = upsert_cloud_profile(
+        &mut settings,
+        None,
+        "第二条".into(),
+        "volcengine".into(),
+        String::new(),
+        Some("k2".into()),
+        String::new(),
+    );
+    set_active_cloud_profile(&mut settings, &second);
+
+    delete_cloud_profile(&mut settings, &second).expect("删掉一条存在的连接不该失败");
+    assert_eq!(
+        settings.cloud_active_profile, first,
+        "删的是最后一条 → 落到前一条"
+    );
+}
+
+/// 换 provider 且没传新凭据 → 旧凭据必须作废（RC-K21）。
+///
+/// 一家的 key 不能留在另一家的连接里：转写时会把 A 家的凭据发给 B 家的端点，
+/// 而 `base_url` 可自定义，最坏发到任意端点。
+#[test]
+fn changing_provider_without_a_new_key_clears_the_credential() {
+    let mut settings = Settings {
+        cloud_profiles: vec![profile("aliyun", "aliyun-secret", "qwen-model")],
+        cloud_active_profile: "p-1".into(),
+        ..Settings::default()
+    };
+
+    upsert_cloud_profile(
+        &mut settings,
+        Some("p-1".into()),
+        "火山".into(),
+        "volcengine".into(),
+        String::new(),
+        None,
+        "volc.seadasr.sauc.duration".into(),
+    );
+    let saved = &settings.cloud_profiles[0];
+    assert_eq!(saved.provider, "volcengine");
+    assert!(
+        saved.api_key.is_empty(),
+        "换了 provider 又没给新凭据 → 旧凭据不能跨家沿用"
+    );
+}
+
+/// 只改备注（provider 没变）→ 凭据保持不变。
+///
+/// 「`None` = 不改」这条正常路径不能被 RC-K21 的兜底误伤 —— 改一次备注
+/// 就把凭据清掉的话，用户每次编辑都得重填密钥。
+#[test]
+fn changing_only_the_label_keeps_the_credential() {
+    let mut settings = Settings {
+        cloud_profiles: vec![profile("aliyun", "keep-me", "model-x")],
+        cloud_active_profile: "p-1".into(),
+        ..Settings::default()
+    };
+
+    upsert_cloud_profile(
+        &mut settings,
+        Some("p-1".into()),
+        "换个名字".into(),
+        "aliyun".into(),
+        String::new(),
+        None,
+        "model-x".into(),
+    );
+    assert_eq!(settings.cloud_profiles[0].api_key, "keep-me", "只改备注不该动凭据");
+}
+
+/// 换 provider 且传了新凭据 → 用新凭据（不是清空）。
+#[test]
+fn changing_provider_with_a_new_key_uses_the_new_credential() {
+    let mut settings = Settings {
+        cloud_profiles: vec![profile("aliyun", "old-secret", "")],
+        cloud_active_profile: "p-1".into(),
+        ..Settings::default()
+    };
+
+    upsert_cloud_profile(
+        &mut settings,
+        Some("p-1".into()),
+        "火山".into(),
+        "volcengine".into(),
+        String::new(),
+        Some("new-secret".into()),
+        String::new(),
+    );
+    assert_eq!(settings.cloud_profiles[0].api_key, "new-secret");
 }
 
 /// 删空 → 回到「未配置」。
@@ -212,14 +336,43 @@ fn normalize_keeps_the_existing_profile_list() {
     assert_eq!(normalized.cloud_active_profile, "p-1");
 }
 
-/// 掩码：头 4 + 尾 4；短的只露头 2 个；空串是空串。
+/// 掩码：按比例露头尾；官方 key 仍是头 4 + 尾 4；短的按比例缩小。
 #[test]
 fn mask_secret_hides_the_middle() {
     assert_eq!(mask_secret(""), "");
-    assert_eq!(mask_secret("sk-c1234HePU"), "sk-c…HePU");
-    // 太短的凭据：只露头 2 个（露头尾就把大半条露出去了）。
-    assert_eq!(mask_secret("abc"), "ab…");
-    assert_eq!(mask_secret("abcdefgh"), "ab…");
+    // 12 个字符：头尾各 3 个（比例分档，仍是 50%）。
+    assert_eq!(mask_secret("sk-c1234HePU"), "sk-…ePU");
+    // 1~3 个字符：露任何一个都超过一半 → 固定点数。
+    assert_eq!(mask_secret("abc"), "••");
+    // 8 个字符：头尾各 2 个（一半）。
+    assert_eq!(mask_secret("abcdefgh"), "ab…gh");
+    // 9 个字符不该跳成「露 8」：仍是头尾各 2。
+    assert_eq!(mask_secret("abcdefghi"), "ab…hi");
+}
+
+/// 掩码露出的字符数永远不超过原文长度的一半（RC-K24）。
+///
+/// 旧规则在 9 个字符处从「露 2」跳到「露 8」（89%）—— 这条守卫按比例算，
+/// 任何长度都不能越线。
+#[test]
+fn mask_secret_never_reveals_more_than_half() {
+    for length in [1usize, 2, 3, 4, 5, 8, 9, 10, 16, 20, 40] {
+        let secret: String = (0..length)
+            .map(|index| char::from(b'a' + (index % 26) as u8))
+            .collect();
+        let masked = mask_secret(&secret);
+        assert_ne!(masked, secret, "掩码不能等于原文：{length} 个字符");
+        let exposed: usize = if masked.contains('…') {
+            masked.split('…').map(|part| part.chars().count()).sum()
+        } else {
+            // 「••」是固定点数，没有露出原文里的任何字符。
+            0
+        };
+        assert!(
+            exposed * 2 <= length,
+            "{length} 个字符露出了 {exposed} 个（超过一半）：{masked}"
+        );
+    }
 }
 
 /// 掩码不能被原样反推：短凭据不该整条露出。
