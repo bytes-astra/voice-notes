@@ -433,7 +433,12 @@ main { display: flex; flex-direction: column; gap: 16px; }
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
+  /* 滚动条藏起来：横向滚动是自动跟随最新内容的，不需要一条可见的条。
+     触控板 / Shift+滚轮 仍然能手动翻。 */
+  scrollbar-width: none;
+}
+.live-line::-webkit-scrollbar {
+  display: none;
 }
 
 /* 还没有中间结果：保留占位但不可见 —— 收起占位的话，第一段 partial 到达

@@ -1042,6 +1042,29 @@ check(
   liveLong.scrollLeft + liveLong.clientWidth >= liveLong.scrollWidth - 2,
   JSON.stringify(liveLong),
 )
+// 滚动条藏起来：横向滚动是自动跟随的，不需要一条可见的条。
+check(
+  '实时行不显示滚动条',
+  await page.locator('#live-line').evaluate((el) => {
+    const style = getComputedStyle(el)
+    return style.scrollbarWidth === 'none' || style.scrollbarWidth === '0px'
+  }),
+  await page.locator('#live-line').evaluate((el) => getComputedStyle(el).scrollbarWidth),
+)
+// 手动往回拖了之后，下一段 partial 仍要把视口拽回最新内容
+// —— 实时预览不该停在用户翻到的旧位置。
+await page.locator('#live-line').evaluate((el) => {
+  el.scrollLeft = 0
+})
+await emitPartial('又来了一句新的实时中间结果'.repeat(30))
+await page.waitForTimeout(120)
+const liveAfterManualScroll = await liveMetrics()
+check(
+  '手动翻走后仍自动跟到最新内容',
+  liveAfterManualScroll.scrollLeft + liveAfterManualScroll.clientWidth >=
+    liveAfterManualScroll.scrollWidth - 2,
+  JSON.stringify(liveAfterManualScroll),
+)
 // 句末会发一条空 partial：不能把实时行收起来（否则下一段又把它顶下来）。
 await emitPartial('')
 await page.waitForTimeout(80)

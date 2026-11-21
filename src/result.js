@@ -240,10 +240,10 @@ export function showPartial(partial) {
     els.liveLine.scrollLeft = 0
     return
   }
-  // 一行横向滚动：用户没往回拖时把视口跟到最新内容的末尾（右侧）。
-  const stick =
-    els.liveLine.scrollWidth - els.liveLine.scrollLeft - els.liveLine.clientWidth < 24
+  // 一行横向滚动：**无条件**跟到最新内容的末尾（右侧）。
+  // 这行是「正在说的话」的实时预览 —— 视口就该始终停在最新那几个字上，
+  // 没有让人回头翻的理由（滚动条也藏起来了）。
   els.liveLine.textContent = text
   els.liveLine.classList.remove('is-empty')
-  if (stick) els.liveLine.scrollLeft = els.liveLine.scrollWidth
+  els.liveLine.scrollLeft = els.liveLine.scrollWidth
 }
