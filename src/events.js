@@ -20,9 +20,9 @@ export async function listenEvents() {
     const payload = event.payload || {}
     if (payload.sessionId != null && payload.sessionId !== state.recordingSessionId) return
     pushLevel(payload.level || 0)
-    if (state.phase === 'recording' && typeof payload.elapsed === 'number') {
-      els.timer.textContent = fmtClock(payload.elapsed)
-    }
+    // 计时器**只有前端这一个写者**（recorder.js 的 startTimer）。
+    // 后端也报 elapsed 的话，两个时钟的原点差几毫秒（后端从采集线程起算，
+    // 前端从命令返回起算）—— 显示值会在两个数之间来回跳。
   })
 
   await listen('audio:error', (event) => {

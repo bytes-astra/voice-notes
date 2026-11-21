@@ -497,6 +497,31 @@ check(
   }),
   await page.evaluate(() => document.getElementById('clear-btn')?.querySelector('svg')?.outerHTML.slice(0, 120) || '(没有清空按钮图标)'),
 )
+
+// ── RC-A10：历史写不进去（配额满 / 无痕模式）不能静默 ──
+// 用户以为存上了，下次打开发现历史没了，没有任何痕迹 —— 只能靠日志查。
+// 守的是「失败要留痕」：日志里有 ERROR，界面上的提示是另一回事。
+const historyErrorLogged = await page.evaluate(async () => {
+  const real = Storage.prototype.setItem
+  Storage.prototype.setItem = function (key, value) {
+    if (String(key).includes('history')) throw new DOMException('quota', 'QuotaExceededError')
+    return real.call(this, key, value)
+  }
+  const before = window.__mockCalls.length
+  try {
+    // 触发一次历史写入：删掉现有历史会重新写一份。
+    document.querySelector('.history-item .history-actions button:nth-child(3)')?.click()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  } finally {
+    Storage.prototype.setItem = real
+  }
+  return window.__mockCalls
+    .slice(before)
+    .filter(([cmd, args]) => cmd === 'client_log' && /ERROR/.test(JSON.stringify(args)))
+    .length
+})
+check('历史写入失败会记日志', historyErrorLogged > 0, `client_log ERROR 条数=${historyErrorLogged}`)
+
 await page.screenshot({ path: `${SHOTS}/02-zh-result.png` })
 
 // 4. 设置页切英文：结果不被覆盖、历史不重复
@@ -959,6 +984,111 @@ await page.evaluate(() => {
 await page.waitForTimeout(120)
 check('实时追加不覆盖用户编辑', (await page.locator('#text').inputValue()).startsWith('我手改的一行'))
 check('实时追加接在用户编辑之后', (await page.locator('#text').inputValue()).includes('下一句'))
+
+// ── RC-E8：实时追加不能夺走用户的光标，也不能清空撤销栈 ──
+// 用户在中间改字，下一句识别结果一到，光标跳到末尾 = 接着敲的字跑错地方；
+// 撤销栈被清空 = 改过的字再也撤不回来。
+//
+// 两条守卫对应两条不同的写路径：
+//   · 整值写（el.value = …）→ 光标推到末尾、**撤销栈清空**；
+//   · 增量写（execCommand insertText）→ 光标留在原处、**撤销栈保得住**。
+//
+// 光标那条**两条路径都满足**（整值写分支也还原了选区），单测它测不出改动；
+// 撤销栈那条能区分 —— 且实测稳定：增量写后撤销回到插入前（4/4 一致），
+// 整值写后撤销**无效**（3/3 一致）。
+// （注意：**混合**场景「打字 + 追加」在 headless WebKit 里会被并成一组，
+//   那才是之前判「不可靠」的原因 —— 纯追加场景没有这个问题。）
+await page.locator('#text').fill('我手改的一行')
+await page.evaluate(() => {
+  const el = document.getElementById('text')
+  el.focus()
+  // 光标放在中间（第 3 个字后面）—— 用户正在这里改字。
+  el.setSelectionRange(3, 3)
+})
+await page.evaluate(() => {
+  window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: '再来一句', start: 0, end: 1 })
+})
+await page.waitForTimeout(120)
+const caretAfter = await page.evaluate(() => document.getElementById('text').selectionStart)
+check(
+  '实时追加后光标还在原处',
+  caretAfter === 3,
+  `光标位置=${caretAfter}（期望 3）`,
+)
+check(
+  '实时追加后用户改的内容仍在',
+  (await page.locator('#text').inputValue()).startsWith('我手改的一行'),
+)
+// 撤销栈：整值写会清空它 —— 撤销撤不掉刚追加的那句。
+// （语义取「撤销后不再含刚追加的内容」：一次 undo 撤掉的是**一组**，
+//   撤销栈里还留着更早的会话历史，撤掉的不一定只有这一句。）
+const undoneAfterAppend = await page.evaluate(() => {
+  const el = document.getElementById('text')
+  el.focus()
+  document.execCommand('undo')
+  return el.value
+})
+check(
+  '实时追加后仍能撤销掉刚追加的内容',
+  !undoneAfterAppend.includes('再来一句'),
+  `撤销后=${undoneAfterAppend.slice(-40)}`,
+)
+
+// 无焦点路径：`execCommand('insertText')` 要求元素有焦点，没焦点时它
+// **返回 true 却什么也没做** —— 兜底必须退回整值写，文本照样要接上。
+// （录音中用户没碰结果框时就是这条路径 —— 上一条断言是 focus 过的。）
+await page.evaluate(() => document.getElementById('text').blur())
+const unfocusedBefore = await page.locator('#text').inputValue()
+await page.evaluate(() => {
+  window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: '无焦点追加', start: 0, end: 1 })
+})
+await page.waitForTimeout(120)
+const unfocusedAfter = await page.locator('#text').inputValue()
+check(
+  '无焦点时实时追加照样接上',
+  unfocusedAfter === `${unfocusedBefore}无焦点追加`,
+  `结果=${unfocusedAfter.slice(-40)}`,
+)
+
+// ── 焦点在别处时，转写文本不能插进那个输入框 ──
+// `execCommand('insertText')` 作用于**当前焦点所在的可编辑元素**，不是结果框。
+// 实测：焦点在另一个 input 时，文本插进了那个 input，结果框纹丝不动。
+// 文件转写时用户能切到设置页点进凭据框 —— 转写文本被插进去，
+// 保存下来就成了凭据的一部分。
+//
+// 用**可见**的输入框：焦点在 display:none 的元素上时 execCommand 不生效，
+// 那样测出来是假绿。
+await page.evaluate(() => {
+  const el = document.getElementById('text')
+  el.focus()
+  el.setSelectionRange(3, 3)
+  let other = document.getElementById('focus-probe')
+  if (!other) {
+    other = document.createElement('input')
+    other.id = 'focus-probe'
+    other.style.cssText = 'position:fixed;top:0;left:0;width:200px;z-index:9999'
+    document.body.appendChild(other)
+  }
+  other.value = '原凭据'
+  other.focus()
+  other.setSelectionRange(2, 2)
+})
+const otherBefore = await page.evaluate(() => document.getElementById('focus-probe')?.value ?? '')
+await page.evaluate(() => {
+  window.__emit('stream:segment', { sessionId: window.__mockSessionId, segment: '串错了', start: 0, end: 1 })
+})
+await page.waitForTimeout(120)
+const otherAfter = await page.evaluate(() => document.getElementById('focus-probe')?.value ?? '')
+check(
+  '焦点在别的输入框时转写文本不插进去',
+  otherAfter === otherBefore,
+  `输入框=${otherAfter.slice(0, 40)}`,
+)
+check(
+  '焦点在别的输入框时结果框照样接到新句',
+  (await page.locator('#text').inputValue()).includes('串错了'),
+)
+await page.evaluate(() => document.getElementById('focus-probe')?.remove())
 
 // 编辑状态下收到缺口段：显示的必须是本地化文案，不能露出 [[gap:N]]。
 await page.evaluate(() => {
@@ -1551,6 +1681,8 @@ check('历史载入内容可见', (await page.locator('#text').inputValue()).len
 await page.evaluate(() => {
   const box = document.getElementById('text')
   box.value = box.value + '（手改）'
+  box.focus()
+  box.setSelectionRange(3, 3)
 })
 await page.locator('.nav-item[data-view="settings"]').click()
 await page.waitForTimeout(150)
@@ -1562,6 +1694,14 @@ check(
   (await page.locator('#text').inputValue()).includes('（约 4 秒未识别）'),
 )
 check('历史载入后切语言保留用户编辑', (await page.locator('#text').inputValue()).includes('（手改）'))
+// 切语言换占位符时文本长度变了（整值写会把光标推到末尾）——
+// 光标要留在用户改字的那个位置，不能被推到末尾。
+const caretAfterMarkerSwap = await page.evaluate(() => document.getElementById('text').selectionStart)
+check(
+  '切语言换占位符后光标没被推到末尾',
+  caretAfterMarkerSwap === 3,
+  `光标位置=${caretAfterMarkerSwap}（期望 3）`,
+)
 
 // 流式模型下载完、预热失败：不能弹「已就绪」。
 await page.evaluate(() => {
@@ -1726,6 +1866,61 @@ check(
   '点整行能切换使用中的那条',
   secondRowText.includes('使用中') && !firstRowText.includes('使用中'),
   `第一行=${firstRowText} 第二行=${secondRowText}`,
+)
+
+// ── RC-E9：切换使用中的那条之后，焦点不能掉到 body ──
+// 整表重建会把用户正在操作的那一行换掉 —— 焦点随之掉到 body，
+// 键盘用户下一次 Tab 得从头开始。守的是「焦点还在那一行的按钮上」。
+//
+// 点**当前活动的那一行**（第 1 行）：活动项不变，后面的断言不受影响。
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('.cloud-profile-body').focus()
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('.cloud-profile-body').click()
+await page.waitForTimeout(300)
+const focusAfterActivate = await page.evaluate(() => {
+  const active = document.activeElement
+  return {
+    tag: active ? active.tagName : '(没有)',
+    cls: active ? active.className : '',
+    id: active ? active.closest('.cloud-profile')?.dataset.profileId || '' : '',
+  }
+})
+check(
+  '切换使用中的那条后焦点仍在行内',
+  focusAfterActivate.cls.includes('cloud-profile-body') && focusAfterActivate.id !== '',
+  JSON.stringify(focusAfterActivate),
+)
+
+// 点**名称**（不可聚焦的 div）时焦点不能掉到 body ——
+// mousedown 的默认行为会把焦点移到点击目标上，那目标不可聚焦 → 焦点丢。
+// 上面那条断言是「先 focus 再 click」，走不到 mousedown 这条路径，所以要单独测。
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('.cloud-profile-body').focus()
+await page.locator('#cloud-profiles .cloud-profile').nth(1).locator('.cloud-profile-name').click()
+await page.waitForTimeout(200)
+const focusAfterName = await page.evaluate(() => {
+  const active = document.activeElement
+  return {
+    tag: active ? active.tagName : '(没有)',
+    cls: active ? active.className : '',
+    id: active ? active.closest('.cloud-profile')?.dataset.profileId || '' : '',
+  }
+})
+check(
+  '点连接名称后焦点仍在行内',
+  focusAfterName.cls.includes('cloud-profile-body') && focusAfterName.id !== '',
+  JSON.stringify(focusAfterName),
+)
+// 反过来：点**按钮**（编辑图标）不能因为拦 mousedown 而失灵 ——
+// 编辑动作照常触发（编辑区要展开）。
+//
+// 注意「鼠标点按钮会不会拿到焦点」**因平台而异**：macOS 的 WebKit 默认
+// 不给（Safari 行为，要开完全键盘访问），Windows 的 WebView2 给。
+// 拦截只针对**不可聚焦的点击目标**（行内的名称 / 明细 div），
+// 按钮自己不拦 —— 两边的行为因此一致。
+await page.locator('#cloud-profiles .cloud-profile [data-action="edit"]').first().click()
+await page.waitForTimeout(250)
+check(
+  '点编辑图标照常打开编辑区',
+  await page.locator('#cloud-editor').isVisible(),
 )
 
 // ── RC-K22：provider 下拉绑定**正在编辑的那条连接** ──

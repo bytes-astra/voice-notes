@@ -397,7 +397,6 @@ impl Drop for Recorder {
 struct LevelPayload {
     session_id: Option<u64>,
     level: f32,
-    elapsed: f32,
 }
 
 /// 一个可用的输入设备。
@@ -498,7 +497,6 @@ pub fn start_with(
                 }
             };
             let _ = ready_tx.send(Ok((rate, queue)));
-            let started = Instant::now();
             let mut last_tick = Instant::now();
             loop {
                 match rx.recv_timeout(LEVEL_INTERVAL) {
@@ -515,7 +513,6 @@ pub fn start_with(
                             LevelPayload {
                                 session_id,
                                 level,
-                                elapsed: started.elapsed().as_secs_f32(),
                             },
                         );
                     }
@@ -528,7 +525,6 @@ pub fn start_with(
                     LevelPayload {
                         session_id,
                         level: 0.0,
-                        elapsed: started.elapsed().as_secs_f32(),
                     },
                 );
             }

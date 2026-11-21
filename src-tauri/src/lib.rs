@@ -755,7 +755,19 @@ async fn start_offline_recording(
         .ok_or_else(|| code("model.vadMissing"))?;
     // 会话在这里建：VAD 建不起来（模型损坏）要在开始录音时就报错，
     // 不能让识别线程 panic 掉、用户录完只看到「停止超时」。
-    let session = asr::OfflineSession::new(engine.clone(), vad)?;
+    //
+    // **建会话是阻塞的**：建 VAD detector 要加载 onnx、建 ORT session
+    // （实测 ~70ms）。放在 async 执行器上会卡住整个执行器 —— 那段时间里
+    // 别的命令全排队，用户看着像界面冻住。挪进 spawn_blocking
+    // （会话本来就要交给识别线程，Send 是现成的）。
+    let session = {
+        let engine = engine.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            asr::OfflineSession::new(engine, vad)
+        })
+        .await
+        .map_err(|e| code_detail("error.offlineThreadFailed", e))??
+    };
     let recorder = {
         let audio_app = app.clone();
         let device = settings.input_device.clone();

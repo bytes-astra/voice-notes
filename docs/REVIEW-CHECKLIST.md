@@ -6,7 +6,7 @@
 > 缺陷被不同角度翻出来（见下方「为什么要有这份文档」）。清单固定后，「已审过」才能累积，
 > 缺陷池才会变成递减曲线。
 
-**当前规模**：**102 条**不变量、11 组（A–K）—— ✅ 99 条有守卫，⚠️ 3 条，❌ 0 条。
+**当前规模**：**106 条**不变量、11 组（A–K）—— ✅ 103 条有守卫，⚠️ 3 条，❌ 0 条。
 
 > **云端条目在 K 组**（2026-11-17 落地）：provider 契约、中间结果语义、结果框顺序、凭据脱敏、零长句顺序、上传丢包缺口。
 2026-11-14 修复 RC-B6 的门控收尾与预录时间轴问题，作业面 1 → 0；真模型守卫在本地运行。
@@ -60,7 +60,7 @@
 
 按不变量分组。ID 稳定，勿复用。
 
-### A. 静默失败必须显式报错（9 条）
+### A. 静默失败必须显式报错（10 条）
 
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
@@ -73,6 +73,7 @@
 | RC-A7 | 停止等待失败不得交出半截结果，且要置 discard | `record/tests.rs` wait_failure_returns_no_partial_result | ✅ |
 | RC-A8 | 麦克风故障不能阻断 ASR 收尾，也不能把空结果写历史 | `record/tests.rs` capture_failure_does_not_discard_finished_transcript / capture_failure_without_transcript_returns_error；UI `麦克风异常后回到空闲` / `麦克风异常保留部分结果` / `麦克风异常写入历史` | ✅ |
 | RC-A9 | 识别结果为空（VAD 丢音频）必须留痕，不能白丢 | `asr/tests.rs` warns_only_when_speech_went_missing | ✅ |
+| RC-A10 | 历史写入失败（配额满 / 无痕模式）必须留痕，不能静默：用户以为存上了，下次打开发现历史没了 | `src/core.js` 的 `historyStorageSet`（catch 里 `logEvent('ERROR', …)`，细节只进日志）；UI `历史写入失败会记日志` | ✅ 2026-11-21 |
 
 ### B. 缺口与时间轴口径（10 条）
 
@@ -117,7 +118,7 @@
 | RC-D10 | 界面语言 ≠ 识别语言（6 个识别语言芯片 vs 2 个界面 locale）不能混淆 | UI `界面语言下拉只有三个选项` / `界面语言下拉不混进识别语言` / `切界面语言不改识别语言` | ✅ 2026-11-03 |
 | RC-D11 | 界面文案 SHALL 用**中性措辞**：不用口语量词（「一个」「这」「就」）与劝导句（「再试试」「记得点」「换个安静点」）—— 一句中性的话 + 用户看得懂的参数 | **人工守卫**（`check-i18n` 的黑话检查只覆盖技术黑话，口语化没有词表可查）：2026-11-18 逐条过了一遍 `zh-CN.js` / `en.js` 并改掉 24 条口语措辞；改动过的文案见当轮台账 | ⚠️ 2026-11-18 |
 
-### E. 用户编辑、焦点与交互（7 条）
+### E. 用户编辑、焦点与交互（9 条）
 
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
@@ -128,6 +129,8 @@
 | RC-E5 | 纯键盘操作下拉框：Esc 关闭弹层不冒泡（不能连带取消录音）、选中后焦点回按钮（否则下一次空格变成「开始录音」） | UI `下拉 Esc 关闭弹层` / `下拉 Esc 不取消录音` / `选中后焦点回到下拉按钮` / `按钮上的空格不抢去录音` | ✅ |
 | RC-E6 | 新 toast 不能被旧的隐藏定时器误伤 | UI `旧 toast 隐藏定时器不隐藏新提示` | ✅ |
 | RC-E7 | 输入框里按 Esc 不跳视图 | UI `输入框 Esc 不跳转视图` | ✅ |
+| RC-E8 | 录音中实时追加识别结果**不能夺走用户的光标、也不能清空撤销栈**：整值写（`el.value = …`）会把光标推到末尾、还把撤销栈清掉（改过的字再也撤不回来）。**切语言时同理**（`relocalizeResult` 原来也是整值写） | `src/result.js` 的 `writeResultText` / `appendToText`（后缀扩展走 `execCommand('insertText')` 增量插入，插完还原选区；其它情况整值写但把光标放回原位）；`relocalizeResult` 也走 `writeResultText`；`appendToText` 先判 `document.activeElement !== el`（`execCommand` 作用于**当前焦点元素**，焦点在别处时会把转写文本插进那个输入框 —— 实测会污染凭据框）；UI `实时追加后光标还在原处` / `实时追加后仍能撤销掉刚追加的内容` / `无焦点时实时追加照样接上` / `焦点在别的输入框时转写文本不插进去` / `切语言换占位符后光标没被推到末尾` | ✅ 2026-11-21 |
+| RC-E9 | 云端连接列表重绘后**焦点不能掉到 body**：整表重建会把用户正在操作的那一行换掉，键盘用户下一次 Tab 得从头开始。**已知取舍**：行顺序真变了时 `syncRowOrder` 仍要移动节点（移动 DOM 节点必然丢焦点）—— 现网不改顺序（`set_active_cloud_profile` 只改 id，新增追加到末尾），触发不了；真要改顺序时这条要重新权衡 | `src/status.js` 的 `cloudRows`（行按 id 复用，只改内容不换节点）+ `syncRowOrder`（已在位的节点不动 —— 移动 DOM 节点会让落在里面的焦点丢失）；`src/app.js` 的 mousedown 拦截（行内的名称 / 明细是不可聚焦的 div，mousedown 默认行为会把焦点移走）；UI `切换使用中的那条后焦点仍在行内` / `点连接名称后焦点仍在行内` / `点编辑图标照常打开编辑区` | ✅ 2026-11-21 |
 
 ### F. 权限、设备与模型就绪（12 条）
 
@@ -169,7 +172,7 @@
 | RC-H7 | 前端 import 图单向、不能成环；经典脚本不得被 import（实测会执行两遍、`window.I18N` 被换实例）；每个模块都要登记 | `scripts/check-deps.mjs`（四条规则）+ `scripts/check-deps.test.mjs`（9 条） | ✅ 2026-11-03 |
 | RC-H8 | 同一时刻多句不丢（说话→静音→再说话） | UI `说话→静音→再说话：三句都在` | ✅ |
 
-### I. 质量与性能（4 条 · 守卫全空白）
+### I. 质量与性能（4 条）
 
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
@@ -178,7 +181,7 @@
 | RC-I3 | 长录音不得丢音频（VAD / 整段会话 / 流式会话 / 重采样四条路） | 四个长录音探针现在**带断言**：`vad_long_probe`（吞掉的 ≤ 故意静音 + 每句 0.2 s + 0.5 s）、`offline_long_probe`（未覆盖 ≤ 故意静音 + 1 s）、`streaming_long_probe`（未覆盖 ≤ 1 s）、`resample_probe`（长度比例 ±1%、识别差异 ≤ 5%） | ✅ 2026-11-03 |
 | RC-I4 | 内存不随录音时长增长（消费式缓冲） | `src-tauri/tests/memory_probe.rs`：一个会话跑 30 分钟，300 s 与 1800 s 两点的常驻内存（`ps -o rss=`）增长 < 32 MB（这 25 分钟音频本身就有 96 MB）；实测整段 −11.2 MB、流式 +0.0 MB。另有 `audio/tests.rs` take_new_consumes_samples / pending_limit_follows_sample_rate | ✅ 2026-11-03（**不加 libc**：改 `Cargo.lock` 会让 CI 重下 sherpa-onnx 预编译库而失败） |
 
-### J. 并发与原子性（3 条）
+### J. 并发与原子性（4 条）
 
 > 这三条来自 2026-11-04 的并发核实：Tauri 的 async 命令跑在 tokio 多线程 runtime 上，
 > 加上三个显式 OS 线程（麦克风、整段识别、流式识别）和三个跨线程共享的 Mutex
@@ -191,6 +194,7 @@
 | RC-J1 | 采集器槽与会话槽必须**一起**登记：要么都写成功，要么都不写。只写采集器不写会话 → 识别线程永远收不到 stop（线程泄漏、永久占着 239 MB / 161 MB 引擎）、麦克风不关、语言/ITN 永久锁死，下一次 start 撞「已经在录音」 | `record.rs` 的 `register_slots`（先拿齐两把锁再写，锁序 采集器 → 会话）；`record/tests.rs` 会话槽坏了采集器槽也不能被写 / 采集器槽坏了会话槽也不能被写 / 登记成功两个槽都有 / 已经在录音时登记要报占用 / 会话槽占着时登记要报占用 | ✅ 2026-11-04 |
 | RC-J2 | 装引擎必须用**当前**设置：读设置与装引擎要在同一把锁内，陈旧判定必须覆盖**所有**影响识别的设置（整段 = 模型目录 / 语言 / ITN，流式 = 热词）。只比语言和 ITN 的话，换了模型目录照样复用旧引擎，新设置被静默吞掉 | `engine.rs` 的 `install_engine`（拿槽锁 → 锁内读设置 → 比身份 → 复用或重建）+ `OfflineEngineKey` / `StreamingEngineKey`；`engine/tests.rs` 设置没变就复用引擎 / 换了模型目录就重建引擎 / 换了语言就重建引擎 / 换了热词就重建流式引擎 / 等锁期间设置改了也要用新设置 | ✅ 2026-11-04 |
 | RC-J3 | async 路径上不许**阻塞式**取引擎锁：引擎加载要好几秒（239 MB / 161 MB / 294 MB），那把锁会被占住；async 命令在执行器线程上死等，整个执行器就卡住（用户看着像界面冻住）。`try_lock()` 不算 | `scripts/check-async.mjs`（沿调用图从 async 函数出发，引擎槽的 `.lock()` 只许出现在 `spawn_blocking` 闭包里）+ 9 条自测（含「把旧的 `shared_engine` 加回真源码会被抓住」）；`load_engine` 直接返回 `Arc<Engine>`，不再有 `shared_engine` 的二次取锁 | ✅ 2026-11-04 |
+| RC-J4 | 建识别会话**不许在 async 执行器线程上**做：建 VAD detector 要载 onnx、建 ORT session（实测 ~70ms），那段时间里别的命令全排队 | `src-tauri/src/lib.rs` 的 `start_offline_recording`（`OfflineSession::new` 放进 `spawn_blocking`，与云端路径 `validate_cloud_vad` 同款）；`scripts/check-async.mjs` 第二条规则（阻塞构造器不许出现在 **async 路径**上 —— 沿调用图判定，`spawn_blocking` 与专用 `std::thread` 闭包都不算，那两种线程不是执行器；**执行器的 spawn 算** —— `tauri::async_runtime::spawn` / `tokio::spawn` 是执行器上的异步任务，判据是参数形态：闭包 = OS 线程、`async` 块 = 执行器）+ 13 条自测（含「async 调同步助手、助手里建会话也会被抓住」「专用线程的豁免真的在起作用」「同名方法不会把调用点连错定义」「把整段会话的构造挪回 async 路径会被抓住」「async_runtime::spawn 里建 detector 会被抓住」「执行器 spawn 的豁免真的不在（mutation）」—— 最后一条改的是**真实调用点**）；调用图按**限定名**建边（`Type::method`）—— 本仓库有 18 个 `fn new`，只按名字连边会连到不相干的定义，构造器内部就看穿不了 | ✅ 2026-11-21（2026-11-22 补执行器 spawn 的边界） |
 
 ### K. 云端模式（26 条）
 
@@ -332,5 +336,7 @@ async 路径上不再有第二把引擎锁。
 
 | 2026-11-20 | RC-K21 ~ RC-K26（云端连接列表的**三份独立交叉复核**） | 0（本轮只登记与核实，**未改业务代码**） | 对 v1.7.0/1.7.1 的云端连接列表做了一轮独立复核，**三份来源交叉核实**：① 我本地逐行读 + 临时探针（探针只写在 `/tmp`）；② Orca worker（deepseek-v4-pro，不同模型）；③ Orca worker（Codex，带 Playwright WebKit 浏览器探针，脚本只在 `/tmp/vn-probe`）。**两条高危三份来源结论一致**：① **换 provider 时旧凭据被沿用**（`settings.rs` 的 `upsert_cloud_profile` 在 `api_key == None` 时不动已存的 key，前端 `saveCloudProfile` 把空输入转成 `undefined` → 后端 `None` → 旧 key 留在新 provider 名下，转写时一家的 key 发到另一家端点；`base_url` 可自定义，最坏发到任意端点。**修法约束**：「空 = 不改」的语义是被 `profile_none_keeps_key_empty_clears` 断言锁住的，**不能改 `None` 的含义**，得落在「provider 变了」这个信号上）；② **切界面语言会把正在编辑那条（非活动）连接的 provider 静默改成活动连接的 provider**（`refreshSelectItems` 无条件用 `state.status.cloudProvider` 重置下拉，而 `UISelect.setItems` 不触发 `onChange` → 静默换值）。另有四条低-中危：③ 编辑区被列表重建从 DOM 摘下又插回 → 失焦，**接着敲的字符被整个吞掉**（Codex 浏览器探针实测 `activeElement = BODY`；我本地补了一条**现实触发源**：`streaming:state` 事件在流式引擎预热完成时到达 → `events.js` 调 `renderStatus()` → 列表重建 → 用户正在填的密钥框失焦）；④ `mask_secret` 在 9 字符处从「露 2」跳到「露 8」= 89%，现有守卫只断言「掩码 ≠ 原文」盖不住；⑤ 界面 mock 与真后端三处语义不一致（mock 在密钥留空时**伪造一把默认 key**，正好挡住 ①）；⑥ 删掉使用中的连接后活动项落到**第一条**，而文档与用例名都写「下一条」（三条连接删中间那条，实测落到第一条 —— 现有用例只有两条，测不出差异）。**分歧记录**：③ 的定级 deepseek 判「低」（它没找到异步触发源，认为字段值不丢），Codex 判「中」并用浏览器探针证出「后续输入被吞掉」比「失焦」更重 —— 取**中**，因 `streaming:state` 是可复现的异步触发源。三份来源**都确认没问题的**：前后端 camelCase 字段一致（`check:contract` 32 命令 / 42 处调用）、凭据明文不回传（`Status` 只有布尔 + 掩码）、日志不写凭据、id 唯一性、备注跟 provider 走、清凭据只动凭据、删除二次确认。**本轮还修了清单自身的计数漂移**：表头写「✅ 94 + ⚠️ 3」= 97，表格实际 93 + 3 = 96（off-by-one）；K 组标题 20 → 26。清单 96 → **102 条**（11 组 A–K，K 组 20 → 26），作业面 3 → **9 条**（RC-K21 ~ RC-K26 全 ❌ 未审 —— 缺陷已复现、但还没修、还没补守卫）。**门禁基线全绿**（说明这些缺陷都落在既有守卫的盲区里，不是回归）：`cargo test --lib` **295 passed / 0 failed**、`npm run check` 六道全过、`npm run check:ui` **189/189 通过**。**仓库工作区全程保持干净**（探针只写 `/tmp`，已还原） |
 | 2026-11-20 | RC-K21 ~ RC-K26（修复 + 补守卫） | 6 条（K21 按 Hugh 定案改为「已有连接服务商只读」） | **K21**：编辑已有连接时 provider 下拉禁用（`UISelect.setDisabled`，换服务商 = 删除后重新添加；不加提示文案），后端 `upsert_cloud_profile` 仍兜底「provider 变了且没给新凭据 → 清空」；Rust 3 条用例（换 provider 无新 key / 只改备注 / 换 provider 带新 key）+ 界面 3 条断言（下拉禁用 / 锁定后保存 provider 与凭据都不变 / 新增连接可点）。**K22**：编辑区自己持有 provider，`refreshSelectItems` 编辑中不重置、`renderCloudConfig` 关闭时回填活动连接，`app.js` 注释改准；界面 4 条断言。**K23**：`renderCloudProfiles` 只重建行、编辑区原地不动；界面 2 条断言（用 `streaming:state` 触发重建）。**K24**：`mask_secret` 改为头尾各露 `min(4, 长度 / 4)`；Rust 用例覆盖 1/2/3/4/5/8/9/10/16/20/40 十一档。**K25**：mock 三条语义对齐真后端（空 key = 不改 / 删活动项落点 / 未知 id 忽略）；界面 3 条断言（含先写入一把已知密钥再留空，避免伪造同样掩码蒙混）。**K26**：落点改为「下一条（删最后一条则前一条）」；Rust 用例改成三条连接删中间 + 删最后。**mutation**（改坏 → 对应断言红 → 恢复）：后端 3 处（K21 清空分支、K24 退回旧分档、K26 去掉下一条重定向）→ **恰好** 3 条用例红；前端 6 处（K21 锁定失效、K22 下拉无条件跟活动项、K22 新增默认值固定 realtime、K23 重建时重挂编辑区、K25 mock 伪造 key、K25 mock 删除落点 + 未知 id）→ **恰好** 对应 9 条断言红（K23 失焦与吞字符 2 条、K25 掩码 2 条、K25 落点 2 条、其余各 1 条），其余不动。门禁：`cargo test --lib` 295 → **300 passed**、`check:ui` 189 → **202/202**、`npm run check` 全过。工作区**未提交**（等 Hugh 发话再拆提交） |
+| 2026-11-21 | RC-E8 / RC-E9 / RC-A10 / RC-J4（四条新不变量：光标 / 焦点 / 历史写失败 / 会话构造） | 5 处代码修复（`result.js` 增量写 + `status.js` 行复用 + `app.js` mousedown 拦截 + `core.js` 记日志 + `lib.rs` 会话构造挪进 `spawn_blocking`） + 1 条门禁加规则（`check-async.mjs` 第二条：阻塞构造器不许直接写在 async 函数体里）+ 4 条界面断言 + 5 条门禁自测 | 这一轮从「还有什么可优化的吗」的核实里挑出四条**实测成立**的缺陷：① **实时追加夺走光标** —— 整值写（`el.value = …`）把光标推到末尾、且清空撤销栈，用户在中间改字时接着敲的字跑错地方；修法是后缀扩展走 `execCommand('insertText')` 增量插入（插完还原选区），其余情况整值写但把光标放回原位。**撤销栈那半边一开始判为「不可靠、不做断言」** —— 当时测的是「打字 + 追加」混合场景，headless WebKit 会把两者并成一组、逐次跑还翻转。复核时改测**纯追加**场景（`el.value = 'BASE'` + 增量插入），结论反转且稳定：增量写后撤销回到 BASE（4/4 一致），整值写后撤销**无效**（3/3 一致）—— 于是撤销栈改成了守卫。**光标那条反而测不出改动**（整值写分支也还原了选区，两条路径都满足）—— 两条守卫互补，各覆盖一种失败模式。② **云端列表重绘后焦点掉到 body** —— 根因**不是**整表重建（那条已由 RC-K23 处理），而是 mousedown 的默认行为：行内的名称 / 明细是不可聚焦的 `div`，mousedown 把焦点从行内按钮移走（WebKit 实测 `focusout` 触发于 mousedown、click 之前）；修法是拦下 mousedown 默认行为 + 行按 id 复用（不换节点）+ `syncRowOrder` 只在顺序真变了时才动节点（移动节点会丢焦点）。③ **历史写入失败静默** —— 配额满 / 无痕模式下 `localStorage.setItem` 抛错被 catch 吃掉，用户以为存上了；改为记 ERROR 日志（细节只进日志，不上界面）。④ **整段会话建在 async 执行器上** —— 建 VAD detector 要载 onnx、建 ORT session（实测 ~70ms），那段时间别的命令全排队；挪进 `spawn_blocking`（与云端路径 `validate_cloud_vad` 同款）。门禁第二条规则查「**async 路径**」（沿调用图判定；`spawn_blocking` 与专用 `std::thread` 闭包都不算 —— 那两种线程不是执行器）；顺带修掉门禁自身的两个盲区：`spawn_blocking(move || expr)` 这种**不带大括号**的写法会让范围匹配找到后面某个 `{`（实测错圈 93 / 34 个字符，落在紧邻的下一段代码上 —— 那段里的检查会被跳过）；专用线程的闭包参数只认 `move ||`，`move |_|` 不认。**本条经 Orca worker（Codex）复核后加强**：原实现只查「直接写在 async 函数体里」的调用，漏检「async → 同步助手 → 构造器」这种间接写法；改成沿调用图，并把专用线程闭包也当作边界（专用线程不是执行器，在那里阻塞不占执行器）。另修了自测里的一条**空测**（「专用线程里建 detector 不会被误报」的样例外层是同步 fn，压根没触达豁免那段代码 → 补了外层是 async 的样例 + 一条「豁免真的在起作用」的 mutation 自测）。**复核另外查出三条真缺陷并已修**：① `execCommand('insertText')` 作用于**当前焦点所在的可编辑元素**，不是结果框 —— 焦点在别处时转写文本被插进那个输入框（实测：`execCommand` 直调把文本插进了另一个 input，结果框纹丝不动）。文件转写时用户能切到设置页点进凭据框，那一框会被插进转写文本、保存下来就成了凭据的一部分 → `appendToText` 先判 `document.activeElement !== el`。② `relocalizeResult`（切语言）仍是整值写 → 用户在结果框改字时切语言，光标被推到末尾、撤销栈被清空 → 也走 `writeResultText`。③ 编辑分支只更新 `rawText` 不更新 `rendered`，它是 stale 的 → 用户把文本改回恰好等于那个 stale 值时，切语言会判成「没动过」→ 整段覆盖。**第二份复核**（Claude agent，范围收窄到第一份没覆盖的点）又查出三条要修的：④ **门禁的专用线程范围匹配有同一个 bug** —— `findDedicatedThreadRanges` 遇到不带大括号的闭包（`engine/tests.rs:148` 的 `spawn(move || fake_offline_engine(...))`）会错圈到**下一个函数**（实测 664 字符），那段里的检查被静默跳过 → 改成按 `spawn(...)` 的圆括号配平（与 `findBlockingThreadRanges` 对称）。⑤ **调用图按函数名连边，构造器内部看不穿** —— 本仓库有 18 个 `fn new`，`byName['new']` 落到 `asr/cloud/aliyun.rs:164` → `asr.rs:524` 那个 VAD 构造点（唯一调用者是 `OfflineSession::new`）对门禁**永久不可达**；将来真把它挪到 async 路径上，只有外层会被报 → 调用图改成**按限定名建边**（`Type::method`），并补自测「同名方法不会把调用点连错定义」。⑥ **`mousedown` 拦截范围过宽** —— 原实现对**任何** `[data-action]` 命中就 `preventDefault`，把按钮该有的鼠标焦点也挡了（Windows 的 WebView2 点按钮是给焦点的）→ 收窄成「只拦**点击目标本身不可聚焦**的情形」（行内的名称 / 明细 div）；判据是 `event.target` 而不是 action 祖先。另修了 `status.js` 里与代码相反的注释（编辑区的位置）、门禁头部与实现相反的旧注释（我加强实现后没同步）。**验证**：`cargo test --lib` **300 passed / 0 failed**；`npm run check` 六道全过（async 门禁：45 文件 / 28 async 函数 / 8 处引擎槽取锁 / 17 处阻塞构造器）；每条新守卫都做过 **mutation**（把实现改回去 → 对应断言变红）：光标守卫在两条写路径下都满足、**测不出改动**，撤销栈守卫能测出（改回整值写 → 变红）—— 两条互补；焦点错配守卫、焦点守卫（两条）、历史写失败守卫、门禁第二条规则（把 `OfflineSession::new` 挪出 `spawn_blocking` → 门禁精确指向 `lib.rs:763`）、门禁的限定名建边（退回按名字连边 → 变红）均验证有效；`npm run check:ui` 228 → **239/239 通过**（HEAD 实测 228 —— 台账里旧轮写的「202」是 2026-11-19 那轮的数，之后又加过；本轮新增 11 条：光标、撤销栈、无焦点兜底、焦点错配、切语言换占位符后的光标、点连接名称后的焦点、点编辑图标、历史写失败、以及修 `syncRowOrder` 引入的行插入 bug）。清单 102 → **106 条**（11 组 A–K：A 9→10、E 7→9、J 3→4），作业面仍 3 条（RC-D11 / RC-K19 / RC-K20，人工守卫）。工作区**未提交** |
+| 2026-11-22 | RC-E8 / RC-E9 / RC-A10 / RC-J4（**独立复核** 2026-11-21 那轮未提交的改动） | 1 处门禁修复（`check-async.mjs` 的专用线程判据）+ 5 条门禁自测 + 3 处文档同步 | 复核结论：四条不变量的**实现与守卫都成立**，但门禁脚本自己有一个必须修的缺陷。**①（必修）`findDedicatedThreadRanges` 把执行器的 spawn 当成了专用线程** —— 正则 `(?:\.|::)\s*spawn\s*\(` 会命中 `tauri::async_runtime::spawn(`（仓库里就有 3 处：`asr/cloud/{volcengine,realtime,aliyun}.rs`），而该函数自己的注释写着「`tauri::async_runtime::spawn(async move {…})` 不算：那是执行器上的异步任务」—— **注释与实现相反**。后果有两条：规则 2 **漏报**（构造器建在执行器任务里没人管）、规则 1 **相对 HEAD 回退**（同一形状里的引擎槽取锁，HEAD 报 1 条、新版报 0 条 —— HEAD 只豁免 `spawn_blocking`，新版把所有 `threadRanges` 内的调用边都掐了，helper 因此不再 async-reachable）。根因确认：tauri 2.12.5 的 `async_runtime::spawn` 就是 `tokio::spawn` 到全局 tokio runtime（与 async 命令共用执行器）。**今天没有真实违规**（三处 spawn 闭包里只有 async 网络 I/O，无构造器、无引擎槽取锁）—— 是潜伏漏报。修法：豁免判据从「凡是 `spawn(`」改成「**参数是闭包**（`move \|\| {…}`）或**线程路径白名单**（`std::thread::spawn`）」—— 闭包只可能是 OS 线程（`std::thread::spawn` 要求 `FnOnce() -> T + Send + 'static`，装不下 future），`async` 块 / future 是执行器任务，不豁免。修完 8 种形态实测全部正确（执行器 spawn 报、专用线程的闭包 / Builder / 函数项 / 无大括号四种豁免），真实源码仍 0 problems（数字不变：45 文件 / 28 async / 8 处取锁 / 17 处构造器），自测 17 → **22 条**（新增 4 条断言 + 1 条 mutation）。**②（复核后**判定为**不是缺陷）`status.js` 的 `index < 0` 分支** —— 初看以为注释与代码相反（注释说「编辑区节点本身不动」，而 `desired = [editor, ...rows]` 会把其余行排到编辑区后面）。用 MutationObserver 实测「删除正在编辑的那条连接」：编辑区节点被移出列表 **1 次、被插回列表 0 次** —— 那 1 次是 `closeCloudEditor` 的 `placeEditor()`（编辑区本来就该收起），**`syncRowOrder` 全程没有摘过它**（只在它前后搬行）→ 焦点不会丢，注释准确，**不改**。**③（低）`scripts/ui/check.mjs` 连续两次点同一个 nav item** —— 实测删掉第二行后 `check:ui` 仍 239/239 通过（连跑 3 次一致；`switchView` 幂等，第二次是空操作）→ 残留，已删。**本轮的验证**：`cargo test --lib` **300 passed / 0 failed**（与 HOW_TO_VERIFY 的 300 基线一致）；`npm run check` 六道全过；`npm run check:ui` **239/239**（与台账一致）；门禁自测 **22/22**。**新守卫逐条 mutation**（在 /tmp 的隔离副本上做，仓库工作区全程未动）：`appendToText` 退回整值写 → 撤销栈断言红（1 条）；mousedown 不 `preventDefault` → 焦点断言红（2 条）；`core.js` 不记日志 → 历史写失败断言红（1 条）；不判 `activeElement` → 焦点错配断言红（那个输入框被插成「原凭**串错了**据」—— 正是台账说的污染）；`relocalizeResult` 退回整值写 → 切语言后光标断言红（1 条）；行不复用（整表重建）→ 焦点断言红（2 条）—— **六条守卫全部承重**。清单条数不变（仍 106 条），作业面仍 3 条（RC-D11 / RC-K19 / RC-K20，人工守卫）。工作区**未提交** |
 「当天 fix 数」一列是 `git log` 实测值（`git log --since=<date> --until=<date>` 统计以 `fix` 开头的提交），
 不是估算 —— 它同时也是「这轮复审的产出」的度量。

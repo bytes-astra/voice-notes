@@ -206,7 +206,16 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   那些临界区只有几行，不存在长等待。
   门禁沿**调用图**从 async 函数出发，所以「async 命令调一个同步取锁助手」（原来的
   `shared_engine`）也会被抓住，而只在 `spawn_blocking` 里调的 `install_engine` 不会。
-  门禁自己有测试（`scripts/check-async.test.mjs`，含「把旧的 `shared_engine` 加回真源码会被抓住」）。
+  门禁还有**第二条规则**：阻塞的构造器（`Engine::new` / `OfflineSession::new` /
+  `VoiceActivityDetector::create` 等，建它们要载 onnx、建 ORT session）不许建在
+  async 路径上。
+  **豁免只给「不是执行器」的线程**：`spawn_blocking` 闭包与专用 `std::thread`
+  闭包。**执行器的 spawn 不豁免** —— `tauri::async_runtime::spawn(async move {…})`
+  与 `tokio::spawn(…)` 跑的是执行器上的异步任务（tauri 的 `async_runtime::spawn`
+  就是 `tokio::spawn` 到全局 tokio runtime），阻塞在那儿一样占执行器。判据是
+  **参数形态**：闭包（`move || {…}`）只可能是 OS 线程，`async` 块 / future 是执行器任务。
+  门禁自己有测试（`scripts/check-async.test.mjs`，含「把旧的 `shared_engine` 加回真源码会被抓住」
+  与「执行器 spawn 的豁免真的不在（mutation）」）。
 
 ## ☁️ 云端模式的验证手段
 
@@ -259,7 +268,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   - **计费按 token**（输入 6 元 / 百万、输出 4.5 元 / 百万，北京与新加坡同价），不是按秒。
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（本模型客户端事件页 **800** / 旧的 Paraformer SDK 页 800）→ **显式设 800**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按「不传 = 自动识别」**；`sentence_id` 是否必填 → **必填**（缺了按兼容路径处理并记 WARN）。
 
-**云端相关测试基线**：`cargo test --lib` = **295**（其中 `asr::cloud` = 130 = 会话层 38 + Realtime 协议层 29 + 归一器 6 + 火山 19 + 阿里 38；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
+**云端相关测试基线**：`cargo test --lib` = **300**（其中 `asr::cloud` = 130 = 会话层 38 + Realtime 协议层 29 + 归一器 6 + 火山 19 + 阿里 38；协议层含 1 个热词过滤用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 > [!NOTE]
 > 云端模式**没有质量门禁、没有 CER 基线** —— 识别质量取决于第三方服务，本仓库不设阈值断言。`quality_gate` 那些阈值只管本地两条路径。别把本地基线套到云端上。
@@ -269,7 +278,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 Playwright + 假 `window.__TAURI__`，不需要真应用：
 
 ```bash
-npm run check:ui     # 188 项检查
+npm run check:ui     # 239 项检查
 npm run shots        # 重出 README 10 张截图
 ```
 

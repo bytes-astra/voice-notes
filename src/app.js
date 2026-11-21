@@ -272,6 +272,23 @@ export function bindUI() {
   // 列表里的三个动作：设为使用中 / 编辑 / 删除。
   // 「设为使用中」绑在整行上（点空白处也行）—— 事件委托取**最近**的
   // [data-action]：点在编辑/删除上就是那两个动作，不会顺带切换使用中。
+  //
+  // **mousedown 要拦下，但只拦「点击目标本身不可聚焦」的情形**：
+  // 行内的名称 / 明细是按钮里的不可聚焦 div，mousedown 的默认行为会把
+  // 焦点移到**点击目标**上 —— 那个目标不可聚焦，焦点就掉到 body
+  // （WebKit 实测），键盘用户下一次 Tab 得从头开始。
+  //
+  // 判据是**点击目标**（event.target）而不是 action 元素：名称 div 的
+  // 最近 action 祖先是 body 按钮（可聚焦），但**点击目标本身**是那个 div ——
+  // 拦的是后者。点在按钮自己身上（编辑 / 删除图标）不拦：
+  // 按钮该有的鼠标焦点不能被挡掉（原生对话框关掉后焦点才有落点）。
+  els.cloudProfiles.addEventListener('mousedown', (event) => {
+    const target = event.target
+    if (!target || !target.closest?.('[data-action]')) return
+    const tag = target.tagName
+    if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+    event.preventDefault()
+  })
   els.cloudProfiles.addEventListener('click', (event) => {
     const target = event.target.closest('[data-action]')
     if (!target) return

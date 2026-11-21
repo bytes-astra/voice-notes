@@ -267,6 +267,12 @@ function renderCloudConfig() {
   }
 }
 
+/// 一行连接（掩码 + 服务 + 备注 + 「使用中」）。
+///
+/// 行元素**按 id 复用**：整表重建会把用户正在操作的那一行换掉 —— 焦点随之
+/// 掉到 body，键盘用户下一次 Tab 得从头开始。复用的行只改内容，不换节点。
+const cloudRows = new Map()
+
 /// 造一行连接（掩码 + 服务 + 备注 + 「使用中」）。
 function createProfileRow(profile, status) {
   const row = document.createElement('div')
@@ -275,14 +281,10 @@ function createProfileRow(profile, status) {
   // 点整行 = 设为使用中（图标上的动作由更近的 [data-action] 接走）。
   row.dataset.action = 'activate'
 
-  const active = profile.id === status.cloudActiveProfile
-  row.classList.toggle('active', active)
-
   // 状态点：纯指示（实心 = 使用中），不可点 —— 设为使用中是「点整行」做的。
   const mark = document.createElement('span')
   mark.className = 'cloud-profile-mark'
   mark.setAttribute('aria-hidden', 'true')
-  mark.innerHTML = dotIcon(active)
   row.appendChild(mark)
 
   // 名称 + 明细做成按钮：鼠标点整行都行，键盘也能 Tab 到这里按回车。
@@ -290,64 +292,114 @@ function createProfileRow(profile, status) {
   body.type = 'button'
   body.className = 'cloud-profile-body'
   body.dataset.action = 'activate'
-  body.title = t('settings.cloudUseThis')
   const name = document.createElement('div')
   name.className = 'cloud-profile-name'
-  name.textContent = profile.label || profile.provider
   const detail = document.createElement('div')
   detail.className = 'muted small'
-  // 掩码 + 服务名（凭据明文永远不回传前端）。
-  detail.textContent = [profile.keyMask, cloudProviderLabel(profile.provider)]
-    .filter(Boolean)
-    .join(' · ')
   body.append(name, detail)
   row.appendChild(body)
 
-  if (active) {
-    const badge = document.createElement('span')
-    badge.className = 'cloud-profile-badge'
-    badge.textContent = t('settings.cloudInUse')
-    row.appendChild(badge)
-  }
+  // 「使用中」徽章：**一直存在**，用的时候才显示。
+  // 增删节点会让落在行里的焦点丢失，所以徽章改成显隐而不是加删。
+  const badge = document.createElement('span')
+  badge.className = 'cloud-profile-badge hidden'
+  row.appendChild(badge)
 
   const actions = document.createElement('div')
   actions.className = 'cloud-profile-actions'
   const edit = iconAction(t('settings.cloudEdit'), editIcon())
   edit.dataset.action = 'edit'
-  actions.appendChild(edit)
-
   const remove = iconAction(t('settings.cloudDelete'), trashIcon())
   remove.dataset.action = 'delete'
-  actions.appendChild(remove)
+  actions.append(edit, remove)
   row.appendChild(actions)
-  return row
+
+  const entry = { row, mark, body, name, detail, badge, edit, remove }
+  cloudRows.set(profile.id, entry)
+  updateProfileRow(entry, profile, status)
+  return entry
+}
+
+/// 刷新一行的内容（掩码、服务名、「使用中」徽章、按钮提示）。
+///
+/// 文案随语言变，所以每次渲染都要重刷 —— 但**不换节点**，
+/// 焦点留在原处。
+function updateProfileRow(entry, profile, status) {
+  const active = profile.id === status.cloudActiveProfile
+  entry.row.classList.toggle('active', active)
+  entry.mark.innerHTML = dotIcon(active)
+  entry.body.title = t('settings.cloudUseThis')
+  entry.name.textContent = profile.label || profile.provider
+  // 掩码 + 服务名（凭据明文永远不回传前端）。
+  entry.detail.textContent = [profile.keyMask, cloudProviderLabel(profile.provider)]
+    .filter(Boolean)
+    .join(' · ')
+  entry.badge.textContent = t('settings.cloudInUse')
+  entry.badge.classList.toggle('hidden', !active)
+  entry.edit.title = t('settings.cloudEdit')
+  entry.edit.setAttribute('aria-label', t('settings.cloudEdit'))
+  entry.remove.title = t('settings.cloudDelete')
+  entry.remove.setAttribute('aria-label', t('settings.cloudDelete'))
 }
 
 /// 渲染连接列表。
 ///
-/// **只换行，不动编辑区**：编辑区可能正挂在列表里（就地展开在被编辑那行
-/// 下面）。把它从 DOM 摘下再插回会失焦，用户接着敲的字符会整个丢掉（RC-K23）。
+/// **行按 id 复用**：换掉的只有内容，节点还在 —— 焦点不丢（RC-E9）。
+/// 编辑区同样不被搬动（RC-K23）：它在列表里就留在被编辑那行下面，
+/// 不在列表里（新增一条时）就留在外面。
 function renderCloudProfiles(status) {
   const profiles = status.cloudProfiles || []
-  const rows = profiles.map((profile) => createProfileRow(profile, status))
-  for (const child of [...els.cloudProfiles.children]) {
-    if (child.classList.contains('cloud-profile')) child.remove()
-  }
   const editor = els.cloudEditor
-  if (editor.parentElement !== els.cloudProfiles) {
-    els.cloudProfiles.append(...rows)
-    return
+  const rows = profiles.map((profile) => {
+    const existing = cloudRows.get(profile.id)
+    if (existing) {
+      updateProfileRow(existing, profile, status)
+      return existing.row
+    }
+    return createProfileRow(profile, status).row
+  })
+  // 已经删掉的连接：把它的行从 DOM 和缓存里一起清掉。
+  for (const [id, entry] of [...cloudRows]) {
+    if (!profiles.some((profile) => profile.id === id)) {
+      entry.row.remove()
+      cloudRows.delete(id)
+    }
   }
-  // 编辑区就地插在被编辑那行下面：按那一行把新行分成前后两半，
-  // 编辑区本身待在原地（焦点和光标都不动）。
+  // 目标顺序：编辑区在被编辑的那一行后面（它在列表里时），其余按连接顺序。
   const index = profiles.findIndex((profile) => profile.id === editingProfileId)
-  const split = index < 0 ? rows.length : index + 1
-  const before = document.createDocumentFragment()
-  before.append(...rows.slice(0, split))
-  const after = document.createDocumentFragment()
-  after.append(...rows.slice(split))
-  editor.before(before)
-  editor.after(after)
+  const editorInside = editor.parentElement === els.cloudProfiles
+  let desired = rows
+  if (editorInside) {
+    if (index < 0) {
+      // 正在编辑的那条被删了（`editingProfileId` 指向已不存在的 id）：
+      // 编辑区**节点本身不动**（它马上就要被 closeCloudEditor 移出列表，
+      // 这一帧里搬它等于白搬一次 —— 移动 DOM 节点会丢焦点），
+      // 其余行按顺序排在它**后面**。
+      desired = [editor, ...rows]
+    } else {
+      desired = [...rows.slice(0, index + 1), editor, ...rows.slice(index + 1)]
+    }
+  }
+  syncRowOrder(els.cloudProfiles, desired)
+}
+
+/// 把容器里的节点按目标顺序摆好 —— **已经在位的节点不动**。
+///
+/// 移动 DOM 节点会让落在它里面的焦点丢失（WebKit 实测），所以只在
+/// 顺序真的变了时才动。
+///
+/// 从后往前摆：每个节点只要不是「正好在 anchor 前面」就插过去。
+/// 已经在容器里的节点 `nextSibling` 可能与 anchor 相同 —— 那是「已在位」；
+/// 不在容器里的节点 `nextSibling` 是 null，要靠 `parentElement` 区分，
+/// 否则新行会被当成已在位而永远插不进去。
+function syncRowOrder(container, desired) {
+  let anchor = null
+  for (let i = desired.length - 1; i >= 0; i -= 1) {
+    const node = desired[i]
+    const inPlace = node.parentElement === container && node.nextSibling === anchor
+    if (!inPlace) container.insertBefore(node, anchor)
+    anchor = node
+  }
 }
 
 /// provider 的显示名（列表里用）。

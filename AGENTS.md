@@ -38,7 +38,7 @@
    - `npm run check:join`：前后端拼句规则一致 —— 把两边的判定结构归一化后比对（CJK 码位区间带端点开闭、缺口占位符的完整形状、三条拼接规则的表达式）。改了 `src/core.js` 的 `joinText()` 或 `src-tauri/src/asr.rs` 的 `join_segments()` 后必跑。
    - `npm run check:contract`：前后端命令名与载荷字段一致 —— 前端 `invoke()` 的命令与字段必须在后端存在（改了命令名、参数名或 `Status` 字段后必跑）。
    - `npm run check:bundle`：打包与原生层配置 —— macOS 必须 ad-hoc 签名、必须挂麦克风 entitlement、Info.plist 必须有用途说明、macOS 专属代码必须整体带 `#[cfg(target_os = "macos")]`（改了 `tauri.conf.json` / `Entitlements.plist` / `Info.plist` / `menu.rs` 后必跑）。
-   - `npm run check:async`：async 路径上的阻塞锁 —— 引擎槽的阻塞式 `.lock()` 只许出现在 `spawn_blocking` 闭包里（沿调用图从 async 函数出发；`try_lock()` 不算）。改了 `engine.rs` 的引擎加载或新增 async 命令后必跑。
+   - `npm run check:async`：async 路径上的阻塞 —— ① 引擎槽的阻塞式 `.lock()` 只许出现在 `spawn_blocking` 闭包里（沿调用图从 async 函数出发；`try_lock()` 不算）；② **阻塞的构造器不许直接写在 async 函数体里**（建识别会话要载 onnx、建 ORT session，实测 ~70ms —— 那段时间别的命令全排队）；`spawn_blocking` 与专用 `std::thread` 闭包都不算（那两种线程不是执行器），**执行器的 spawn 算**（`tauri::async_runtime::spawn` / `tokio::spawn` 是执行器上的异步任务，阻塞在那儿一样占执行器 —— 判据是参数形态：闭包 = OS 线程，`async` 块 = 执行器）。改了 `engine.rs` 的引擎加载、`asr.rs` 的会话构造或新增 async 命令后必跑。
    - `npm run check:ui`：界面检查（真实 WebKit + 假 `__TAURI__`），前端改动后跑。
    - `npm run shots`：重出 README 截图，改了界面后跑。
 
@@ -158,6 +158,9 @@
 - **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal, sessionId? }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续）。致命 `record.micError` 由前端停止录音并保存非空部分结果；用户主动 Esc 才走取消并清空，其他致命错误仍取消。
 - **停止时的采集故障走 `Transcript.warning`**：`finish_recording` 先让识别线程收尾、保住非空转写，再由 `stop_recording` 把 `record.micError` 写进 `Transcript.warning`；正常转写不带这个字段（`skip_serializing_if` 保证载荷不变）。前端据此提示「麦克风发生异常」而不是「完成」，也不丢结果。
 - **事件载荷是增量的**：`stream:segment` 只带新句子，`stream:partial` 只带中间结果。累计全文在长时间会话里是 O(n²) 的传输与重绘。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）—— `npm run check:join` 守着这条。
+- **计时器只有一个写者**（`els.timer`）：前端 `recorder.js` 的 `startTimer` 用 `state.startedAt` 起算，**后端不再报 elapsed**（`audio:level` 载荷里没有这个字段）。两个时钟的原点差几毫秒（后端从采集线程起算，前端从命令返回起算）—— 显示值会在两个数之间来回跳，看着像秒数在退。
+- **结果框的实时追加不能夺走用户的光标**：整值写（`el.value = …`）会把光标推到末尾、还清空撤销栈。`result.js` 的 `writeResultText` 分两种：后缀扩展走 `execCommand('insertText')` 增量插入（插完还原选区），其余情况整值写但把光标放回原位。守卫是 UI 断言「实时追加后光标还在原处」。
+- **云端连接列表重绘不能弄丢焦点**：行按 id 复用（`status.js` 的 `cloudRows`），只改内容不换节点；`syncRowOrder` 只在顺序真变了时才动节点（移动节点会让落在里面的焦点丢失）；行内的名称 / 明细是不可聚焦的 `div`，**mousedown 的默认行为会把焦点移走** —— `app.js` 拦下它。
 - **拖拽用 Tauri 的 `onDragDropEvent`**：Tauri v2 默认拦截系统拖放，HTML5 `drop` 事件在真应用里不触发。`tauri.conf.json` 的 `dragDropEnabled` 必须保持 `true` —— 关掉它 wry 就不装拖放 handler，`onDragDropEvent` 永远不触发，拖拽转写直接变成死代码（而且没有 HTML5 兜底）。
 - **模型下载是两条独立的线**（可以同时下）：各自有 `downloading` / `cancel_download` 标志（`engine.rs` 的 `AppState` 里 `downloading_streaming` / `cancel_download_streaming`）。共用一个标志的话，整段在下载时点流式下载会直接报 busy 失败。
   - 进度事件是同一个名字（`model:progress`），载荷里带 `kind`（`"offline"` / `"streaming"`，由 `lib.rs` 的 `EventSink` 塞进去）—— **前端必须按 kind 分流**，别看「当前是不是在下载」那种状态，否则两个面板会互相显示对方的进度（看起来就像流式在重复下载整段模型）。

@@ -7,7 +7,6 @@ fn event_and_device_fields_serialize_camel_case() {
     let level = serde_json::to_value(LevelPayload {
         session_id: Some(7),
         level: 0.5,
-        elapsed: 2.0,
     })
     .unwrap();
     assert_eq!(level["sessionId"], serde_json::json!(7));

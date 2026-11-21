@@ -80,8 +80,71 @@ function rebuildRawText() {
 function setResultView(rawText, meta) {
   const rendered = localizeText(rawText)
   state.resultView = { rawText, rendered, meta, markers: gapMarkerTexts(rawText) }
-  els.text.value = rendered
+  writeResultText(rendered)
   renderResultMeta()
+}
+
+/// 写结果框的文本，尽量**不打断用户正在编辑的光标与撤销历史**。
+///
+/// 整值写（`el.value = ...`）有两个副作用：
+///   · 光标被推到末尾 —— 用户在中间改字，下一句识别结果一到就跳走了；
+///   · **撤销栈被清空** —— 改过的字再也撤不回来。
+/// 两者都是「用户正在改字」时最难受的那种打断。
+///
+/// 所以分两种情况：
+///   · 新文本是旧文本的**后缀扩展**（识别结果一句句接上来就是这种情况）
+///     → 只把新增的那一段插进去；
+///   · 其它（重排、收尾的全文、载入历史）→ 只能整值写，但把光标放回原位。
+function writeResultText(next) {
+  const el = els.text
+  const current = el.value
+  if (next === current) return
+  if (current && next.startsWith(current)) {
+    appendToText(next.slice(current.length))
+    return
+  }
+  const selStart = el.selectionStart
+  const selEnd = el.selectionEnd
+  el.value = next
+  el.setSelectionRange(Math.min(selStart, next.length), Math.min(selEnd, next.length))
+}
+
+/// 往结果框末尾追加一段文字，尽量**不打断用户正在编辑的光标与撤销历史**。
+///
+/// `document.execCommand('insertText')` 走的是「编辑」而不是「换内容」：
+/// 内容当作用户输入插进去，撤销栈保得住。三个限制：
+///   · 它**替换当前选区** —— 所以先把选区挪到末尾，插完再把光标放回去；
+///   · 它要求元素**有焦点**，没焦点时返回 true 却什么也没做 —— 所以写完要核对；
+///   · 它作用于**当前焦点所在的可编辑元素**，不是我们想写的那个 ——
+///     焦点在别处（比如设置页的凭据输入框）时，转写文本会被插进那个框。
+///
+/// 它是废弃 API：不可用（或没生效）时退回整值写，至少光标能放回原位。
+function appendToText(delta) {
+  if (!delta) return
+  const el = els.text
+  const before = el.value
+  const selStart = el.selectionStart
+  const selEnd = el.selectionEnd
+  // **焦点不在结果框上就不能用 execCommand**：它插的是当前焦点元素。
+  // 文件转写时用户能切到设置页点进凭据框 —— 那一框会被插进转写文本，
+  // 存下去就成了凭据的一部分。
+  if (document.activeElement !== el) {
+    el.value = before + delta
+    el.setSelectionRange(selStart, selEnd)
+    return
+  }
+  el.setSelectionRange(before.length, before.length)
+  let inserted = false
+  try {
+    inserted = document.execCommand('insertText', false, delta)
+  } catch {
+    inserted = false
+  }
+  if (!inserted || el.value !== before + delta) {
+    // 没插进去（无焦点 / 不支持）：退回整值写。
+    el.value = before + delta
+  }
+  el.setSelectionRange(selStart, selEnd)
 }
 
 /// 把编辑后文本里的旧占位符换成新语言的占位符。
@@ -110,10 +173,12 @@ export function relocalizeResult() {
   const markers = gapMarkerTexts(view.rawText)
   if (els.text.value === view.rendered) {
     // 用户没动过：整段按新语言重画。
-    els.text.value = rendered
+    writeResultText(rendered)
   } else {
     // 用户动过：只换缺口占位符，其他字符一个都不动。
-    els.text.value = swapGapMarkers(els.text.value, view.markers || [], markers)
+    // 走 writeResultText：整值写也要把光标放回原处 —— 用户正在结果框里
+    // 改字，切个语言光标就跳到末尾，接着敲的字跑错地方。
+    writeResultText(swapGapMarkers(els.text.value, view.markers || [], markers))
   }
   // rendered 永远存「原文的本地化结果」，不能写成用户文本 ——
   // 否则第二次切语言时守卫会误判成「用户没动过」，把编辑盖回原文。
@@ -177,8 +242,17 @@ export function appendSegment(text, start, end) {
     // 缺口段要先本地化再上屏，否则用户看到的是内部标记 [[gap:N]]。
     // 缺口文案自带空格规则（gapText），别再让 joinText 补一个。
     const shown = localizeText(piece)
-    els.text.value = isGapMarker(piece) ? `${els.text.value}${shown}` : joinText(els.text.value, shown)
-    state.resultView = { ...view, rawText, markers: gapMarkerTexts(rawText) }
+    const next = isGapMarker(piece) ? `${els.text.value}${shown}` : joinText(els.text.value, shown)
+    writeResultText(next)
+    // `rendered` 跟着新原文走（它是「原文的本地化结果」，不是屏幕上的用户文本）——
+    // 不更新就是 stale：用户把文本改回恰好等于那个 stale 值时，切语言会判成
+    // 「没动过」→ 整段重画，把编辑盖掉。
+    state.resultView = {
+      ...view,
+      rawText,
+      rendered: localizeText(rawText),
+      markers: gapMarkerTexts(rawText),
+    }
     renderResultMeta()
     return
   }

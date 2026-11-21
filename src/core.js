@@ -36,8 +36,11 @@ export function historyStorageGet() {
 export function historyStorageSet(items) {
   try {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 100)))
-  } catch {
-    /* 存储满时忽略 */
+  } catch (error) {
+    // 存储满 / 无痕模式 → 历史写不进去。
+    // **不能静默**：用户以为存上了，下次打开发现历史没了，没有任何痕迹。
+    // 细节（配额、隐私模式）只进日志，界面上的提示是另一回事。
+    logEvent('ERROR', `历史记录写入失败：${errorText(error)}`)
   }
 }
 
