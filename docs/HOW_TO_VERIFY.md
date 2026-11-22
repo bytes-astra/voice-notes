@@ -107,10 +107,10 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
 > `Cargo.lock` → rust-cache 的 key 跟着变 → CI 里的 sherpa-onnx 预编译库要重下，
 > 而那个下载会失败（链接时报「找不到 `sherpa-onnx-c-api`」）。`ps` 是现成的。
 
-2026-10-24 实测结论（176 秒连续语音）：**VAD、整段会话、流式会话、重采样四条路都不丢音频**
-（覆盖 175.6/176.0 秒，误差只有句边界）。**队列上限 60 秒是唯一的丢失点** —— 超了会丢**最旧**的
-（`SampleQueue::take_new` 里 `drain(..excess)`），并留缺口标记；日志里会打「识别跟不上，丢掉 X 秒音频」。
-识别是同步阻塞在消费线程里的（`record.rs` 的 `run_offline` → `asr.rs` 的 `drain()`），但 RTF 只有 0.01，
+2026-10-24 实测（176 秒连续语音）：**VAD、整段会话、流式会话、重采样四条路都不丢音频**
+（覆盖 175.6/176.0 秒，误差只有句边界）。**唯一的丢失点是队列上限 60 秒** —— 超了丢**最旧**的
+（`SampleQueue::take_new` 的 `drain(..excess)`）并留缺口标记，日志里打「识别跟不上，丢掉 X 秒音频」。
+识别同步阻塞在消费线程里（`record.rs` 的 `run_offline` → `asr.rs` 的 `drain()`），但 RTF 只有 0.01、
 实际落后不到 1 秒，**离 60 秒上限差得很远** —— 所以「加 buffer」不是解法。
 
 ### 缺口与时间轴
@@ -200,7 +200,8 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   `com.apple.security.device.audio-input`）校验产物。
 - `npm run check:async` 查 **async 路径上的阻塞锁**（`scripts/check-async.mjs`）：引擎槽
   （`engine` / `streaming_engine` / `punct_engine`）的**阻塞式** `.lock()` 只能出现在
-  `spawn_blocking` 闭包里。引擎加载要好几秒（228 MB / 162 MB / 281 MB，与 README 同一口径 —— 界面按 1024 进制显示），那把锁会被占住；
+  `spawn_blocking` 闭包里。引擎加载要好几秒（228 MB / 162 MB / 281 MB，与 README 同一口径 ——
+  界面按 1024 进制显示），那把锁会被占住；
   async 命令在执行器线程上死等它，整个执行器就卡住 —— 表现是「点了没反应，过几秒才动」。
   `try_lock()` 不算（拿不到就往下走加载路径）。采集器槽 / 会话槽**故意不查**：
   那些临界区只有几行，不存在长等待。
@@ -224,21 +225,20 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 **可选的真服务冒烟**：火山（`volcengine::tests::live_smoke`）与阿里（`aliyun::tests::live_smoke`）各有一条用例，凭据只从环境变量读（`VOICE_NOTES_VOLCENGINE_KEY` / `VOICE_NOTES_ALIYUN_KEY`），**没设就跳过**（不打印 key）。它们是**补充**，不作合并门槛 —— 但没跑过真服务就合入的 provider，必须在 README / PR 里标注「未对真实服务验证过」。
 
 - **会话层单测**（`src-tauri/src/asr/cloud/tests.rs`）：时间轴按 16 kHz 采样数推进（丢掉的音频同样占录音时间）、f32→i16 的 clamp、final→`Segment` 映射、**provider 给的时间戳不覆盖本地轴**、provider 要 24 kHz 时上传前升采样、**空 final 不抢下一句的区间**（时间戳不错位）、断连保留已定稿句子。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib`。
-- **结果与区间配对**：服务端的 final 可能乱序到达，也可能缺一条（识别失败）。会话层按 `item_id` 绑定句子区间（provider 先发 `CommitAck`），不按到达顺序 —— 否则失败点之后每句的时间戳都会错位一格。单测覆盖乱序 final、失败 item 无回执、提交失败后收尾区间合并（`src-tauri/src/asr/cloud/tests.rs` 与 `.../realtime/protocol_tests.rs`）。
+- **结果与区间配对**：服务端的 final 可能乱序到达，也可能缺一条（识别失败），会话层按 `item_id` 绑定句子区间（口径见 AGENTS.md「云端模式」）。单测覆盖乱序 final、失败 item 无回执、提交失败后收尾区间合并（`src-tauri/src/asr/cloud/tests.rs` 与 `.../realtime/protocol_tests.rs`）。
 - **协议编解码单测**（`src-tauri/src/asr/cloud/realtime/protocol_tests.rs`）：拿官方的示例帧当输入 —— `conversation.item.input_audio_transcription.delta`（字段 `delta`）与 `.completed`（字段 `transcript`）解成 Partial / Final、`input_audio_buffer.commit` 的回执带 `item_id`（用来给 final 按提交顺序排序）、`session.update` 的编码（`audio/pcm` + 24000、`turn_detection` 为 `null` 时由客户端断句、语言参数是 `languages` 复数）。另有**收尾记账**两组：客户端断句（提交后结果没回来就还在等）、服务端断句（迟到的旧 final 不能抹掉新音频的等待），以及**迟到的 `committed` 回执不再排队**（否则队列永远不空，收尾会一直等）。
 - **集成测试**（`src-tauri/src/record/tests.rs`）：走 `run_cloud_streaming_core` 的完整编排 —— 中途断连后已定稿句子仍在（`cloud_core_keeps_finalized_sentences_when_disconnected`）、上传丢掉的音频不重复计时（`cloud_core_does_not_double_count_upload_drops`）、**收尾的尾部缺口排在最后一句之后**（`cloud_tail_gap_follows_last_sentence`：第一次上传回一句话、第二次上传丢 1 秒，断言缺口是一个时刻且不并进最后一句）。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib record::tests::<name>`。
 - **凭据不外泄**：`Status` 序列化里没有 key 明文（`engine` 的单测）、错误详情里的 key 会被抹成 `***`（`sanitize()`，Realtime 与火山各一条协议单测 —— 火山的用会保留 message 的错误码分支，否则断言会恒真）、界面检查断言「密钥不回显」。
-  - **连接列表只回传掩码**：`Status.cloudProfiles` 里每条是 `{id, label, provider, baseUrl, model, keyMask}` —— `keyMask` 是头尾各露 `min(4, 长度 / 4)` 个字符（`settings::mask_secret`；露出的字符数永远不超过原文的一半，官方长 key 仍是头 4 + 尾 4）。**明文不回传**。守卫：`settings/cloud_tests.rs::mask_secret_hides_the_middle` / `mask_secret_never_reveals_the_whole_secret`；界面断言「列表显示掩码、不显示明文」。
+  - **连接列表只回传掩码**：`Status.cloudProfiles` 里每条是 `{id, label, provider, baseUrl, model, keyMask}`，**明文不回传**（掩码算法见 AGENTS.md「云端模式」）。守卫：`settings/cloud_tests.rs::mask_secret_hides_the_middle` / `mask_secret_never_reveals_the_whole_secret`；界面断言「列表显示掩码、不显示明文」。
   - **每家一条独立连接**：切 provider 不再清空别人的配置（旧行为是「切换会清掉地址与凭据」）。守卫：`settings/cloud_tests.rs::switching_provider_keeps_the_other_providers_profile`。
-  - **不做旧格式迁移**：旧 `settings.json` 的 5 个平铺云端字段被忽略（用户重新填一遍）—— 两套真值来源迟早不一致。
   - **日志这一半**：云端模块的日志只许走 `asr/cloud/logging.rs` 的关口（`warn` / `info` / `code_detail`），写入前用该 provider 的凭据脱敏。两条守卫：`asr::cloud::tests::log_choke_point_redacts_the_credential`（关口的脱敏）+ `asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`（**源码级守卫**：运行时读 `src/asr/cloud/` 下各 `.rs` 与 `src/asr/cloud.rs`，出现 `crate::log` 或 `crate::code_detail` 就红 —— **两条路都写日志文件**（`crate::code_detail` 内部就是 `log::error`）却不脱敏，所以云端模块一律用 `logging::code_detail` 先脱敏再委托）。守卫**跳过**测试文件（`tests.rs` / `*_tests.rs` / `tests/` 目录）、`mock.rs`（`#[cfg(test)]`）与关口自己（`logging.rs`）。
-    - **已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现（变形、URL 编码不保证）。
+    - **已知边界**：见 AGENTS.md「云端模式」—— `eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现（变形、URL 编码不保证）。
     - **范围只有云端模块**：`record.rs` 的云端日志只拼字典码，前端那半边靠「key 不回传」。
 - **云端术语表的协议层丢弃要回传界面**（`Status.cloudHotwordsIgnored`）：术语表是本地流式与云端共用的设置，但**各家的协议限制不同**（阿里官方规范 ≤ 15 字、火山 100 条上限、Realtime 禁特定字符）—— 被丢掉的用户得知道，不能只记一条日志。`asr/cloud/tests.rs::cloud_hotwords_ignored_counts_protocol_level_drops` 守着计数（每个 provider 都有分支 + 正常词不丢）。
-- **能力声明**（`src-tauri/src/asr/cloud.rs` 的 `Capabilities`）：每个 provider 自报能力（句边界方式、是否需要本地 VAD、中间结果语义、是否支持术语表、上传采样率），按 provider id 静态查的表（`provider_capabilities`）与实例自报值必须一致。合法组合只有两种：**客户端提交 + 需要本地 VAD**、**服务端断句 + 不需要本地 VAD** —— 其余组合拒绝建 provider（「缺 VAD」绝不能被当成「改用服务端断句」）。单测覆盖能力表、组合校验、VAD 前置条件与门控决策的四种组合。
-- **中间结果归一器**（`src-tauri/src/asr/cloud/partial.rs`）：各家协议给的中间结果形态不同（增量拼接 / 确认前缀加草稿 / 区间替换），provider 内部归一成「当前未定稿句的累计串」，上层只认这一种语义。归一器按句标识分桶、句定稿时清掉自己的桶；没有句标识的协议走单桶。单测见 `src-tauri/src/asr/cloud/partial/tests.rs`。
-- **provider 契约守卫**（各 provider 自己的测试模块）：三家的中间结果形态各有一条守卫，断言两件事 —— ① 上抛的中间结果是当前未定稿句的**累计文本**（句内整体替换，不追加）；② 声明的 `partial_semantics` 与**从样例推导出的**形态一致。三条硬规矩（否则守卫是假的）：**禁 mock provider 当协议样例**（mock 直接注入 `CloudEvent`，没有协议形态）、**期望值必须手写字面量**（从样例里再读一遍就是 `x == x`）、**形态从样例推导而不是只钉常量**（只钉常量的话形态漂移照样过）。样例：火山是两次响应（第二次全量返回、改写最后一条未定句）、Realtime 是两条**同 `item_id`** 的 `.delta`、阿里是同一句的两次「已确认句子 + 草稿」。另外还有**生产链路**的守卫：`asr::cloud::realtime::protocol_tests::deltas_accumulate_on_the_production_path` —— 本地假 WebSocket 服务端回两帧 `.delta`，跑**真实 run 循环**，断言上抛的中间结果是「你好，世界」而不是「，世界」。自建归一器的守卫守不住「provider → 上抛」那段接线（实测：把生产调用点绕开归一器，276 条测试全绿）。会话层还有一条零长句顺序守卫（`zero_length_segments_keep_arrival_order`：同批九条 final，首条占区间、后八条零长且同 `start`，文本顺序 = 到达顺序）。清单见 `docs/REVIEW-CHECKLIST.md` 的 RC-K1 / RC-K2 / RC-K4。
-- **服务端断句路径**（`server_endpoint` 族）：不本地门控 —— 静音照上传，服务端靠静音判句尾；句子区间按本地轴兜底（「上一句终点 → 本次定稿到达时已喂入会话的音频终点」）。**已知取舍**：该终点会系统性偏长（服务端延迟 + 尾静音）。
+- **能力声明**（`src-tauri/src/asr/cloud.rs` 的 `Capabilities`）：provider 自报能力（句边界方式、是否需要本地 VAD、中间结果语义、是否支持术语表、上传采样率），静态表（`provider_capabilities`）与实例自报值必须一致；合法组合只有两种 —— **客户端提交 + 需要本地 VAD**、**服务端断句 + 不需要本地 VAD**，其余拒绝建 provider（「缺 VAD」绝不能被当成「改用服务端断句」）。单测覆盖能力表、组合校验、VAD 前置条件与门控决策的四种组合。
+- **中间结果归一器**（`src-tauri/src/asr/cloud/partial.rs`）：各家协议形态与归一档见 AGENTS.md「云端模式」。归一器按句标识分桶、句定稿时清掉自己的桶；没有句标识的协议走单桶。单测见 `src-tauri/src/asr/cloud/partial/tests.rs`。
+- **provider 契约守卫**（各 provider 自己的测试模块）：三家的中间结果形态各有一条守卫，断言两件事 —— ① 上抛的中间结果是当前未定稿句的**累计文本**（句内整体替换，不追加）；② 声明的 `partial_semantics` 与**从样例推导出的**形态一致。三条硬规矩（否则守卫是假的）：**禁 mock provider 当协议样例**（mock 直接注入 `CloudEvent`，没有协议形态）、**期望值必须手写字面量**（从样例里再读一遍就是 `x == x`）、**形态从样例推导而不是只钉常量**（只钉常量的话形态漂移照样过）。样例：火山是两次响应（第二次全量返回、改写最后一条未定句）、Realtime 是两条**同 `item_id`** 的 `.delta`、阿里是同一句的两次「已确认句子 + 草稿」。**生产链路**另有守卫：`asr::cloud::realtime::protocol_tests::deltas_accumulate_on_the_production_path` —— 假 WebSocket 服务端回两帧 `.delta`，跑**真实 run 循环**，断言上抛的是「你好，世界」而不是「，世界」（自建归一器的守卫守不住「provider → 上抛」那段接线：把生产调用点绕开归一器，276 条测试全绿）。会话层还有一条零长句顺序守卫（`zero_length_segments_keep_arrival_order`：同批九条 final，首条占区间、后八条零长且同 `start`，文本顺序 = 到达顺序）。清单见 `docs/REVIEW-CHECKLIST.md` 的 RC-K1 / RC-K2 / RC-K4。
+- **服务端断句路径**（`server_endpoint` 族）：不本地门控（静音照上传，服务端靠静音判句尾），句子区间按本地轴兜底 —— 口径见 AGENTS.md「云端模式」。**已知取舍**：该终点会系统性偏长（服务端延迟 + 尾静音）。
 - **界面检查**（`npm run check:ui`）覆盖云端：配置保存、状态徽标（已配置 / 未配置）、上传确认框、云端模式发的是 `start_cloud_recording`、**当前服务不支持术语表时给出提示**（术语表是本地流式与云端共用的全局设置，只能提示、不得隐藏入口）、**结果框里的实时句子按本地时间轴排序**（五条排序断言：缺口段先到时句子仍排在缺口前面、同一时刻缺口排在句子前面、同一时刻缺口先到时也在句子前面、乱序到达的句子按起点排、时间递增到达时文本逐字不变），外加**最终转写以后端返回的全文为准**（停止瞬间迟到的句子不混进最终转写）。
 
 - **火山（豆包）协议层**（`src-tauri/src/asr/cloud/volcengine/`）：二进制帧编解码按官方文档逐字节核对（4 字节头 + payload size，大端；消息类型 / flags / 序列号）；结果映射用官方示例 JSON（`result.utterances[]` 的 `definite` → 定稿，最后一条未定句 → 实时行；**不用 `result.text`** —— 那是全会话累计）。热词清洗（控制字符丢弃、超上限（100 条）截断）。
@@ -296,5 +296,6 @@ npm run shots        # 重出 README 10 张截图
 
 ## 📚 相关文档
 
-- 工程约定、模块边界、参数不变式、踩过的坑：[../AGENTS.md](../AGENTS.md)
+- 工程约定、模块边界、参数不变式、踩过的坑：[../AGENTS.md](../AGENTS.md)（总索引；专题文档：[FRONTEND.md](FRONTEND.md) / [BACKEND.md](BACKEND.md) / [ASR.md](ASR.md) / [CLOUD.md](CLOUD.md) / [RELEASE.md](RELEASE.md)）
 - 复审的固定作业面（每轮从「⚠️ / ❌」条目开始，别另起清单）：[REVIEW-CHECKLIST.md](REVIEW-CHECKLIST.md)
+- 排查步骤（能录音没字 / 静默丢音频）：[TROUBLESHOOTING.md](TROUBLESHOOTING.md)

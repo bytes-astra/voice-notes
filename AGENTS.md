@@ -2,381 +2,121 @@
 
 欢迎！如果你是协助人类开发者参与本项目贡献的 AI Agent，或是想了解项目结构的贡献者，请务必阅读以下开发流与规范。
 
-规范之外还有两份文档：验证手段与基线在 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md)，复审作业面在 [`docs/REVIEW-CHECKLIST.md`](docs/REVIEW-CHECKLIST.md) —— **改任何模型 / 参数 / 热词之前，先跑探针做前后对比，别凭感觉。**
+**VoiceNotes** = Tauri 2 桌面应用（macOS / Windows）。前端原生 JS + ES Modules（无打包器、无框架、无 TypeScript），后端 Rust（sherpa-onnx 本地推理，CPU 即可）。
+
+## 📍 文档地图
+
+本文件是**地图**，不是手册：只放每次都要遵守的硬约束与命令；细节在专题文档里，**按需再读**。
+
+| 你要改什么 | 先读哪份 |
+| --- | --- |
+| 前端模块、i18n 与文案、文本分层、错误码、控件、macOS 原生层 | [`docs/FRONTEND.md`](docs/FRONTEND.md) |
+| 后端分层、命令与运行时、事件契约、落盘、日志、音频采集 | [`docs/BACKEND.md`](docs/BACKEND.md) |
+| 缺口标记、整段 / 流式识别、模型与下载 | [`docs/ASR.md`](docs/ASR.md) |
+| 云端模式（provider、连接列表、协议、凭据） | [`docs/CLOUD.md`](docs/CLOUD.md) |
+| CI、首次编译、版本发布、打包与签名 | [`docs/RELEASE.md`](docs/RELEASE.md) |
+| 质量探针、基线、界面检查怎么跑 | [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md) |
+| 复审的固定作业面（每轮从「⚠️ 守卫薄弱 / ❌ 未审」的条目开始，**别另起 Focus 清单**） | [`docs/REVIEW-CHECKLIST.md`](docs/REVIEW-CHECKLIST.md) |
+| 「能录音、没字」怎么查 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) |
+| 用户可见的功能与安装说明 | [`README.md`](README.md) |
 
 ## 📋 OpenSpec 规划
 
-本项目的 OpenSpec 规划在独立 store（不在仓库里，仓库没有 `openspec/` 目录），id `voice-notes`。跑任何 `openspec` 命令都要带 `--store voice-notes`，例如 `openspec validate <change> --store voice-notes`。本机未注册该 store 时先 `openspec store setup voice-notes --path <path>`。
+规划在独立 store（不在仓库里，仓库没有 `openspec/` 目录），id `voice-notes`。跑任何 `openspec` 命令都要带 `--store voice-notes`，例如 `openspec validate <change> --store voice-notes`。本机未注册该 store 时先 `openspec store setup voice-notes --path <path>`。
 
 ## 🎯 核心架构与原则
 
 - **源文件驱动**：前端逻辑在 `src/`（原生 JS + ES Modules，浏览器直接跑，没有打包器），后端逻辑在 `src-tauri/src/`（Rust）。
-  - `src/app.js`：应用入口 —— init / bindUI / switchView / applyLocale。
-  - `src/core.js`：全局状态、DOM 引用、格式化、错误码翻译 —— 其他模块都从它取。
-- **禁止直接修改产物**：`src-tauri/target/`、`src-tauri/gen/schemas/` 是构建产物（已 gitignore），`docs/screenshots/*.png` 由 `npm run shots` 生成。**永远不要直接编辑这些文件** —— 改逻辑改源文件，改截图跑脚本。
 - **构建工具链**：Tauri 2 CLI（`@tauri-apps/cli`）+ cargo；前端没有打包器、框架、TypeScript。
-- **单向依赖**：`icons.js`（零依赖叶子）→ `core.js` / `tauri.js` → `theme.js` / `export.js` → `history.js` → `result.js` → `status.js` → `recorder.js` → `files.js` / `events.js` → `app.js`。不能反，也不能成环。
-- **单一事实源**：同一件事只写一处。用户可见的功能与安装说明在 `README.md`，验证与基线在 `docs/HOW_TO_VERIFY.md`，本文件只放工程约定与踩过的坑。
+- **禁止直接修改产物**：`src-tauri/target/`、`src-tauri/gen/schemas/` 是构建产物（已 gitignore），`docs/screenshots/*.png` 由 `npm run shots` 生成。**永远不要直接编辑这些文件** —— 改逻辑改源文件，改截图跑脚本。
+- **单向依赖**：前端不能反、也不能成环，完整链路见 [`docs/FRONTEND.md`](docs/FRONTEND.md)。
+- **单一事实源**：同一件事只写一处 —— 用户可见的功能与安装说明在 `README.md`，验证与基线在 `docs/HOW_TO_VERIFY.md`，工程约定在各专题文档，本文件只放硬约束与索引。
 
-## 🛠️ 开发与构建工作流
+## 🚫 硬约束（违反就是错）
 
-在准备提交你的代码之前，按以下步骤本地验证：
-
-1. 装依赖、起开发模式、打包：
-
-   ```bash
-   npm install
-   npm run dev          # 开发模式
-   npm run build        # → src-tauri/target/release/bundle/
-   ```
-
-2. 门禁与检查（逐条说明；每条「守什么坑」的详细版见 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md)「单元测试」）：
-
-   - `npm run check`：门禁 —— i18n → 前端依赖图 → 拼句规则 → 前后端契约 → 打包与原生层配置 → **async 路径上的阻塞** → clippy（`-D warnings`）→ `cargo test --lib`。
-   - `npm run check:i18n`：各语言 key 对齐 + HTML/JS 引用的 key 存在 + 后端错误码必须在字典里 + 后端不许返回裸字符串错误 + `i18n.js`/`select.js` 必须是经典脚本（改文案后必跑）。
-   - `npm run check:deps`：前端 import 图 —— 单向依赖不能反、也不能成环、经典脚本不得被 import、每个模块都要登记在层表里（改前端依赖后必跑）。
-   - `npm run check:join`：前后端拼句规则一致 —— 把两边的判定结构归一化后比对（CJK 码位区间带端点开闭、缺口占位符的完整形状、三条拼接规则的表达式）。改了 `src/core.js` 的 `joinText()` 或 `src-tauri/src/asr.rs` 的 `join_segments()` 后必跑。
-   - `npm run check:contract`：前后端命令名与载荷字段一致 —— 前端 `invoke()` 的命令与字段必须在后端存在（改了命令名、参数名或 `Status` 字段后必跑）。
-   - `npm run check:bundle`：打包与原生层配置 —— macOS 必须 ad-hoc 签名、必须挂麦克风 entitlement、Info.plist 必须有用途说明、macOS 专属代码必须整体带 `#[cfg(target_os = "macos")]`（改了 `tauri.conf.json` / `Entitlements.plist` / `Info.plist` / `menu.rs` 后必跑）。
-   - `npm run check:async`：async 路径上的阻塞 —— ① 引擎槽的阻塞式 `.lock()` 只许出现在 `spawn_blocking` 闭包里（沿调用图从 async 函数出发；`try_lock()` 不算）；② **阻塞的构造器不许直接写在 async 函数体里**（建识别会话要载 onnx、建 ORT session，实测 ~70ms —— 那段时间别的命令全排队）；`spawn_blocking` 与专用 `std::thread` 闭包都不算（那两种线程不是执行器），**执行器的 spawn 算**（`tauri::async_runtime::spawn` / `tokio::spawn` 是执行器上的异步任务，阻塞在那儿一样占执行器 —— 判据是参数形态：闭包 = OS 线程，`async` 块 = 执行器）。改了 `engine.rs` 的引擎加载、`asr.rs` 的会话构造或新增 async 命令后必跑。
-   - `npm run check:ui`：界面检查（真实 WebKit + 假 `__TAURI__`），前端改动后跑。
-   - `npm run shots`：重出 README 截图，改了界面后跑。
-
-3. Rust 侧测试：`cargo test --lib`（纯逻辑），以及 `src-tauri/tests/` 下的 `asr_smoke`（整段真模型，需 `VOICE_NOTES_MODEL_DIR`）、`streaming_smoke`（流式，需 `VOICE_NOTES_STREAMING_MODEL_DIR`）、`streaming_endpoint_time`（流式时间区间，真模型 + `--ignored`）、`decode_smoke`（后端解码全链路）、`quality_probe`（质量探针，只打印不断言）、`quality_gate`（质量门禁，**带阈值断言**：整段/流式的 CER 与 RTF）、`memory_probe`（内存门禁：常驻内存不随录音时长增长）。长录音四探针（`vad_long_probe` / `offline_long_probe` / `streaming_long_probe` / `resample_probe`）**打印 + 断言**：超阈值就是回归。其余探针（`gain_probe` / `noise_probe` / `mic_probe` / `level_probe` / `quiet_pipeline_probe`）的用途与跑法见 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md)；完整清单以 `src-tauri/tests/` 目录为准。
-
-4. **复审清单**：[`docs/REVIEW-CHECKLIST.md`](docs/REVIEW-CHECKLIST.md) —— 复审的**固定作业面**。每轮复审从清单里挑「⚠️ 守卫薄弱 / ❌ 未审」的条目审，**不要另起一份 Focus 清单**：清单轮换会让每轮都「发现新问题」，其实是一批老缺陷被不同角度翻出来（背景见该文档）。发现清单里没有的不变量，追加到该文档末尾并给它一个稳定 ID。
-
-> **建议**：提交前在终端跑 `npm run check`，前端改动再跑 `npm run check:ui`。**纯文档改动不用跑门禁** —— 改的是 markdown；只有动了 `src/locales/*.js` 才需要 `npm run check:i18n`。
-
-### 首次编译
-
-首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 拉预编译静态库（onnxruntime 等），之后走缓存。想复用本地已有的库，`SHERPA_ONNX_ARCHIVE_DIR=/path/to/dir` 指向那个目录（里面放 `sherpa-onnx-v1.13.8-<os>-<arch>-static-lib.tar.bz2`），这条路径不经过 GitHub。
-
-### CI 在哪跑
-
-`.github/workflows/check.yml`（推 main / 提 PR 都跑）：Rust job 用 macOS —— 这个项目的 Rust 端在 Linux 上没验证过（cpal 要 ALSA 头文件），别把没支持的平台塞进 CI。前端门禁（i18n + 依赖图 + 拼句规则 + 前后端契约 + 打包配置）是纯 Node 脚本，走独立的 frontend job（ubuntu）。**界面检查（`check:ui`）要装 Playwright WebKit，只在本地跑，不进 CI。**
-
-**Windows 编译检查**（`check.yml` 的 `rust-windows` job，windows-latest）：原生菜单只在 macOS 存在（`menu.rs` 整体 cfg 掉了），import 漏了 cfg 就只有打包 Windows 时才炸 —— 每个 PR 都编译一次，别等到打 tag。只 `cargo check`、不运行测试：Windows runner 上测试二进制在加载阶段就失败（0xc0000139，WebView2 依赖版本不匹配）。
-
-**打包产物的签名校验**（`.github/workflows/build.yml` 的 macOS job）：`npm run build` 之后用 `codesign` 验两件事 —— 是 ad-hoc 签名（`Signature=adhoc`）、带麦克风 entitlement（`com.apple.security.device.audio-input`）。这两条平时只能靠真机验，缺了任一条的表现分别是「别的 Mac 装完报已损坏」和「能录音但没字」。
-
-## 🧹 代码规范
-
-### 前端模块边界
-
-- **原生 JS + ES Modules**，没有打包器、没有框架、没有 TypeScript。不要为 UI 引入构建步骤。
-- **依赖方向不能反、也不能成环**：完整链路见「核心架构与原则」的「单向依赖」。`core.js` / `tauri.js` 不 import 任何业务模块；`status.js` 不 import `recorder.js`（所以 `idleHint()` 放 core）。
-- **`state` / `els` 只在 `core.js` 创建一次**，其他模块 `import` 引用（live binding 是同一个对象）。
-- **Tauri 插件调用面集中在 `src/tauri.js` 解构**，其他模块从那里 import。新增插件命令要同步在 `src-tauri/capabilities/default.json` 加权限，否则运行时直接拒绝。
-- **外壳是「侧边栏 + 主区」**：`.app[data-view]` 控制 `[data-view-panel]` 显隐，`switchView()` 统一处理导航高亮/标题，录音中不允许切走。新增页面 = 一个 `[data-view-panel]` + 一个 `.nav-item`。
-- **默认窗口尺寸要容得下整张转写卡片**：窗口默认宽高写在 `src-tauri/tauri.conf.json`，它是唯一的尺寸来源 —— `scripts/ui/check.mjs` 和 `scripts/ui/shots.mjs` 都从那里读 viewport（界面检查和 README 截图永远等于用户启动后看到的样子）。改窄了或改矮了，转写结果卡片会被裁掉、`check:ui` 里「默认窗口尺寸下没有纵向滚动条」那条断言会红。
-
-### i18n 与文案
-
-文案统一放字典，机制单独成文件：`src/locales/*.js` 放文案，`src/i18n.js` 只放机制（`t()` / `apply()` / `setLocale()` / `resolveLocale()`）。**`i18n.js` 里不放任何文案。**
-
-- JS 用 `t('key', {变量})`，HTML 用 `data-i18n` / `-title` / `-placeholder` / `-aria`，启动时 `I18N.apply()` 填充。
-- **加语言 = 加一个字典文件 + 在 `index.html` 里加一行 `<script src="locales/xx.js"></script>`**，且必须排在 `i18n.js` 之前（`i18n.js` 启动时读 `window.I18N_LOCALES`，晚加载就没了）。
-- **`i18n.js` / `select.js` 保持经典脚本**（挂 `window.I18N` / `window.UISelect`），在 `index.html` 里排在 `<script type="module" src="app.js">` 之前。三条硬约束（`npm run check:i18n` 守着，每条都实测过）：
-  - **不能加 `async`** —— async 脚本脱离文档顺序，可能晚于 `app.js` 跑，那时 `window.I18N` 还不存在 → 界面直接挂（等 `.chip` 超时）。
-  - **不能写成 `type="module"`** —— 改成 module 后「位置」变成决定性的：挪到 `app.js` 之后界面就挂（实测过）。
-  - **不能被 `import`** —— 被 import 会执行两遍（实测 `i18n.js` 执行 2 次、`window.I18N` 被换成第二个实例）。当前代码恰好没因此坏掉（哪个实例生效取决于模块求值顺序），但这种依赖求值顺序的隐患不值得留。
-  - 顺带说明：经典脚本排在 `app.js` 之前本身不会坏（实测挪后仍 124/124 通过）；位置这条约束只是「不能是 module」的配套 —— 一旦变成 module，位置才决定成败。
-- **字典文案在渲染时取**：存 key，渲染时 `t(key)`。模块顶层取 `t()` 会在切语言时不更新（语言芯片、阶段提示、视图标题都踩过）。视图标题是 `VIEW_KEYS` + `viewTitle()`。
-- **随状态变的标签**（麦克风「开始录音 / 结束录音」）用单独的渲染函数（如 `renderMicLabel()`），并在 `applyLocale()` 里重调一次 —— `I18N.apply()` 只认 HTML 上的静态 `data-i18n-aria`。
-- **同一个控件的文案不按模式变**：麦克风下方的空闲提示两种模式统一写「点击麦克风开始录音」，模式差异由「整段 / 流式」芯片的副标题说明。
-- 后端不返回中文展示文案（模型来源返回 `app_data` / `custom` 这种 token）。
-
-### 文本分层
-
-界面文案与技术细节是两条线，分开写：
-
-- **界面文案 = 一句中性的话 + 用户看得懂的参数**（字典里只留 `{value}` / `{seconds}` 这类占位符）。措辞中性（不用「识别跟不上，丢掉了…」这种口语），也不出现内部黑话（线程、预热、收尾、引擎状态、断句）—— 用「麦克风发生异常」「识别已停止」这种说法。**黑话由 `npm run check:i18n` 查**（只查文案的值，不查 key）。
-- **技术细节（系统错误文本、路径、采样格式名）只进日志**：`code_detail()` 会把细节写进日志文件。**字典里不放 `{error}` 占位符** —— `{error}` 只用来装「嵌套的干净文案」，比如 `result.fileFailed` 里那句已经翻译过的原因。
-- 字典里查不到的错误码 → 界面显示 `error.unknown`，错误码和细节都不原样甩给用户。前端把错误抛给界面时同理：toast 里放干净文案，细节用 `logEvent('ERROR', …)` 记进日志。
-
-### 错误码
-
-后端错误只返回字典 key：用 `crate::code("record.empty")` / `crate::code_detail("record.micError", e)`（lib.rs 里定义），得到 `"record.empty"` / `"record.micError:<细节>"`。前端 `core.js` 的 `fmtError()` 查字典翻译。
-
-**新增错误码必须同时加进 `src/locales/zh-CN.js` 和 `src/locales/en.js`**，`npm run check:i18n` 会校验后端引用的码在字典里。
-
-### 缺口标记
-
-识别跟不上丢掉音频时，后端在文本里插 `[[gap:秒数]]`（`audio::gap_marker`），前端渲染时用 `core.js` 的 `localizeText()` 换成 `t('record.gap', {seconds})`。后端不写中文标记。
-
-- **丢掉的音频占真实录音时间**：整段模式以前只算「喂进识别器的采样」，识别跟不上时录音时长会短一截。现在两种模式统一：`record.rs` 的 `recorded_seconds()` = 喂入 + 丢掉。
-- **时间轴统一到真实录音时间**：整段模式的 VAD 只见过喂进去的音频，句子时间是「喂进去的时间轴」。缺口夹在两句之间，`record.rs` 的 `to_real_time()` 按 `drops`（缺口位置 + 累计丢掉量）把句子时间换算到真实时间轴，缺口标记落在**缺口终点**（`gap_at()`）。不换算的话缺口会排到它本该在的位置之后 —— 与流式模式也不一致。**实时事件流也是真实时间轴**（发射前过 `to_real_time()`），别让同一事件流里混两套刻度。
-- **时间轴换算在秒域比较**：`drops` 存的是缺口位置（秒），不存采样下标 —— 句子的 `start`/`end` 也是秒，直接比秒是精确的；绕道「秒 → 下标」会在长录音上因 f32 往返差 ±1 个采样，边界压在缺口上时整句错位。区间语义是 `[start, end)`：起点上的缺口要移（已在句前过去），终点上的缺口不移（还在句后）—— 这组不对称有单测守着。
-- **同一时刻缺口排在句子前面**（`asr.rs` 的 `insert_gaps()`）：缺口终点与它后面第一句的起点相同，`sort_by` 是稳定排序、gaps 又是后 extend 的 —— 不显式让缺口优先，缺口会排到句子**后面**，文本变成「句子[[gap:3]]」，读起来像句子之后才丢的音频。
-- **两种模式同一条规则**：流式会话的句子起点也要按丢掉的时间后移（`asr.rs` 的 `Timeline::advance_dropped()`）。洞落在这句**之前**（识别器还没吃到这句的音频）→ 起点挪到洞的终点；洞落在这句**里面** → 起点不动，句子的跨度自然把空档包住。不挪的话流式会排出「句子[[gap:4]]」而整段是「[[gap:4]]句子」。`Timeline` 单独成结构是为了能脱开模型做单测 —— 真模型的用例没设环境变量时会跳过，这条规则不能只靠它们守。
-
-### 控件
-
-下拉框用自绘组件 `src/select.js`（`UISelect.create(el, {onChange})`）：原生 `<select>` 在 macOS/Windows 样式不可控。弹层挂 body 上用 fixed 定位，避免被滚动容器裁掉。`setItems` 在 `create()` 之后调用，反了拿到 null。
-
-### macOS 原生层
-
-**侧栏材质**：`lib.rs` 的 setup 里 `set_effects(Effect::Sidebar)`（NSVisualEffectView），配合 `style.css` 里 `body.macos` 的透明规则 —— 侧栏不画底色，系统材质从后面透出来，主区自己刷不透明底色。
-
-- **不开 `transparent: true`**：Tauri 内置的 `set_effects` 自己就把 webview 处理成透明了。开了反而更糟 —— 那是全局窗口属性，Windows 也会变 layered 窗口（DWM 投影会没），而 Tauri 没有平台专属的窗口配置（`tauri.windows.conf.json` 的合并是 RFC 7386，数组整体替换，改一个字段得抄整份 window 配置）。
-- **材质的明暗跟的是窗口外观**（NSWindow.appearance），不是网页的 `data-theme` —— 切主题时必须同步 `setTheme('Dark'|'Light')`（`theme.js` 的 `syncWindowTheme()`），否则系统浅色 + 应用暗色 = 浅色材质配深色字。
-- **`setTheme` 需要 `core:window:allow-set-theme` 权限**，漏了会被 ACL 直接拒绝，而前端那行 `.catch` 会把错误吞掉 —— 表现是「暗色下材质不变」且毫无提示。失败要 `logEvent` 记进日志。
-- **`html` 在 macOS 不刷 `var(--bg)`**：body 和侧栏透明但根元素不透明，同样会把材质盖住。用 `html:has(body.macos) { background-color: transparent }` 给 macOS 留透明，其他平台仍保留防闪白底色。
-- 材质用经典 NSVisualEffectView，**不要用 Liquid Glass**（macOS 26+ 的 NSGlassEffectView，效果不如经典材质）。
-
-**非 macOS 的窗口底色**：`html` 铺上 `var(--bg)`，窗口底色跟主题走（`syncWindowBackground()` → `setBackgroundColor`，需要 `core:window:allow-set-background-color` 权限）。只给 `body` 上色不够 —— 重绘时会闪白。
-
-**窗口标题跟界面语言走**：`tauri.conf.json` 的 `title` 只是启动时的默认值（写 `VoiceNotes`），运行时由 `applyLocale()` 调 `getCurrentWindow().setTitle(t('app.title'))` 设置（需要 `core:window:allow-set-title` 权限）。
-
-**原生菜单**：`menu.rs` 创建，界面切语言时 `applyLocale()` 把 `t('menu.edit')` / `t('menu.view')` 传给 `set_menu_texts` 更新子菜单；预定义编辑项交给系统本地化，**Rust 里不存任何菜单文案**（加语言只改字典）。
-
-**拖动窗口**：`data-tauri-drag-region="deep"`（`.sidebar-top` 与 `.main-head`，按钮自动排除）+ **`core:window:allow-start-dragging` 权限** —— 这权限不在 `core:default` 里，删了窗口就拖不动。
-
-**侧栏顶部留位**：`body.macos .sidebar-top { height: 78px }` 给红绿灯留位，全屏时红绿灯会自动隐藏但占位**始终保留 78px**（否则进出全屏内容会跳）。Windows 没有这个占位 —— `body.macos` 不生效时侧栏顶部高度跟着内容走，写死 12px 会切掉 30px 高的品牌行。
-
-### 后端分层
-
-- **lib.rs 只放命令层**：新逻辑先找对应模块放 —— `record.rs`（录音编排）、`engine.rs`（引擎与状态）、`asr.rs`（识别会话）、`audio.rs`（采集与重采样）、`decode.rs`（解码）、`models.rs`（模型下载）、`output.rs`（落盘）、`settings.rs`（设置）、`log.rs`（日志）、`menu.rs`（macOS 菜单）。命令本身保持薄：一个命令别同时干两件事（录音按模式拆成 `start_streaming_recording` / `start_offline_recording` 两个独立命令）。
-- **`record.rs` 不认识 Tauri**：结果通过 `emit` 回调交出去，所以它能被单测直接调用。`AppHandle` 不进 `record.rs` —— 实在要发事件就在 lib.rs 那层包一下。
-- **名字别撞**：`record.rs` 是「录音怎么跑」，`asr.rs` 里的 `OfflineSession` / `StreamingSession` 是「识别会话」，两回事 —— 所以前者不叫 session.rs。两种录音共用 `RecordingRun { stop, discard, rx }`，停止统一走 `finish_recording`：麦克风故障也要先等 ASR 收尾，不能当取消丢文本。
-- **两个槽一起登记**（`record.rs` 的 `register_slots`）：采集器槽（`recorder`）与会话槽（`stream` / `offline_session`）必须**一起**写 —— 只写采集器不写会话，识别线程就永远收不到 stop（线程泄漏、麦克风不关、语言/ITN 永久锁死）。函数先拿齐两把锁再写，任一把锁被 poison 时两个槽都不变；锁序固定 采集器 → 会话。登记失败时，已经起起来的识别线程要靠 `stop` / `discard` 标志让它退出。
-- **单元测试不进源文件**：测试放同目录子文件夹，`src/asr.rs` 里写 `#[cfg(test)] mod tests;`，实现放 `src/asr/tests.rs`（一个模块有多个测试组就是 `src/asr/gap_tests.rs` 这样另起文件）。crate root 例外 —— `lib.rs` 的子模块落在 `src/` 根下（`src/command_tests.rs`）。**拆出去仍是单元测试**：`use super::*` 照样能摸到父模块的私有项，`cargo test --lib` 照样跑得到，门禁不用改。别为了「看起来整齐」搬到 `src-tauri/tests/` —— 那是集成测试，只碰得到 `pub` 项，而且 `cargo test --lib` 不再覆盖它。
-
-### 命令与运行时
-
-- **命令参数名用 camelCase**，如 `audioBase64`、`fileName`。
+- **后端只返回字典 key**，不返回中文展示文案：`crate::code("record.empty")` / `crate::code_detail("record.micError", e)`；新增错误码必须同时进 `src/locales/zh-CN.js` 与 `src/locales/en.js`。
+- **界面文案 = 一句中性的话 + 用户看得懂的参数**；技术细节只进日志（`code_detail()` / `logEvent('ERROR', …)`），字典里不放 `{error}` 占位符。
+- **事件名只出现在 `src/events.js`**（`audio:level` / `audio:error` / `model:progress` / `engine:state` / `stream:partial` / `stream:segment` / `streaming:state`），改名字要同步前端。
+- **命令参数名用 camelCase**（`audioBase64` / `fileName`）。
 - **推理是同步阻塞的**，一律放进 `tauri::async_runtime::spawn_blocking`，别阻塞 async 执行器。
-- **引擎按「身份」缓存**：整段的身份是 `(模型目录, language, itn)`，流式是 `hotwords`（`engine.rs` 的 `OfflineEngineKey` / `StreamingEngineKey`）。任何一项变了就重建 —— 原来只看 `(language, itn)`，换模型目录会被静默吞掉。想「切语言不重载」得走 C API 的 `setConfig`，Rust 绑定没暴露。录音中语言和 ITN 前后端都锁定；自定义模型目录变更由 `set_model_dir` 清缓存。
-- **装引擎要锁内读设置**（`engine.rs` 的 `install_engine`）：拿引擎槽的锁 → **在锁内**读设置 → 比身份 → 复用或重建。设置是在锁外被改的（`set_model_dir` / `set_hotwords`），读设置和装引擎之间只要有缝，旧快照就会把新设置顶掉。`load_engine` 直接返回 `Arc<Engine>`，不要再加一个「二次取锁」的助手（async 路径上阻塞等引擎锁会把整个执行器卡住）。
-- **文件解码在后端**：`decode::decode_to_16k()` 逐块解码，内存恒定。symphonia 锁 **0.5**（0.6 要 Rust 1.85，会破本项目声明的 1.78）。
+- **`lib.rs` 只放命令层**；新逻辑先找对应模块（`record.rs` / `engine.rs` / `asr.rs` / `audio.rs` / `decode.rs` / `models.rs` / `output.rs` / `settings.rs` / `log.rs` / `menu.rs`）。
+- **`record.rs` 不认识 Tauri** —— 结果走 `emit` 回调，`AppHandle` 不进 `record.rs`。
+- **经典脚本 `i18n.js` / `select.js` 不能被 import、不能加 `async`、不能写成 `type="module"`** —— 违反会让界面直接挂。
+- **Rust 单元测试不进源文件**：放同目录子文件夹（`src/asr.rs` 里写 `#[cfg(test)] mod tests;`，实现放 `src/asr/tests.rs`），`cargo test --lib` 照样跑得到；`src-tauri/tests/` 是集成测试，只碰得到 `pub` 项。
+- **改命令名、参数名、`Status` 字段、前端 import 图、文案、拼句规则** → 对应门禁必跑（下面那张表）。
 
-### 事件契约
+## ⚡ 关键不变式（改代码前对一眼，细节在专题文档）
 
-- **事件名只出现在 `src/events.js`**：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`。改名字要同步前端。
-- **会话 ID**：录音/文件都先 `reserve_session`，启动/文件命令携带 `sessionId`，分段、partial、采集错误带同一个 ID；前端只接收当前会话，超时同时置 discard 阻止旧线程继续发射。
-- **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal, sessionId? }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续）。致命 `record.micError` 由前端停止录音并保存非空部分结果；用户主动 Esc 才走取消并清空，其他致命错误仍取消。
-- **停止时的采集故障走 `Transcript.warning`**：`finish_recording` 先让识别线程收尾、保住非空转写，再由 `stop_recording` 把 `record.micError` 写进 `Transcript.warning`；正常转写不带这个字段（`skip_serializing_if` 保证载荷不变）。前端据此提示「麦克风发生异常」而不是「完成」，也不丢结果。
-- **事件载荷是增量的**：`stream:segment` 只带新句子，`stream:partial` 只带中间结果。累计全文在长时间会话里是 O(n²) 的传输与重绘。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）—— `npm run check:join` 守着这条。
-- **计时器只有一个写者**（`els.timer`）：前端 `recorder.js` 的 `startTimer` 用 `state.startedAt` 起算，**后端不再报 elapsed**（`audio:level` 载荷里没有这个字段）。两个时钟的原点差几毫秒（后端从采集线程起算，前端从命令返回起算）—— 显示值会在两个数之间来回跳，看着像秒数在退。
-- **结果框的实时追加不能夺走用户的光标**：整值写（`el.value = …`）会把光标推到末尾、还清空撤销栈。`result.js` 的 `writeResultText` 分两种：后缀扩展走 `execCommand('insertText')` 增量插入（插完还原选区），其余情况整值写但把光标放回原位。守卫是 UI 断言「实时追加后光标还在原处」。
-- **云端连接列表重绘不能弄丢焦点**：行按 id 复用（`status.js` 的 `cloudRows`），只改内容不换节点；`syncRowOrder` 只在顺序真变了时才动节点（移动节点会让落在里面的焦点丢失）；行内的名称 / 明细是不可聚焦的 `div`，**mousedown 的默认行为会把焦点移走** —— `app.js` 拦下它。
-- **拖拽用 Tauri 的 `onDragDropEvent`**：Tauri v2 默认拦截系统拖放，HTML5 `drop` 事件在真应用里不触发。`tauri.conf.json` 的 `dragDropEnabled` 必须保持 `true` —— 关掉它 wry 就不装拖放 handler，`onDragDropEvent` 永远不触发，拖拽转写直接变成死代码（而且没有 HTML5 兜底）。
-- **模型下载是两条独立的线**（可以同时下）：各自有 `downloading` / `cancel_download` 标志（`engine.rs` 的 `AppState` 里 `downloading_streaming` / `cancel_download_streaming`）。共用一个标志的话，整段在下载时点流式下载会直接报 busy 失败。
-  - 进度事件是同一个名字（`model:progress`），载荷里带 `kind`（`"offline"` / `"streaming"`，由 `lib.rs` 的 `EventSink` 塞进去）—— **前端必须按 kind 分流**，别看「当前是不是在下载」那种状态，否则两个面板会互相显示对方的进度（看起来就像流式在重复下载整段模型）。
-  - `cancel_download` 命令带 `kind` 参数，指明取消哪一个。
+- **缺口与时间轴**：丢掉音频占真实录音时间；同一时刻**缺口排在句子前面**；流式句子起点过 `Timeline::advance_dropped()`（起点上的缺口要移、终点上的不移）→ [`docs/ASR.md`](docs/ASR.md)
+- **整段**：切分阈值 **90 秒**；VAD 缓冲 **60 秒**；短句合并 **< 3 秒**、间隔 **> 2 秒**不合并 → [`docs/ASR.md`](docs/ASR.md)
+- **流式**：分片恒 **200 ms / 3200 样本**且只在 `is_ready()` 为真时 `decode()`；收尾补 **300 ms** 静音；文本从 token 列表重建，不用 sherpa 的 `text` → [`docs/ASR.md`](docs/ASR.md)
+- **热词只能用于流式**（SenseVoice 上给热词或 beam 会 `_Exit(-1)`）；按流式模型 **1426 字**单字词表过滤 → [`docs/ASR.md`](docs/ASR.md)
+- **VAD 共用参数只允许 `max_speech_duration` 不同**：整段 **30 秒**、流式 **20 秒**，**不要统一** → [`docs/ASR.md`](docs/ASR.md)
+- **两个槽一起登记**（采集器 + 会话，锁序 采集器 → 会话）→ [`docs/BACKEND.md`](docs/BACKEND.md)
+- **引擎按身份缓存**：整段 `(模型目录, language, itn)`、流式 `hotwords`；装引擎要**锁内读设置** → [`docs/BACKEND.md`](docs/BACKEND.md)
+- **拼句规则前后端必须一致**（中日韩之间直接连，其余加空格）→ [`docs/BACKEND.md`](docs/BACKEND.md)
+- **事件载荷是增量的**；会话 ID 贯穿分段 / partial / 采集错误 → [`docs/BACKEND.md`](docs/BACKEND.md)
+- **采集缓冲是消费式的**（内存恒定）；电平表走独立 `LevelRing`；安全阀 **60 秒** → [`docs/BACKEND.md`](docs/BACKEND.md)
+- **换模型必须同时改 bytes 和 sha256**；下载镜像优先 → [`docs/BACKEND.md`](docs/BACKEND.md)
+- **macOS 不开 `transparent: true`、不用 Liquid Glass**；四个 ACL 权限缺一不可（`set-theme` / `set-background-color` / `set-title` / `start-dragging`）→ [`docs/FRONTEND.md`](docs/FRONTEND.md)
+- **云端是显式 opt-in**：音频会上传，本地两条路径的行为**一个字都不许改**；凭据只存 settings，不进日志、不回传前端 → [`docs/CLOUD.md`](docs/CLOUD.md)
+- **句子时间以本地 16 kHz 时钟为准**（provider 时间戳不覆盖本地轴）→ [`docs/CLOUD.md`](docs/CLOUD.md)
 
-### 落盘与目录
+## 🛠️ 门禁与验证
 
-- **转写结果的默认输出目录用 ASCII**（`settings::default_output_dir` → `~/Documents/VoiceNotes`）：中文目录名在终端、脚本、跨平台工具里处处要转义。旧版的中文目录「语音转文字」由 `settings::migrate_output_dir()` 在启动时一次性改名（只在新目录不存在时才搬，不覆盖已有数据）。
-- **打开文件夹用自己的 `open_output_dir` 命令，不用 opener 插件**：插件的 `opener:allow-open-path` 权限是「without any pre-configured scope」—— 不配 scope 的话任何路径都被拒（报 "Not allowed to open path"）；而保存目录是用户可改的（`settings.output_dir`），静态 scope 盖不全。后端自己解析出真实路径再 `open`/`explorer`/`xdg-open` 更省事（应用自己的命令不需要 ACL 权限，`__allow_command` 直接放行）。
+```bash
+npm install
+npm run dev            # 开发模式
+npm run build          # 打包（→ src-tauri/target/release/bundle/）
+```
 
-### 日志
+| 命令 | 守什么 | 什么时候必跑 |
+| --- | --- | --- |
+| `npm run check` | 全部门禁：i18n → 依赖图 → 拼句规则 → 契约 → 打包配置 → async 阻塞 → clippy（`-D warnings`）→ `cargo test --lib` | 提交前 |
+| `npm run check:i18n` | 字典对齐 + 后端错误码 + 裸字符串错误 + 经典脚本 | 改了文案 |
+| `npm run check:deps` | 前端 import 图的单向性 | 改了前端依赖 |
+| `npm run check:join` | 前后端拼句规则一致 | 改了 `joinText()` / `join_segments()` |
+| `npm run check:contract` | 前后端命令名与载荷字段一致 | 改了命令名 / 参数名 / `Status` |
+| `npm run check:bundle` | ad-hoc 签名、麦克风 entitlement、macOS 专属代码的 cfg | 改了打包或原生层配置 |
+| `npm run check:async` | async 路径上的阻塞锁与阻塞构造器 | 改了引擎加载 / 会话构造 / 新增 async 命令 |
+| `npm run check:ui` | 界面检查（真实 WebKit + 假 `__TAURI__`） | 改了前端 |
+| `npm run shots` | 重出 README 截图 | 改了界面 |
 
-**逐句都要记日志**：整段录音记 `识别出一句：起 → 止，N 字`；流式（`record.rs` 的 `run_streaming_core`）记 `流式识别出一句` / `流式收尾识别出一句`，文件转写（`lib.rs` 的 `transcribe_file`）记 `文件识别出一句` —— 只记边界和字数、不记内容，配合总时长就能算出哪一段没被覆盖。**缺口占位符不算句子**（那是「丢了音频」的标记，不是识别结果）。
+各条门禁的详细版见 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md)「单元测试」；Rust 侧测试与探针清单见 [`docs/BACKEND.md`](docs/BACKEND.md)，识别侧探针见 [`docs/ASR.md`](docs/ASR.md)。
 
-**日志一直开着，不需要用户配置**：`log.rs`（`log::info` / `warn` / `error`）写到系统标准日志目录 —— macOS `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，Windows `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log`；超 1 MB 轮转一次保留 `.1`，同时镜像 stderr。没有开关、没有设置页 —— 用户反馈问题直接把这个文件发过来。前端那边用 `client_log` 命令写进同一个文件（`src/tauri.js` 的 `logEvent()`），这样一份文件就是完整的一份记录。
-
-### 整段模式
-
-- `OfflineSession` 用 VAD 切句、逐句 `Engine::recognize()`，边录边出字。
-- **VAD 缓冲给 60 秒**（`VoiceActivityDetector::create(&vad, 60.0)`，在 `asr.rs` 的 `OfflineSession::new`）。sherpa 的 `max_speech_duration` 不是硬切，它会把 VAD 参数调严（min_silence 0.5→0.1、threshold 0.5→0.9 逼它找静音），连续说话时找不到，句子能到 1 分钟以上。给 32 秒会触发 CircularBuffer 扩容（Overflow 警告 + 整段拷贝）。
-- **默认整句一次识别**（最准，`asr.rs` 的 `MAX_SINGLE_SHOT_SECONDS` / `merge_transcripts`）。SenseVoice 的「30 秒上限」实测不是硬约束。**切分阈值是 90 秒**（`MAX_SINGLE_SHOT_SECONDS`），不是官方的 30 秒 —— 只有超过 90 秒才切 30 秒窗口 + 2 秒重叠（`merge_transcripts` 合并），防编码器注意力平方级吃显存。提前切反而更差，而且会把边界上的词劈开。
-- **VAD 会切掉开头第一个字**：音频开头直接是语音（没前导静音，比如 TTS、剪过的文件）时 sherpa VAD 的内部 padding 只有 ≈314 ms（「今天下午」→「天下午」）。`asr.rs` 的 `should_pre_roll` 只在「第一段 + 起点 < 0.6 s + 段前 RMS > 段 RMS × 0.3」时把起点回扩 0.4 s。回扩保持**带门控** —— 无门控回扩会把开头噪声当语音（真人样本多出「您好」）。
-- **ITN 自带标点**（ITN 开关在 `engine.rs` 的 `Engine::new`）：开 ITN 的 SenseVoice 自己就输出标点（关 ITN 才是纯文本）。标点模型只用于流式，叠在整段上会变成「。。」。
-- **短句合并**（`asr.rs` 的 `SegmentMerger`）：VAD 切出来的句子短于 3 秒（`MERGE_MIN_SECONDS`）不立刻定稿，等下一句来了**在音频层**合成一句再识别 —— 短句单独送 SenseVoice 时上下文太少，容易把词认错。两段之间隔超过 2 秒（`MERGE_MAX_GAP_SECONDS`）就不合并，否则「说完停顿十秒再开口」会被连成一句。**录音和文件转写两条生产路径都走 `OfflineSession`**，所以行为一致；`Engine::transcribe`（只给测试/探针用）也接了同一个合并器，否则两边结果对不上。
-- **VAD 参数整段和流式必须一致**：两边都走 `engine.rs` 的同一个 `vad_config()` 构造（`threshold` / `min_silence_duration` / `min_speech_duration` / `window_size` 等共有参数只写一份，改一边忘了另一边 → 同一段音频在两个模式里切出不同数量的句子）。**唯一允许不同的是 `max_speech_duration`**：整段 30 秒（用来切句）、流式 20 秒（门控的耐心上限）—— 两条路径用它的地方不同，**不要统一**。`engine/tests.rs` 的 `两模式_vad_参数一致` 守着这条。
-
-### 流式模式
-
-- **分片恒为 200 ms（3200 样本），且只在 `is_ready()` 为真时 `decode()`**（`asr.rs` 的 `StreamingSession`）。改小分片或无条件 decode 都会让 sherpa-onnx 特征缓冲越界直接 abort（`features.cc GetFrames`）。`start_streaming_recording` 先 `ensure_streaming_engine` 再起采集（`lib.rs`）。
-- **收尾补 300 ms 静音**（`TAIL_SILENCE_SAMPLES`，在 `asr.rs`）：解码器需要尾部上下文才吐出最后一个字，不补就丢句尾（「产品评审会」→「产品评审」）。补的静音不计入时长。
-- **VAD 门控**（在 `record.rs` 的 `run_streaming_core`）：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字）；起音前留 0.4 s 预录避免切字头。
-- 流式模型是独立的一组 assets（`models.rs` 的 `STREAM_*`：`streaming-zipformer-zh-int8-2025-06-30` + `silero_vad.onnx`），只覆盖中文；选粤/日/韩时前端自动切回整段。**流式的 `silero_vad.onnx` 与整段的是同一个 v5 文件**（`STREAM_VAD` 和 `VAD` 指向同一 commit 下的 `silero_vad_v5.onnx`）—— 两种模式的切句边界要一致。
-- **流式结果就是最终结果**（不要用 SenseVoice 覆盖它，这个功能已删）：实测流式明显更准，而且覆盖要保留全部音频，和「不限时长、内存恒定」直接冲突。
-- **流式文本要从 token 列表重建，别用 sherpa 的 `text` 字段**（`asr.rs` 的 `text_from_tokens`）：流式模型词表只有 1426 个汉字，表外的字（番、茄、腩、苹、莓、酪……）只能拆成**字节 token** `<0xE7><0x95><0xAA>` 拼；sherpa 的符号表把 `<0xE7>` 还原成**裸字节**放进 `text`（`symbol-table.cc` 的 `is_bpe_with_byte_fallback_` 分支），切分点落在半个字上时 `text` 就是非法 UTF-8，sherpa 自己的 `Utf8ToUtf32()` 会把它**固化成 U+FFFD** —— 界面上就是「�」。**token 列表是无损的**：从它重建，末尾没解完的半个字先扣住、等下一帧补齐。`clean()` 里另有兜底（丢掉 U+FFFD 并记 WARN）。回归测试 `streaming_smoke::keeps_out_of_vocab_chars_intact` + fixture `tests/fixtures/zh-oov.wav`（macOS TTS 造的「番茄牛腩。苹果派要苹果。草莓奶酪。」）。**整段模式没这个问题** —— SenseVoice 的词表没有字节 token。
-- **术语表（热词）**（`settings.rs` 清洗，`engine.rs` 的 `StreamingEngine::new` 用它）：`settings.hotwords`（≤ 100 条、单条 ≤ 32 字，`settings::clean_hotwords` 清洗）。非空时 `StreamingEngine` 用 `modified_beam_search` + `config.hotwords_buf`（短音频约慢 6%），为空保持 greedy。**只能用在流式** —— SenseVoice 上给热词或 beam 会 `_Exit(-1)` 杀进程（已复现）。改词表会清空流式引擎，下次录音重载 162 MB（流式这一组 assets，界面按 1024 进制显示）。设置页「填入示例」用的是 `src-tauri/assets/hotwords.txt`。
-  - **热词要按模型的词表过滤**（`engine.rs` 的 `streaming_vocab_chars` / `split_hotwords_by_vocab`）：流式模型是 cjkchar **单字**词表（1426 字），sherpa 的 `EncodeHotwords` **逐字**查表 —— 任何一个字不在表里，**整条热词**就被跳过（只往 stderr 打一句 `Cannot find ID for token`，界面上看不出为什么没生效）。喂给 sherpa 之前先剔掉含表外字的条目，并记 WARN 列出是哪几条；`Status.hotwordsIgnored` 把这个数给界面，保存后提示「其中 N 个包含模型词表之外的字，不会生效」。**读不到词表时全部放行** —— 别因为词表读不出来就把用户的术语表清空。
-- 标点模型（`PUNCT`，CT-Transformer zh-en，281 MB，`engine.rs` 的 `PunctuationEngine`）独立放在 `models/punct/`，默认关闭；开启后 `StreamEmitter` 在每句定稿时调 `PunctuationEngine::apply`，实时中间结果不加标点。模型缺失/加载失败时静默降级，不阻断录音。
-
-### 云端模式
-
-第三个引擎（`mode = "cloud"`），**显式 opt-in**：音频会上传，默认仍走本地；本地两条路径的行为一个字都不许改。
-
-- **provider 可插拔**：`CloudProvider` trait（`src-tauri/src/asr/cloud.rs`）只管协议 —— 建连、喂音频、提交、收尾。协议差异（帧格式、鉴权、partial 语义、术语表格式）全部关在 provider 内部：`realtime.rs`（OpenAI Realtime，JSON 帧）、`volcengine.rs`（火山 / 豆包，自研二进制帧）、`aliyun.rs`（阿里云百炼 Qwen-Audio，JSON 控制帧 + 裸二进制音频帧）。
-  **加一家的实际清单**（不只是「加个文件」）：provider 文件 + `provider_capabilities` 表项 + `create_provider` 分支 + `settings::CLOUD_PROVIDERS` + 前端 `cloudProviderItems()` 与 locale 文案 + 字段可见性条件 + 协议层单测 + 界面断言。
-- **配置形态是「连接列表」**：一条 = provider + 地址 + 密钥 + 模型/资源标识 + 备注，**绑成一套**（换 provider 换的是整套）。`Status.cloudProfiles` 回传列表，**凭据只有掩码**（`settings::mask_secret`，头尾各露 `min(4, 长度 / 4)` 个字符，露出数不超过原文一半；官方长 key 就是头 4 + 尾 4）；`cloudActiveProfile` 指向**正在使用**的那条 —— 转写与 `create_provider` 都读它。
-  - **切 provider 不再清空别人的配置**（旧行为是切一下就把地址/密钥/模型全清掉）—— 每家各是一条独立连接。
-  - **「模型」与「资源标识」合并成一个字段**，按 provider 解释：Realtime 与阿里是模型名，火山是 `X-Api-Resource-Id`。界面**给候选项**（datalist）：阿里模型另有后端白名单（填错立刻报 `cloud.unsupportedModel`），火山的资源标识**仍可手打**（有些中转服务用自定义标识）—— 填成模型 1.0 的 id 会被**服务端**在握手时拒掉（403），那是火山侧的规则，本地拦不住；Realtime 的模型官方还有别的，保持可手打。
-  - **凭据能显式清除**：凭据明文不回传 → 界面没法「读出来再改」。清空走编辑区的「清除凭据」（`clear_cloud_profile_key` 命令，**只动凭据**，不连带提交编辑区里其它还没保存的字段）；保存时传空串也是「清空」，但界面**不能**用空串表达 —— 空串与「没改」在前端分不开。
-  - **删连接要二次确认**：凭据明文永不回传 → 删掉就找不回来（`confirmDialog`）。
-  - **列表行的三个位置各有各的语义**：状态点（`dotIcon`）只是**指示**（实心 = 使用中）SHALL NOT 是控件；「设为使用中」绑在**整行**上（点空白处也行），靠事件委托取**最近**的 `[data-action]` —— 点在编辑/删除上就是那两个动作，不会顺带切换使用中；行尾动作图标 hover 这行才显形（使用中的那行一直显），图标点击区 32px。
-  - **不做旧格式迁移**：旧 `settings.json` 的 5 个平铺云端字段被忽略（用户重新填一遍）—— 两套真值来源迟早不一致。
-  - **换 provider 时凭据不跨家沿用**：**已有连接的服务商不可更改** —— 界面把下拉锁死，换服务商只能删除后重新添加（一条连接 = 一整套配置）。后端仍留兜底：`upsert_cloud_profile` 发现 provider 变了且 `api_key == None` → 清空凭据（防别的调用方绕过去；否则会把 A 家的 key 发给 B 家的端点，`base_url` 还可自定义）。**`None` = 「不改」的语义不变** —— 只改备注、密钥框留空时凭据照旧保留。
-- **能力声明**：`Capabilities`（句边界方式 / 是否需要本地 VAD / 中间结果语义 / 是否支持术语表 / 上传采样率）由 provider 自报，按 id 静态查的表（`provider_capabilities`）与实例**同源**（表项就是实现自报的那个常量，别手写第二份）。合法组合只有两种：客户端提交 + 需要本地 VAD；服务端断句 + 不需要本地 VAD。**「缺 VAD」不是「改用服务端断句」** —— 那是另一个能力，混起来会让客户端提交族静默退化。
-- **中间结果统一为「当前未定稿句的累计串」**：各家协议形态不同，在 provider 内部归一，上层只认这一种。归一器按句标识分桶；**没有句标识的协议（服务端断句族）走单桶**，不支持跨句交错。
-
-  | 协议形态 | 归一档 | 已知实例 |
-  | --- | --- | --- |
-  | 增量拼接（每次追加一段） | `Delta` | OpenAI Realtime 的 `.delta`、商汤 SenseAudio 的 `.delta` |
-  | 确认前缀 + 草稿（整体替换成「确认前缀 + 草稿」） | `Preview` | 火山（**确认前缀为空、整句就是草稿**）、阿里 `qwen-audio-3.1-asr-flash-streaming`（`sentence.text` + `stash`）、腾讯 `voice_text_str`、百度 `MID_TEXT` |
-  | 区间替换（改写已识别片段的某一段） | `Range` | 讯飞 IAT 的 `pgs=rpl` + `rg=[start,end]` |
-
-  本仓库接了**三家**：OpenAI Realtime、火山、阿里；其余是协议形态的调研实例。
-  **火山与阿里不走归一器**（`partial.rs`）—— 它们的映射器（`map_response` / `AliyunMapper`）直接产出 `CloudEvent::Partial`；归一器目前**只被 Realtime 自建使用**。
-  三家的形态都要有守卫：声明的 `partial_semantics` 必须与协议实际形态一致，且上抛的中间结果必须是**当前句的累计文本**（整句替换，不追加）—— 见 `docs/REVIEW-CHECKLIST.md` 的 RC-K1 / RC-K2。
-- **句子时间以本地 16 kHz 时钟为准**：provider 给的时间戳只作可选增强，**不覆盖本地轴**。区间按 item_id 绑定（`CommitAck` / `Final{item_id}`）—— 服务端可能乱序返回，按到达顺序配对会整体错位一格。
-  - **已知取舍（2026-11-17 单独评估过，暂不修）**：服务端断句族在 `finish()` 之后一次性 drain 到多条 final 时，**第一条**占用收尾那段区间，第 2 条起退化为零时长（`commit_at` 已把游标推到 `fed_end`）。触发要「**两条 final 之间没有新音频喂入**」—— 最常见的是收尾时服务端一次性 flush 多句（同一个 drain 批次）；客户端提交族**协议正常时不可达**（每次 commit 登记一段区间、final 与 commit 一一对应；provider 多回一条 final 才会退化）。
-    - **今天没有用户可见影响**：结果框不显示逐句时间、导出是纯文本（`export.js`）、落盘不存区间；顺序不乱（按 `start` 稳定排序 + 到达顺序 = 句子顺序）。RC-K4 的守卫守的是**顺序**，不是区间准确性。
-    - **什么时候才修**：要导出带时间轴的格式（SRT / VTT）、要在界面显示逐句时间、或要按句跳转 —— 任一成立才动手。届时**选 provider 时间戳**（火山 `utterances[].start_time/end_time`、阿里 `sentence.begin_time/end_time`；**Realtime 没有**），**不选**「本地平分剩余区间」（那条的边界仍是编造的）。评估全文见 OpenSpec change `cloud-server-endpoint-spans`。
-    - **实测**（2026-11-17，两家真机，fixture `zh.wav`：5.592 秒，真实语音 0.72~5.10 s，尾部 0.49 s 静音）：
-
-      | 场景 | 服务端 `begin` / `end` | 本地句子区间 | 终点差 |
-      | --- | --- | --- | --- |
-      | 火山 · 原音频 | 572 / 5592 ms | (0, 5.592) | 0 |
-      | 火山 · 句尾补 1.5 s 静音 | 572 / 5812 ms | (0, **7.092**) | **1.28 s** |
-      | 阿里 · 原音频 | 800 / 5580 ms | (0, 5.592) | 12 ms |
-      | 阿里 · 句尾补 1.5 s 静音 | 800 / 5380 ms | (0, **7.092**) | **1.71 s** |
-
-      （四种情形各跑 **3 轮，12 组数字逐位一致** —— 可复现，不是抖动。）
-
-      → **两家的句级时间戳在真机上确实存在**（火山是二进制帧里的 JSON `utterances[].start_time/end_time`，阿里是 `sentence.begin_time/end_time`）；**偏差方向是「本地轴偏长」** —— 两家的 `end` 都落在**语音末点（~5100 ms）与音频末点（7092 ms）之间**（火山 5812 / 阿里 5380），而本地轴把**尾巴静音整段算进句子**、直接顶到 7092。两家对同一起音点的 `begin` 差 ~230 ms（火山 572 / 阿里 800），**互相校准不了**。阿里补静音后 `end` 反而变小（5380 < 5580）—— **机制未查**，别当规律用。**样本只有四组、同一个单句 fixture** —— 真要做之前必须重测。
-- **结果框里的实时句子按本地时间轴呈现**：排序键只有 `start`，同一 `start` 时**缺口标记在前**（与「缺口标记」节那条规则**文档口径同源** —— 前后端各一份实现，`check:join` 不比对它），其余按到达顺序。后端最终转写本来就按 `start` 排序，前端要跟上 —— 否则云端丢包时缺口段先于它所属的句子到达，界面顺序会和最终结果相反。用户手动改过结果框之后一律**追加到末尾**，不重排用户文本。
-  本地两条路径**同样受影响**：采集丢包时缺口段也可能先于它所属的句子发出（`record.rs` 的 `run_offline` / `run_streaming_core`），这时界面会重排成「句子 → 缺口」—— 与最终转写一致，是修正不是回归（触发条件罕见：采集队列超 60 秒未消费）。
-- **阿里云百炼走即时热词**：`parameters.vocabulary` 键值对（词 → 权重 1–5，50 是超级热词且 ≤50 个），**请求级直传、最多 2000 条**，不需要预建词表。它比火山的 `corpus.context`（100 条、无权重）更强 —— 术语表不是各家都一个水平。
-- **阿里的结果结构是「已确认句子 + 草稿」**：`sentence.text` 是已确认部分，`stash.text` 是还在变的草稿（属于下一句的 `sentence_id`）。实时行文本 = 两者拼接；句结束时用 `sentence.text` 定稿，随后的 `stash` 是下一句的草稿。
-- **阿里的 `sentence_id` 不进 `item_id`**：服务端断句族不产生 `CommitAck` → `by_id` 永远为空，`Final` 会回落 `pending.pop_front()` 再回落本地轴。传不传 `item_id` 行为完全一样。（别写成「`pending` 始终为空」—— `finish()` 会 push 一段未提交区间。）
-- **阿里的模型走白名单**：`qwen-audio-3.1-asr-flash-streaming`（百炼当前首推的实时模型）。协议骨架与通用 ASR 协议相同，但参数与结果结构不同（本模型有 `stash` 草稿、即时热词、方言开关），**白名单之外的模型名一律拒绝**。
-- **服务端断句族的防御性定稿**（阿里最容易回退的一条）：新 `sentence_id` 出现而上一句还没定稿时，**先按最后快照把上一句 emit 成 Final**（判定**只看 id**，与新句有没有文本无关 —— 服务端可能先发「新句 + 空文本 + `sentence_end`」的收尾事件）；
-  - **取舍**：按快照定稿后，那个 id 进了去重表 → 服务端随后对同一 id 的**完整** `sentence_end` 会被早退丢弃 → 定稿文本是快照而不是服务端最终文本。**宁可少几个标点，也不要同一句出两条 Final**（重复句子更糟）—— 见 RC-K11；**已定稿且有内容**的 id，其后续事件**一律忽略**（否则重复/迟到的 `end` 会让会话层产生重复句子，迟到的 `end` 还会 `partial.clear()` 掉新句的实时行）。**空文本的定稿不算「已定稿」** —— 它不占去重键，否则同 id 的后续真实文本会被整段丢弃（2026-11-17 外部复审发现 —— **缺陷随 v1.6.0 发布出去了；修复已随 v1.6.1 发版**）。心跳必须在「新 id」判断**之前**判掉。
-- **断句**：客户端提交族本地门控（静音在本地丢掉、静音时提交）；服务端断句族**不门控**（静音照上传，服务端靠静音判句尾），区间走本地轴兜底（终点偏长是已知取舍）。「末包 / 结束标识」不等于「结果已全回」—— 要等最终响应才收尾。**阿里还要多一条：`sentence_end=true` 只表示句子结束，任务结束以 `task-finished` 为准** —— `finish-task` 之后必须继续收 `result-generated`，发完就关会丢尾部结果；而且残包要在 `finish-task` 之前发出去。
-- **凭据**：只存 settings，**不进日志、不回传前端**（`Status` 里没有 key 明文：凭据只有 `cloud_configured` 布尔；连接列表里只有 `keyMask`）；错误详情里的 key 要脱敏（`sanitize`）。**云端模块的日志只许走 `asr/cloud/logging.rs` 的关口**（`warn` / `info` / `code_detail`）—— 写入前用该 provider 的凭据脱敏；绕过关口会被源码级守卫抓住（`asr::cloud::tests::cloud_logs_go_through_the_redacting_choke_point`：云端模块里出现 `crate::log` 或 `crate::code_detail` 就红 —— **两条路都写日志文件**（`crate::code_detail` 内部就是 `log::error`）却不脱敏，所以云端模块一律用 `logging::code_detail` 先脱敏再委托）。**已知边界**：`eprintln!` 只进 stderr 不进日志文件；脱敏只保证凭据的**精确子串**不出现。（旧行为「切 provider 就清空地址/凭据/模型」已改成连接列表 —— 每家各一条独立连接，切 provider 不清空别人的配置。）
-- **上传丢包要留缺口**：队列满时丢掉的那段音频推进真实录音时间轴并生成 `[[gap:N]]`；**连续丢包并成一条**（逐条上报会刷屏）。provider 要区分「投递了」与「只是攒包」—— 只回一个丢包数不够（`SendOutcome`）。
-- **验证**：协议层单测（帧编解码、结果映射）+ 真服务冒烟（凭据走环境变量，见 HOW_TO_VERIFY）。真 key 不入库、不进日志、不打印。
-
-### 音频采集
-
-- **采集缓冲是消费式的**（`audio.rs`）：`audio::SampleQueue` 的 `take_new()` 取走即释放，内存恒定（录 1 小时和 1 分钟占一样多）。**电平表走独立的 `LevelRing`**（2048 样本）—— 采集缓冲没有历史了，音量表去读它会恒读 0。
-- **安全阀**（`audio.rs`）：未消费采样超过 `MAX_PENDING_SECONDS × 设备实际采样率`（60 秒，采样率不能写死 48k）时丢最旧的，并用 `audio::gap_marker()` 在结果里留可见缺口，不能静默丢。
-- **停止录音时 `Recorder::stop()` 只关流、不取采样**（`audio.rs` 的 `stop`；收尾取样在 `record.rs`）：句尾最后一段要留给识别线程收尾时 `take_new()`。主线程先取走会切掉最后一个字（离线/流式都中招）。
-- **麦克风权限在界面渲染完之后申请**：macOS 是第一次碰输入设备才弹权限框，而「列出输入设备」就会触发。流程：启动 → 界面画完（约 0.9 s）→ `list_input_devices` → 弹框（这一步同时把设备列表填好）。
-- **启动时不列设备**：弹框会打断用户，实测弹框期间窗口是空白的。点麦克风时仍先 `warm_up_mic` 探权限，用户拒绝过要能给出明确报错。
-- **输入设备可选**：`list_input_devices` 列出 cpal 输入设备（默认设备带标记），`set_input_device` 存 settings（None = 系统默认），`audio::start` 按名字挑，挑不到退回默认。下拉框每次展开重新列一次（`select.js` 的 `onBeforeOpen`），中途插拔也能看到。**没有名字的设备直接不列**（`audio::device_entry`）：按名字挑不中它，列出来只会让界面出现一条选不中的项 —— 设备名是身份，不能拿展示文案（本地化回退标签）当身份传给后端。
-- **输入电平自动增益**（`audio::Agc`）：在**重采样之后、VAD 之前**提电平（目标 RMS 0.02 / 增益上限 32× / 软限幅 ±0.99）。电平够就一个样本不动；电平低时能把整段「VAD 判非语音丢掉」的音频救回来（实测 -35 dB：0 字 → 717 字）。三条路径都要接：麦克风整段、麦克风流式（在**门控 VAD** 之前）、文件转写。详见「静默丢音频」。
-- 录音**没有时长上限**。
-
-### 模型与下载
-
-- 模型版本固定：HF commit + sha256 + bytes 写在 `models.rs` 的 `MODEL` / `TOKENS` / `VAD` / `STREAM_*` / `PUNCT` 常量里。**换模型必须同时改 bytes 和 sha256**，否则下载校验失败。
-- **下载走镜像优先**（`[MIRROR, HF]`）：国内直连 huggingface.co 经常连不上，镜像失败再回退官方源。顺序保持镜像优先。
-- **模型目录必须有 `silero_vad.onnx`**：整段分句、文件转写都靠 VAD，`models::resolve()` 会直接跳过没有 VAD 的目录（否则录完只得空结果）。
-- 已存在且大小正确的文件直接跳过下载；`.part` + Range 支持断点续传；下完做 sha256 校验。应用数据目录里的文件按**字节数**判定是否就绪（`app_data_file_ok`，含流式 VAD），所以换 VAD 版本后会自动重下；截断文件不能显示「已就绪」。下载忙碌标志用 `DownloadFlagGuard` 在所有退出路径复位，别在目录创建前裸 `?` 留下永久 busy。
+> **纯文档改动不用跑门禁** —— 改的是 markdown；只有动了 `src/locales/*.js` 才需要 `npm run check:i18n`。
 
 ## 📦 提交与 PR 规范
 
-1. **分离提交**：核心功能改动与文档改动尽量按有意义的逻辑分步提交（后端 / 前端 / 文档分开）。
+1. **分离提交**：后端 / 前端 / 文档分开，按有意义的逻辑分步。
 2. **文档同步**：新增了支持的文件格式、语言、错误码或界面能力时，务必同步 `README.md` 与 `src/locales/*.js`（两种语言都要加）。
-3. **不要提交构建产物**：构建产物（见「核心架构与原则」）已被 gitignore，不要用 `git add -f` 硬塞。
+3. **不要提交构建产物**（已 gitignore），不要 `git add -f` 硬塞。
+4. **提交信息用 Conventional Commits**（`type(scope): subject`）。
 
-## 🚀 版本发布流程与权限声明
+## 🚀 发布红线
 
-- 版本号写在**三处**，发布前**三处都要改**：`package.json` 的 `version`（npm 包）、`src-tauri/tauri.conf.json` 的 `version`（打包产物的版本）、`src-tauri/Cargo.toml` 的 `version`（crate 版本 —— 应用启动日志里 `app.package_info().version` 打的就是它，漏改的话日志里的版本和安装包对不上）。
-- 推 tag（`v*`）触发 CI，同时产出 macOS（dmg）和 Windows（msi/exe），在 Artifacts 下载。
-- **重发同版本 tag 会把 Release 打成 Draft**：删远端 tag（`git push origin :refs/tags/v1.0.0`）之后，GitHub 会把该 Release 退回 draft，重推 tag 也**不会**自动发布 —— 仓库侧栏只剩「Create a new release」，产物其实都在。构建跑完要 `gh release edit v1.0.0 --draft=false` 才真正公开；想连正文一起刷新，就先 `gh release delete v1.0.0 --yes` 再重推 tag，让 workflow 走 `gh release create --generate-notes`。
-- 发布前先用本地 `npm run build` 出的 `.app` 验一遍麦克风权限。
-
-### 打包与发布
-
-- **macOS 必须 ad-hoc 签名**：`tauri.conf.json` 的 `bundle.macOS.signingIdentity` 必须是 `"-"`。不设时 Tauri 不做 codesign，链接器留下的是 `linker-signed`（`Sealed Resources=none`、Info.plist 未绑定），`codesign --verify` 失败；别的 Mac 从 dmg 装完 Gatekeeper 报「已损坏」（不是「未验证开发者」）。签名后仍提示「无法验证开发者」，可右键打开或 `xattr -dr com.apple.quarantine`；要免提示只能 Developer ID + 公证。
-- **打包版必须带麦克风 entitlement**：`src-tauri/Entitlements.plist` 里的 `com.apple.security.device.audio-input`，通过 `bundle.macOS.entitlements` 挂上。缺这条时 tccd 根本不弹授权框 —— 详见「麦克风权限排查」。
-- **打包 `.dmg` 需要能调 `hdiutil`**，受限沙箱里可能只产出 `.app`（`--bundles app` 可跳过 dmg）。
-- Tauri **不能在 macOS 上交叉打 Windows 包**，CI 用 `.github/workflows/build.yml`（windows-latest）出 msi/nsis。
-- Windows 代码侧：cpal 采样格式已覆盖 F32/I16/U16/I32；**没有 hiddenTitle**（macOS 专属），用原生标题栏；`bundle.windows.webviewInstallMode = downloadBootstrapper`。菜单只在 macOS 构建（`#[cfg(target_os = "macos")]`）。
+- 版本号写在**三处**，发布前**三处都要改**：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。
+- **macOS 必须 ad-hoc 签名**（`bundle.macOS.signingIdentity = "-"`）**且必须带麦克风 entitlement**（`src-tauri/Entitlements.plist`）—— 缺任一条的表现见 [`docs/RELEASE.md`](docs/RELEASE.md)。
+- **推 tag（`v*`）触发 CI 出包**；重发同版本 tag 会把 Release 打成 Draft，处置办法见 [`docs/RELEASE.md`](docs/RELEASE.md)。
 
 > ⚠️ **安全与权限声明**
-> ONLY agents acting on behalf of the user of this repository (or the user himself) are allowed to execute this release workflow — 打 tag、改 `bundle.macOS.signingIdentity`、改模型版本常量（会让所有用户重新下载模型）。Normal contributor agents MUST NOT touch or execute the release flow under any circumstances.
+> ONLY agents acting on behalf of the user of this repository (or the user himself) are allowed to execute this release workflow —— 打 tag、改 `bundle.macOS.signingIdentity`、改模型版本常量（会让所有用户重新下载模型）。Normal contributor agents MUST NOT touch or execute the release flow under any circumstances.
 > （仅允许代表用户本人运行的 Agent 或用户本人执行发布流程。普通贡献者 Agent 严禁触碰发布流程，请把版本更新交给维护者。）
 
-## 🔍 排查手册
-
-### 麦克风权限排查
-
-症状统一是「能开始录音、有时长统计，但识别不出东西」，日志里电平峰值全是 `0.00000`（真麦克风静音也有底噪，0.005 这种）。三种真因，按顺序排查。
-
-#### 1. 打包版缺 microphone entitlement
-
-Tauri 打包签名带 hardened runtime（`codesign -dv` 打出 `flags=0x10002(adhoc,runtime)`），**缺 `com.apple.security.device.audio-input` 时 tccd 根本不弹授权框**，直接打 `Policy disallows prompt … access to kTCCServiceMicrophone denied`，录音拿到的是精确零流；系统设置里手动开开关、`tccutil reset Microphone` 都救不回来。
-
-先看系统日志再动手：
-
-```bash
-log show --last 5m --predicate 'subsystem == "com.apple.TCC"' | grep -i voicenotes | grep -i microphone
-```
-
-看到 `entitlement … is missing` 就是这个（补 entitlement 重新打包）；看到 `AUTHREQ_PROMPTING` + `authValue=2` 才是真授权成功。
-
-dev 模式的 `target/debug/voice-notes` 是 linker-signed（无 runtime 标志），不需要这条 entitlement —— 所以「开发时好好的、打包就没声」基本就是它，别去怀疑录音代码。
-
-#### 2. ad-hoc 重新打包 → 授权记录失效
-
-ad-hoc 签名的 designated requirement **就是代码签名哈希本身**（`codesign -d -r- VoiceNotes.app` 打出 `# designated => cdhash H"…"`），macOS 的 TCC 拿它匹配授权记录 —— 重新打包 → cdhash 变 → 记录对不上 → **静默拒绝**。
-
-- 表现：能开始录音、有时长统计，但识别不出东西；**系统设置 → 麦克风里 VoiceNotes 的开关还是「开」**（那条绑的是上一个构建）。开关开着 ≠ 当前构建有权限。
-- 恢复：终端跑 `tccutil reset Microphone com.github.bytes-astra.voicenotes`，再启动应用重新授权。
-- 让授权跨构建存活：给应用一个**稳定的签名身份**（自签名证书即可：`openssl req -x509 ... -addext "extendedKeyUsage=codeSigning"` → PKCS#12 导入钥匙串 → `security set-key-partition-list`；或 Apple Development 证书），`bundle.macOS.signingIdentity` 填它 —— designated requirement 从 `cdhash …` 变成 `certificate leaf = H"…"`，跨构建不变。换签名后第一次仍要允许一次，之后那份授权跟着证书走、跨构建有效。
-
-补上 `audio-input` entitlement 后，`tccutil reset` + 重启就会正常弹框（系统日志 `AUTHREQ_PROMPTING` → `AUTHREQ_RESULT authValue=2`）。
-
-#### 3. 打包没做签名
-
-`signingIdentity` 留空时，打包版不会弹标准授权框，麦克风权限可能要在系统设置里手动勾选；带上 `audio-input` entitlement 的包才会弹。
-
-### 静默丢音频
-
-**症状**：整段模式录了十几分钟，日志里只有零星几句；中间某几分钟**一句都没有**，也没有任何告警 —— 转写结果里那段时间是空白，用户以为是自己没说话。
-
-**机制（2026-10-28 定案）**：**电平太低**，不是「没人声」。sherpa 的 Silero VAD 触发条件是语音概率**连续**高于阈值满 `min_speech_duration`（`sherpa-onnx/csrc/silero-vad-model.cc` 的 `IsSpeech()`）—— 概率一掉回阈值以下，攒的进度立刻清零。低电平录音的概率恰好在阈值附近抖，于是永远触发不了；而 `voice-activity-detector.cc` 的非语音分支只 `buffer_.Pop(...)`，那段音频**静默消失**：日志、转写、界面上零痕迹（不是「采集缓冲溢出」那种 —— 那种有 `[[gap:N]]` 标记和「识别跟不上」的 WARN）。
-
-**解药**：`audio::Agc`（`src-tauri/src/audio.rs`）—— 目标 RMS 0.02、增益上限 32×、软限幅 ±0.99。**电平够就一个样本不动**，只救偏小的。已接进三条路径：麦克风整段（`record.rs`）、麦克风流式（`record.rs`，在门控 VAD **之前**）、文件转写（`decode.rs`）。
-
-**实测**（`mic_probe` 抓的真实房间声，同一段音频人为衰减；生产 `audio::Agc`）：
-
-| 输入电平 | 不处理 | 经过 AGC |
-| --- | --- | --- |
-| 正常（峰值 0.637） | 724 字 | 722 字 |
-| -25 dB | 465 字 | **723 字** |
-| -30 dB | 94 字 | **718 字** |
-| -35 dB | **0 字** | **717 字** |
-
-**两条防线**（`src-tauri/src/asr.rs`）：
-
-- `no_segment_warning()`：**有能量、VAD 也没在攒这一句**、且超过 10 秒没切出句子 → 记一条 WARN。判别条件里的「VAD 正在攒」（`detector.detected()`）是关键 —— 连续说话时 VAD 要等到句尾才切段，那段时间没有句子是正常的，别误报。
-- `recognize_and_emit()`：识别结果为空时记一条 WARN（原来直接 `return`，音频白丢）。
-
-**排查手法**（别凭感觉，先跑探针）：探针命令、质量门禁的阈值与基线见 [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md) —— 改模型 / 换参数 / 加热词之后先跑 `quality_gate`。
-
-`quiet_pipeline_probe` 走**生产的 `record::run_offline` 管线**，对照「不经 AGC」与「经 AGC」两条路：干净人声衰减到 ×0.001 时，不经 AGC 是 **0 字**，经管线是 **113 字**。它守住的是「AGC 还接在 `record.rs` 里」—— 单测只测 `Agc` 自己，有人把它从管线里摘掉，单测照样绿。
-
-`mic_probe` 能抓真实麦克风（和 `audio.rs` 同一套设备协商 + 同一个 `LinearResampler`）落成 WAV，再对比「原样 / 去直流 / AGC」三条路径的 VAD 语音比例与字数 —— 它是唯一能拿用户真实音频说话的探针。`VOICE_NOTES_MIC_FILE` 可以喂已存的 WAV 反复迭代。
-
-**教训**：**量电平的影响，采样点要够低**。`gain_probe` 用的是孤立人声，衰减到 **-56.5 dBFS（×0.01）**仍认出 99.2%，看起来「电平无关」—— **那时的电平还没低到阈值以下**：干净人声要衰减到 **×0.001（RMS 0.000149）**才会崩（0 字），真实房间声落在崩溃区（RMS 0.0007）正好对上线上症状。`quiet_pipeline_probe` 用 ×0.001 就是为了**确定性地**复现这件事。⇒ 探针扫电平时要扫到**明显失效**为止，否则「没测出问题」会被误读成「不存在这个问题」。
-
-⇒ 排查这类问题先看两样东西：**保存下来的转写原文**（内容是不是环境里的声音）和**真实音频的电平**（`mic_probe` 抓一段，峰值 / RMS 是多少）。
-
-### 症状索引
+## 🔍 症状索引
 
 | 现象 | 去哪 |
 | --- | --- |
-| 打包版能录没字 / 没有授权弹窗 / 录音被判空 | [麦克风权限排查](#麦克风权限排查) |
-| 整段模式某段录音整段没转写、日志里一句都没有 | [静默丢音频](#静默丢音频) |
-| 切主题后材质不变 / 重绘闪白 / 窗口拖不动 / 进全屏跳动 | [macOS 原生层](#macos-原生层) |
-| 切语言后部分文案不更新 | [i18n 与文案](#i18n-与文案) |
-| 界面提示直接露出后端细节 | [文本分层](#文本分层) |
-| 新增错误码界面显示 unknown | [错误码](#错误码) |
-| 首次编译 sherpa-onnx-sys 失败 | [首次编译](#首次编译) |
-| 拖文件进窗口没反应 / 两个模型同时下载互相报 busy | [事件契约](#事件契约) |
-| 整段模式开头丢第一个字 | [整段模式](#整段模式) |
-| 结果缺句尾最后一个字 | [流式模式](#流式模式) |
-| 转写结果里出现「�」（乱码） | [流式模式](#流式模式) —— 词表外的字走字节 token，别用 sherpa 的 `text` |
-| 长录音后面少字 | [音频采集](#音频采集) |
-| 打开保存目录被拒 | [落盘与目录](#落盘与目录) |
+| 打包版能录没字 / 没有授权弹窗 / 录音被判空 | [麦克风权限排查](docs/TROUBLESHOOTING.md#麦克风权限排查) |
+| 整段模式某段录音整段没转写、日志里一句都没有 | [静默丢音频](docs/TROUBLESHOOTING.md#静默丢音频) |
+| 切主题后材质不变 / 重绘闪白 / 窗口拖不动 / 进全屏跳动 | [macOS 原生层](docs/FRONTEND.md#macos-原生层) |
+| 切语言后部分文案不更新 | [i18n 与文案](docs/FRONTEND.md#i18n-与文案) |
+| 界面提示直接露出后端细节 | [文本分层](docs/FRONTEND.md#文本分层) |
+| 新增错误码界面显示 unknown | [错误码](docs/FRONTEND.md#错误码) |
+| 首次编译 sherpa-onnx-sys 失败 | [首次编译](docs/RELEASE.md#首次编译) |
+| 拖文件进窗口没反应 / 两个模型同时下载互相报 busy | [事件契约](docs/BACKEND.md#事件契约) |
+| 整段模式开头丢第一个字 | [整段模式](docs/ASR.md#整段模式) |
+| 结果缺句尾最后一个字 | [流式模式](docs/ASR.md#流式模式) |
+| 转写结果里出现「�」（乱码） | [流式模式](docs/ASR.md#流式模式) —— 词表外的字走字节 token，别用 sherpa 的 `text` |
+| 长录音后面少字 | [音频采集](docs/BACKEND.md#音频采集) |
+| 打开保存目录被拒 | [落盘与目录](docs/BACKEND.md#落盘与目录) |

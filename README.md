@@ -155,6 +155,7 @@ npm run check:contract # 前后端命令名与载荷字段一致
 npm run check:bundle   # 打包与原生层配置
 npm run check:async    # async 路径上的阻塞锁
 npm run check:ui       # 界面检查：真实 WebKit + 假 __TAURI__
+npm run shots          # 重出 README 截图（改了界面后跑）
 ```
 
 首次编译 `sherpa-onnx-sys` 会从 GitHub Releases 下载对应平台的**预编译静态库**（onnxruntime 等），之后走缓存。
@@ -172,6 +173,7 @@ npm run check:ui       # 界面检查：真实 WebKit + 假 __TAURI__
 - **整段模式的结果自带标点**，不需要再开标点模型。标点模型只用于流式模式，两个一起用会出现「。。」这样的重复标点。
 - **流式模式停止后会多等一小段静音再输出**，否则句子的最后一个字会丢。这段静音不计入录音时长。
 - **云端模式依赖第三方服务**：可用性、计费、支持的语种都取决于那个服务；当前实现了三家 —— OpenAI Realtime、火山（豆包）、阿里云百炼（Qwen-Audio）。云端模式**没有质量门禁**，也没有实测 CER 基线 —— 本地模式才有。
+- **录音没字（能录音、有时长、就是识别不出来）**：多半是麦克风权限或音频电平，见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) —— 打包版缺 entitlement、重新打包后授权记录失效都会表现成这样。
 - 说话人分离、时间戳导出没做。
 
 [^hotwords]: SenseVoice 上带 beam search 或热词会直接终止识别进程（已复现），不是配置写错的问题。
@@ -203,6 +205,10 @@ npm run check:ui       # 界面检查：真实 WebKit + 假 __TAURI__
 **如果你想贡献代码或新增特性：**
 
 请阅读 [AGENTS.md](AGENTS.md) —— 工程约定、模块边界、参数不变式、提交与 PR 的要求。
+
+**如果你想做复审 / 找已知缺陷：**
+
+请阅读 [`docs/REVIEW-CHECKLIST.md`](docs/REVIEW-CHECKLIST.md) —— 复审的固定作业面（每轮从「守卫薄弱 / 未审」的条目开始，别另起清单）。
 
 **如果你想改质量验证流程，或想知道当前的实测准确率：**
 
