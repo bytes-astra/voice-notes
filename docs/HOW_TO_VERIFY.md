@@ -101,7 +101,7 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
 
 实测（2026-11-03）：整段 300s 826.7 MB → 1800s 815.5 MB（**降了** 11 MB，分配器把内存还给系统）、
 流式 698.4 MB → 698.4 MB。开头从 550 MB 跳到 830 MB 是**一次性预热**（模型 + ONNX arena + VAD 缓冲），
-不是随时长增长。
+不是随时长增长。**基线数字只写在这里** —— 探针的源码注释不抄一份（抄过一次，已经漂了）。
 
 > **别为了这个探针加 libc**：`getrusage` 的 `ru_maxrss` 更准，但加 dev-dependency 会改
 > `Cargo.lock` → rust-cache 的 key 跟着变 → CI 里的 sherpa-onnx 预编译库要重下，
@@ -200,7 +200,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   `com.apple.security.device.audio-input`）校验产物。
 - `npm run check:async` 查 **async 路径上的阻塞锁**（`scripts/check-async.mjs`）：引擎槽
   （`engine` / `streaming_engine` / `punct_engine`）的**阻塞式** `.lock()` 只能出现在
-  `spawn_blocking` 闭包里。引擎加载要好几秒（239 MB / 161 MB / 294 MB），那把锁会被占住；
+  `spawn_blocking` 闭包里。引擎加载要好几秒（228 MB / 162 MB / 281 MB，与 README 同一口径 —— 界面按 1024 进制显示），那把锁会被占住；
   async 命令在执行器线程上死等它，整个执行器就卡住 —— 表现是「点了没反应，过几秒才动」。
   `try_lock()` 不算（拿不到就往下走加载路径）。采集器槽 / 会话槽**故意不查**：
   那些临界区只有几行，不存在长等待。
