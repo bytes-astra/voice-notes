@@ -34,7 +34,7 @@ ad-hoc 签名的 designated requirement **就是代码签名哈希本身**（`co
 
 ### 3. 打包没做签名
 
-`signingIdentity` 留空时，打包版不会弹标准授权框，麦克风权限可能要在系统设置里手动勾选；带上 `audio-input` entitlement 的包才会弹。签名该怎么做见 AGENTS.md「打包与发布」。
+`signingIdentity` 留空时，打包版不会弹标准授权框，麦克风权限可能要在系统设置里手动勾选；带上 `audio-input` entitlement 的包才会弹。签名该怎么做见 [`RELEASE.md`](RELEASE.md)「打包与发布」。
 
 ## 静默丢音频
 
