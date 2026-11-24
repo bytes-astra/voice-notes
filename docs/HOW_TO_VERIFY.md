@@ -298,4 +298,5 @@ npm run shots        # 重出 README 10 张截图
 
 - 工程约定、模块边界、参数不变式、踩过的坑：[../AGENTS.md](../AGENTS.md)（总索引；专题文档：[FRONTEND.md](FRONTEND.md) / [BACKEND.md](BACKEND.md) / [ASR.md](ASR.md) / [CLOUD.md](CLOUD.md) / [RELEASE.md](RELEASE.md)）
 - 复审的固定作业面（每轮从「⚠️ / ❌」条目开始，别另起清单）：[REVIEW-CHECKLIST.md](REVIEW-CHECKLIST.md)
+- 工程改进待办（门禁缺口、结构简化、中期升级）：[BACKLOG.md](BACKLOG.md)
 - 排查步骤（能录音没字 / 静默丢音频）：[TROUBLESHOOTING.md](TROUBLESHOOTING.md)

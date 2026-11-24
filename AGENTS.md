@@ -17,6 +17,7 @@
 | CI、首次编译、版本发布、打包与签名 | [`docs/RELEASE.md`](docs/RELEASE.md) |
 | 质量探针、基线、界面检查怎么跑 | [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md) |
 | 复审的固定作业面（每轮从「⚠️ 守卫薄弱 / ❌ 未审」的条目开始，**别另起 Focus 清单**） | [`docs/REVIEW-CHECKLIST.md`](docs/REVIEW-CHECKLIST.md) |
+| 工程改进待办（门禁缺口、结构简化、中期升级；与上面的不变量清单分工不同） | [`docs/BACKLOG.md`](docs/BACKLOG.md) |
 | 「能录音、没字」怎么查 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) |
 | 用户可见的功能与安装说明 | [`README.md`](README.md) |
 
