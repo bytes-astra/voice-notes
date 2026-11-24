@@ -5,8 +5,9 @@
 > （审的是「有没有缺陷漏网」），这份是**「现状不够好」**的改进清单（审的是「能不能更好」）。
 > 两份不要合并 —— 前者的条目是「必须守住」，后者的条目是「可以变好」，混在一起会稀释优先级。
 >
-> **当前状态**：8 条待办（第一档 1 条 / 第二档 1 条 / 第三档 6 条），全部**未开始**；
-> 另有 4 条已完成（BL-2 格式门禁、BL-3 录音槽合并、BL-5 云端归一器、BL-12 经典脚本技术债的处置口径，均 2026-11-24）。
+> **当前状态**：7 条待办（第一档 1 条 / 第三档 6 条），全部**未开始**；
+> 另有 5 条已完成（BL-2 格式门禁、BL-3 录音槽合并、BL-4 错误码类型化、BL-5 云端归一器、BL-12 经典脚本技术债的处置口径，均 2026-11-24）。
+> **第二档已清空**（BL-3 / BL-4 / BL-5 全部完成）。
 > 登记于 2026-11-23，来自一次全库分析（未改任何生产代码）。
 
 ## 怎么用
@@ -123,13 +124,30 @@ RC-K25 已经做过一轮对齐（空 key = 不改 / 删活动项落点 / 未知
 **验证**：改完重跑 RC-J1 的五条守卫（`record/tests.rs`）+ `cargo test --lib` 300 条 +
 `npm run check:ui` 239 项。
 
-### BL-4 · 错误码从字符串改成类型 ⬜（**已立项**：OpenSpec change `2026-11-24-error-code-type`，2026-11-24）
+### BL-4 · 错误码从字符串改成类型 ✅ 2026-11-24
 
-> **已立 change，未动代码。** 规模比预想的大：**168 处调用点 / 75 个唯一 key**，
-> 而且**门禁要跟着改** —— `check:i18n` 的后端错误码扫描靠字面量（`code("…")`），
-> 改成枚举后扫不到，**门禁会静默失效**（拼错的 key 就没人拦了）。
-> 新扫描方式见 change 的 design D4：改成扫**枚举定义**，反而更强。
-> 待拍板项（枚举形状 / 比较逻辑的做法）写在 change 的 tasks 0.1–0.2。
+**做完了**：新增 `src-tauri/src/error_code.rs`（`ErrorCode` 枚举 + `code()` / `code_detail()`），
+**79 个变体**，162 处调用点全部改掉。
+- **枚举不是字符串**：`code()` / `code_detail()` 只收 `ErrorCode` → 拼错 key **编译不过**。
+  这正是 BL-4 的动机：`check:i18n` 查得了「key 在不在字典里」，查不了**比较逻辑用错了 key**
+  —— `is_stop_failed` 拼成 `record.stopFaild` 时守卫不红，真机上超时文案换不上。
+- **变体 → key 的映射是显式的 match**（`ErrorCode::key()`，唯一真值源）：
+  `Display` 与 `from_key` 都走它，两份表不会漂。
+- **对外契约不变**：输出仍是 `key` / `key:细节`，前端 `core.js` 一行没改。
+  核对过 HEAD 的 **77 个 key 一个不缺、一个不多**（`error.engineState` /
+  `error.streamEngineState` 是 `install_engine` 的 `lock_error` 参数，
+  字面量在调用点 —— 我第一遍扫描漏了它们）。
+- **比较逻辑改枚举**：`is_stop_failed` / `is_cancelled` 走「字符串反查枚举」，
+  带细节 / 不带细节都认得出（结论不变）。
+- **门禁跟着改**（`check:i18n`）：扫描源从「调用点字面量」改成「**枚举的 key 表**」——
+  错误码是类型了，调用点没有字面量可扫，不改的话这条检查等于失效。
+  `download.cancelled`（内部哨兵，不进字典）**显式豁免**，忘了登记门禁就会红 ——
+  那正是我们要的。
+- **守卫**：新增 5 条（`error_code/tests.rs`）—— key 形状、反查与 `Display` 同表、
+  key 不重复、`ALL_ERROR_CODES` 覆盖每个 key、未知 key 返回 `None`。
+  另补门禁自测 2 条。**mutation 验证**：枚举里的 key 改错 → 门禁红；
+  `is_stop_failed` 改成比错枚举 → 用例红。
+- **验证**：`cargo test --lib` 303 → **308 passed**；`npm run check` 全绿；`npm run check:ui` **239/239**。
 
 **现状**：`crate::code("record.micError")` / `code_detail("record.micError", e)` 返回
 `"record.micError"` / `"record.micError:细节"`，**靠 `:` 分隔文本**再 `split(':')` 判断类型
