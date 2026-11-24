@@ -1,6 +1,6 @@
 //! 探针：**流式**模式下的长录音，看有多少音频没变成文字。
 //!
-//! 直接驱动应用自己的编排函数 `record::run_streaming_core`（不复制逻辑），
+//! 直接驱动应用自己的编排函数 `record::run_local_streaming`（不复制逻辑），
 //! 用一个后台线程模拟麦克风往队列里灌音频。
 //!
 //! 量三件事：
@@ -86,7 +86,7 @@ fn probe_streaming_long_recording() {
         };
 
         let mut segments: Vec<(f32, f32, String)> = Vec::new();
-        let transcript = record::run_streaming_core(
+        let transcript = record::run_local_streaming(
             engine.clone(),
             None,
             queue,

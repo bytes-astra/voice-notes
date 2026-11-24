@@ -6,10 +6,10 @@
 //! 非语音分支只 `buffer_.Pop(...)` → 音频静默消失。
 //!
 //! 单测只测 `audio::Agc` 自己，**守不住「AGC 还接在 `record.rs` 里」** ——
-//! 有人把它删掉，单测照样绿。这个探针走**真实的 `run_offline` 管线**，两条路对照：
+//! 有人把它删掉，单测照样绿。这个探针走**真实的 `run_local_offline` 管线**，两条路对照：
 //!
 //!   * 不经过 AGC（直接喂 `OfflineSession`）→ 低电平下几乎没字
-//!   * 经过生产管线（`run_offline`）→ 低电平下字回来了
+//!   * 经过生产管线（`run_local_offline`）→ 低电平下字回来了
 //!
 //! 运行：
 //!   VOICE_NOTES_MODEL_DIR=... cargo test --test quiet_pipeline_probe -- --nocapture
@@ -41,7 +41,7 @@ fn chars_without_agc(
         .sum()
 }
 
-/// 走生产管线（`record::run_offline`）：返回字数。
+/// 走生产管线（`record::run_local_offline`）：返回字数。
 fn chars_through_pipeline(
     engine: &Arc<Engine>,
     vad: &sherpa_onnx::VadModelConfig,
@@ -53,7 +53,7 @@ fn chars_through_pipeline(
     let discard = Arc::new(AtomicBool::new(false));
     let session =
         voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
-    let transcript = voice_notes_lib::record::run_offline(
+    let transcript = voice_notes_lib::record::run_local_offline(
         session,
         queue,
         16_000,

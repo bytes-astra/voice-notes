@@ -110,7 +110,7 @@ VOICE_NOTES_MODEL_DIR=... VOICE_NOTES_STREAMING_MODEL_DIR=... \
 2026-10-24 实测（176 秒连续语音）：**VAD、整段会话、流式会话、重采样四条路都不丢音频**
 （覆盖 175.6/176.0 秒，误差只有句边界）。**唯一的丢失点是队列上限 60 秒** —— 超了丢**最旧**的
 （`SampleQueue::take_new` 的 `drain(..excess)`）并留缺口标记，日志里打「识别跟不上，丢掉 X 秒音频」。
-识别同步阻塞在消费线程里（`record.rs` 的 `run_offline` → `asr.rs` 的 `drain()`），但 RTF 只有 0.01、
+识别同步阻塞在消费线程里（`record.rs` 的 `run_local_offline` → `asr.rs` 的 `drain()`），但 RTF 只有 0.01、
 实际落后不到 1 秒，**离 60 秒上限差得很远** —— 所以「加 buffer」不是解法。
 
 ### 缺口与时间轴
@@ -138,7 +138,7 @@ VOICE_NOTES_STREAMING_MODEL_DIR="$HOME/Library/Application Support/com.github.by
 两条用例默认标为 `ignored`；上面的 `--ignored` 会强制执行。缺少环境变量或模型文件时直接失败，不会静默 `return`。
 
 - `one_batch_multiple_endpoints_match_realtime_and_final_segments`：把 `zh.wav` 重复 3 次、每次后接 3 秒静音，只调用一次 `StreamingSession::push`；`finish` 前必须已有 3 个 endpoint。
-- `one_capture_batch_matches_realtime_and_final_segments`：相同音频一次放入 `SampleQueue`，走真实 `run_streaming_core`（含 VAD）；首批回调必须已有 3 个 endpoint。
+- `one_capture_batch_matches_realtime_and_final_segments`：相同音频一次放入 `SampleQueue`，走真实 `run_local_streaming`（含 VAD）；首批回调必须已有 3 个 endpoint。
 - 两条都逐段断言 `start < end`、时间单调、各句位于对应音频周期、实时事件与最终 `segments` 的 `text/start/end` 完全相同，并与正常 200ms 喂法逐项对照。
 
 本机实测（2026-11-13）：总时长 25.776s，两条路径与 200ms 对照均得到 `[0.0, 7.0)`、`[9.6, 15.6)`、`[18.2, 24.2)`；两条显式执行结果为 `2 passed; 0 failed; 0 ignored`。这里检查的是后端 `StreamEvent`/回调，不包含 Tauri WebView 事件传输；不把 `segment start` 当成精确的声学起音位置。本次验证未改变模型、参数或生产代码。
@@ -236,7 +236,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
 - **会话层单测**（`src-tauri/src/asr/cloud/tests.rs`）：时间轴按 16 kHz 采样数推进（丢掉的音频同样占录音时间）、f32→i16 的 clamp、final→`Segment` 映射、**provider 给的时间戳不覆盖本地轴**、provider 要 24 kHz 时上传前升采样、**空 final 不抢下一句的区间**（时间戳不错位）、断连保留已定稿句子。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib`。
 - **结果与区间配对**：服务端的 final 可能乱序到达，也可能缺一条（识别失败），会话层按 `item_id` 绑定句子区间（口径见 [`CLOUD.md`](CLOUD.md)「云端模式」）。单测覆盖乱序 final、失败 item 无回执、提交失败后收尾区间合并（`src-tauri/src/asr/cloud/tests.rs` 与 `.../realtime/protocol_tests.rs`）。
 - **协议编解码单测**（`src-tauri/src/asr/cloud/realtime/protocol_tests.rs`）：拿官方的示例帧当输入 —— `conversation.item.input_audio_transcription.delta`（字段 `delta`）与 `.completed`（字段 `transcript`）解成 Partial / Final、`input_audio_buffer.commit` 的回执带 `item_id`（用来给 final 按提交顺序排序）、`session.update` 的编码（`audio/pcm` + 24000、`turn_detection` 为 `null` 时由客户端断句、语言参数是 `languages` 复数）。另有**收尾记账**两组：客户端断句（提交后结果没回来就还在等）、服务端断句（迟到的旧 final 不能抹掉新音频的等待），以及**迟到的 `committed` 回执不再排队**（否则队列永远不空，收尾会一直等）。
-- **集成测试**（`src-tauri/src/record/tests.rs`）：走 `run_cloud_streaming_core` 的完整编排 —— 中途断连后已定稿句子仍在（`cloud_core_keeps_finalized_sentences_when_disconnected`）、上传丢掉的音频不重复计时（`cloud_core_does_not_double_count_upload_drops`）、**收尾的尾部缺口排在最后一句之后**（`cloud_tail_gap_follows_last_sentence`：第一次上传回一句话、第二次上传丢 1 秒，断言缺口是一个时刻且不并进最后一句）。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib record::tests::<name>`。
+- **集成测试**（`src-tauri/src/record/tests.rs`）：走 `run_cloud_streaming` 的完整编排 —— 中途断连后已定稿句子仍在（`cloud_core_keeps_finalized_sentences_when_disconnected`）、上传丢掉的音频不重复计时（`cloud_core_does_not_double_count_upload_drops`）、**收尾的尾部缺口排在最后一句之后**（`cloud_tail_gap_follows_last_sentence`：第一次上传回一句话、第二次上传丢 1 秒，断言缺口是一个时刻且不并进最后一句）。跑法：`cargo test --manifest-path src-tauri/Cargo.toml --lib record::tests::<name>`。
 - **凭据不外泄**：`Status` 序列化里没有 key 明文（`engine` 的单测）、错误详情里的 key 会被抹成 `***`（`sanitize()`，Realtime 与火山各一条协议单测 —— 火山的用会保留 message 的错误码分支，否则断言会恒真）、界面检查断言「密钥不回显」。
   - **连接列表只回传掩码**：`Status.cloudProfiles` 里每条是 `{id, label, provider, baseUrl, model, keyMask}`，**明文不回传**（掩码算法见 [`CLOUD.md`](CLOUD.md)「云端模式」）。守卫：`settings/cloud_tests.rs::mask_secret_hides_the_middle` / `mask_secret_never_reveals_the_whole_secret`；界面断言「列表显示掩码、不显示明文」。
   - **每家一条独立连接**：切 provider 不再清空别人的配置（旧行为是「切换会清掉地址与凭据」）。守卫：`settings/cloud_tests.rs::switching_provider_keeps_the_other_providers_profile`。

@@ -32,8 +32,8 @@ use log::on_off;
 use menu::install_menu;
 use output::{sanitize_name, write_text_file, Saved};
 use record::{
-    ensure_transcript_usable, finish_recording, log_transcript, run_cloud_streaming_core,
-    run_offline, run_streaming_core, FinishedRecording, RecordingRun, SlotError, STOP_FAILED,
+    ensure_transcript_usable, log_transcript, run_cloud_streaming, run_local_offline,
+    run_local_streaming, FinishedRecording, RecordingRun, SlotError, STOP_FAILED,
 };
 
 /// 错误码：后端只返回字典 key（前端 i18n 翻译），不返回展示文案。
@@ -169,7 +169,7 @@ struct PartialPayload {
 fn ensure_recognition_config_unlocked(state: &AppState) -> Result<(), String> {
     let recording = state.recording_starting.load(Ordering::SeqCst)
         || state
-            .recorder
+            .session
             .lock()
             .map_err(|_| code("error.recordState"))?
             .is_some();
@@ -605,13 +605,12 @@ fn vad_precondition(caps: &asr::cloud::Capabilities, vad_present: bool) -> Resul
     Err(code("cloud.vadMissing"))
 }
 
-/// 两个槽登记失败的错误码。
+/// 登记录音会话失败的错误码。
 ///
-/// 流式的会话槽是 `stream`（`error.streamState`），整段的是 `offline_session`
-/// （`error.recordState`）—— 两条路径的错误码本来就不一样。
+/// 会话槽按**模式**分错误码：流式是 `error.streamState`，云端是
+/// `error.cloudState`，整段是 `error.recordState` —— 三条路径本来就不一样。
 fn slot_error_code(error: SlotError, mode: &str) -> String {
     match error {
-        SlotError::RecorderLocked => code("error.recordState"),
         SlotError::SessionLocked => match mode {
             "streaming" => code("error.streamState"),
             "cloud" => code("error.cloudState"),
@@ -633,7 +632,7 @@ async fn start_streaming_recording(
     let starting = RecordingStartGuard(&state.recording_starting);
     {
         let slot = state
-            .recorder
+            .session
             .lock()
             .map_err(|_| code("error.recordState"))?;
         if slot.is_some() {
@@ -683,7 +682,7 @@ async fn start_streaming_recording(
                 session_id,
                 discard: thread_discard.clone(),
             };
-            let transcript = run_streaming_core(
+            let transcript = run_local_streaming(
                 engine,
                 punctuator,
                 queue,
@@ -702,8 +701,10 @@ async fn start_streaming_recording(
         discard: discard.clone(),
         rx,
     };
-    if let Err(error) = record::register_slots(&state.recorder, &state.stream, recorder, run) {
+    let session = record::Session::new(recorder, run, record::SessionMode::LocalStreaming);
+    if let Err(error) = record::register_session(&state.session, session) {
         // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
+        // `session` 被 drop 时兜底置位（见 `Session` 的 `Drop`）。
         stop.store(true, Ordering::SeqCst);
         discard.store(true, Ordering::SeqCst);
         return Err(slot_error_code(error, "streaming"));
@@ -725,7 +726,7 @@ async fn start_offline_recording(
     let starting = RecordingStartGuard(&state.recording_starting);
     {
         let slot = state
-            .recorder
+            .session
             .lock()
             .map_err(|_| code("error.recordState"))?;
         if slot.is_some() {
@@ -778,7 +779,7 @@ async fn start_offline_recording(
     std::thread::Builder::new()
         .name("offline-asr".into())
         .spawn(move || {
-            let transcript = run_offline(
+            let transcript = run_local_offline(
                 session,
                 queue,
                 rate,
@@ -810,10 +811,10 @@ async fn start_offline_recording(
         discard: discard.clone(),
         rx,
     };
-    if let Err(error) =
-        record::register_slots(&state.recorder, &state.offline_session, recorder, run)
-    {
+    let session = record::Session::new(recorder, run, record::SessionMode::LocalOffline);
+    if let Err(error) = record::register_session(&state.session, session) {
         // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
+        // `session` 被 drop 时兜底置位（见 `Session` 的 `Drop`）。
         stop.store(true, Ordering::SeqCst);
         discard.store(true, Ordering::SeqCst);
         return Err(slot_error_code(error, "offline"));
@@ -835,7 +836,7 @@ async fn start_cloud_recording(
     let starting = RecordingStartGuard(&state.recording_starting);
     {
         let slot = state
-            .recorder
+            .session
             .lock()
             .map_err(|_| code("error.recordState"))?;
         if slot.is_some() {
@@ -937,7 +938,7 @@ async fn start_cloud_recording(
                 session_id,
                 discard: thread_discard.clone(),
             };
-            let transcript = run_cloud_streaming_core(
+            let transcript = run_cloud_streaming(
                 session,
                 vad_config,
                 queue,
@@ -955,9 +956,10 @@ async fn start_cloud_recording(
         discard: discard.clone(),
         rx,
     };
-    if let Err(error) = record::register_slots(&state.recorder, &state.cloud_session, recorder, run)
-    {
+    let session = record::Session::new(recorder, run, record::SessionMode::CloudStreaming);
+    if let Err(error) = record::register_session(&state.session, session) {
         // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
+        // `session` 被 drop 时兜底置位（见 `Session` 的 `Drop`）。
         stop.store(true, Ordering::SeqCst);
         discard.store(true, Ordering::SeqCst);
         return Err(slot_error_code(error, "cloud"));
@@ -968,112 +970,105 @@ async fn start_cloud_recording(
 
 #[tauri::command]
 async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<Transcript, String> {
-    let recorder = {
+    // 一个槽一次取走：采集器与它的识别会话**要么全拿到、要么全拿不到**
+    // （早先是先取采集器再取会话槽，中间有窗口 —— 取消插一脚就会两边都空，
+    // 转写被丢掉）。
+    let session = {
         let mut slot = state
-            .recorder
+            .session
             .lock()
             .map_err(|_| code("error.recordState"))?;
         slot.take()
     }
     .ok_or_else(|| code("record.notRecording"))?;
-    let stream = {
-        let mut slot = state.stream.lock().map_err(|_| code("error.streamState"))?;
-        slot.take()
-    };
 
     // 停止采集 + 等识别线程收尾都是阻塞操作（最长 20/30 秒），放进阻塞线程。
-    if let Some(stream) = stream {
-        let finished = tauri::async_runtime::spawn_blocking(move || {
-            finish_recording(recorder, stream, 20).map_err(|error| {
-                if record::is_stop_failed(&error) {
-                    code("record.streamTimeout")
-                } else {
-                    error
-                }
+    //
+    // **各模式的差异照旧**（超时秒数 / 失败文案 / 云端那套断连保句）——
+    // 分派按 `Session.mode`，不是「哪个槽有东西」。
+    match session.mode() {
+        record::SessionMode::LocalStreaming => {
+            let finished = tauri::async_runtime::spawn_blocking(move || {
+                session.finish(20).map_err(|error| {
+                    if record::is_stop_failed(&error) {
+                        code("record.streamTimeout")
+                    } else {
+                        error
+                    }
+                })
             })
-        })
-        .await
-        .map_err(|e| code_detail(STOP_FAILED, e))??;
-        ensure_transcript_usable(
-            &finished.transcript.text,
-            finished.transcript.duration_seconds,
-        )?;
-        let mut transcript = finished.transcript;
-        if finished.capture_error.is_some() {
-            transcript.warning = Some(code("record.micError"));
-        }
-        log_transcript("流式", &transcript);
-        return Ok(transcript);
-    }
-
-    // 云端模式：识别线程一直在跑，这里停采集，尾巴由它收尾时取走。
-    // 中途断连时已定稿的句子要留着（原因放在 warning 里）。
-    let cloud = state
-        .cloud_session
-        .lock()
-        .map_err(|_| code("error.cloudState"))?
-        .take();
-    if let Some(cloud) = cloud {
-        let finished = tauri::async_runtime::spawn_blocking(move || {
-            finish_recording(recorder, cloud, 20).map_err(|error| {
-                if record::is_stop_failed(&error) {
-                    code("record.cloudTimeout")
-                } else {
-                    error
-                }
-            })
-        })
-        .await
-        .map_err(|e| code_detail(STOP_FAILED, e))??;
-        if finished.transcript.text.trim().is_empty() {
-            if let Some(warning) = finished.transcript.warning.clone() {
-                return Err(warning);
-            }
-        }
-        ensure_transcript_usable(
-            &finished.transcript.text,
-            finished.transcript.duration_seconds,
-        )?;
-        let mut transcript = finished.transcript;
-        if finished.capture_error.is_some() && transcript.warning.is_none() {
-            transcript.warning = Some(code("record.micError"));
-        }
-        log_transcript("云端", &transcript);
-        return Ok(transcript);
-    }
-
-    // 整段模式：识别线程一直在跑，这里停采集，尾巴由它收尾时取走
-    let offline = state
-        .offline_session
-        .lock()
-        .map_err(|_| code("error.recordState"))?
-        .take();
-    let Some(offline) = offline else {
-        return Err(code("record.threadExited"));
-    };
-    let finished =
-        tauri::async_runtime::spawn_blocking(move || -> Result<FinishedRecording, String> {
-            let finished = finish_recording(recorder, offline, 30).map_err(|error| {
-                if record::is_stop_failed(&error) {
-                    code("record.offlineTimeout")
-                } else {
-                    error
-                }
-            })?;
+            .await
+            .map_err(|e| code_detail(STOP_FAILED, e))??;
             ensure_transcript_usable(
                 &finished.transcript.text,
                 finished.transcript.duration_seconds,
             )?;
-            Ok(finished)
-        })
-        .await
-        .map_err(|e| code_detail(STOP_FAILED, e))??;
-    let mut transcript = finished.transcript;
-    if finished.capture_error.is_some() {
-        transcript.warning = Some(code("record.micError"));
+            let mut transcript = finished.transcript;
+            if finished.capture_error.is_some() {
+                transcript.warning = Some(code("record.micError"));
+            }
+            log_transcript("流式", &transcript);
+            Ok(transcript)
+        }
+        record::SessionMode::CloudStreaming => {
+            // 云端模式：识别线程一直在跑，这里停采集，尾巴由它收尾时取走。
+            // 中途断连时已定稿的句子要留着（原因放在 warning 里）。
+            let finished = tauri::async_runtime::spawn_blocking(move || {
+                session.finish(20).map_err(|error| {
+                    if record::is_stop_failed(&error) {
+                        code("record.cloudTimeout")
+                    } else {
+                        error
+                    }
+                })
+            })
+            .await
+            .map_err(|e| code_detail(STOP_FAILED, e))??;
+            if finished.transcript.text.trim().is_empty() {
+                if let Some(warning) = finished.transcript.warning.clone() {
+                    return Err(warning);
+                }
+            }
+            ensure_transcript_usable(
+                &finished.transcript.text,
+                finished.transcript.duration_seconds,
+            )?;
+            let mut transcript = finished.transcript;
+            if finished.capture_error.is_some() && transcript.warning.is_none() {
+                transcript.warning = Some(code("record.micError"));
+            }
+            log_transcript("云端", &transcript);
+            Ok(transcript)
+        }
+        record::SessionMode::LocalOffline => {
+            // 整段模式：识别线程一直在跑，这里停采集，尾巴由它收尾时取走。
+            // 整段要多等 10 秒（收尾要把剩余音频跑完）。
+            let finished = tauri::async_runtime::spawn_blocking(
+                move || -> Result<FinishedRecording, String> {
+                    let finished = session.finish(30).map_err(|error| {
+                        if record::is_stop_failed(&error) {
+                            code("record.offlineTimeout")
+                        } else {
+                            error
+                        }
+                    })?;
+                    ensure_transcript_usable(
+                        &finished.transcript.text,
+                        finished.transcript.duration_seconds,
+                    )?;
+                    Ok(finished)
+                },
+            )
+            .await
+            .map_err(|e| code_detail(STOP_FAILED, e))??;
+            let mut transcript = finished.transcript;
+            if finished.capture_error.is_some() {
+                transcript.warning = Some(code("record.micError"));
+            }
+            log_transcript("整段", &transcript);
+            Ok(transcript)
+        }
     }
-    log_transcript("整段", &transcript);
-    Ok(transcript)
 }
 
 /// 转写一个音频 / 视频文件。
@@ -1156,39 +1151,14 @@ fn cancel_recording(state: State<AppState>) -> Result<(), String> {
 /// 两个命令各开一次麦克风、各起一个识别线程。
 /// 要中止一次正在启动的录音，让前端在 start 落定后再调一次取消。
 fn cancel_recording_impl(state: &AppState) -> Result<(), String> {
-    let recorder = {
-        let mut slot = state
-            .recorder
-            .lock()
-            .map_err(|_| code("error.recordState"))?;
-        slot.take()
-    };
-    if let Some(stream) = state.stream.lock().ok().and_then(|mut slot| slot.take()) {
-        stream.discard.store(true, Ordering::SeqCst);
-        stream.stop.store(true, Ordering::SeqCst);
-    }
-    // 整段模式的识别线程也要停，否则它会一直空转（队列空了也每 60ms 醒一次）
-    if let Some(offline) = state
-        .offline_session
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-    {
-        offline.discard.store(true, Ordering::SeqCst);
-        offline.stop.store(true, Ordering::SeqCst);
-    }
-    // 云端模式同理：不停的话上传线程会一直开着连接。
-    if let Some(cloud) = state
-        .cloud_session
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-    {
-        cloud.discard.store(true, Ordering::SeqCst);
-        cloud.stop.store(true, Ordering::SeqCst);
-    }
-    if let Some(recorder) = recorder {
-        recorder.cancel();
+    // 一个槽一次取走：三个模式（流式 / 整段 / 云端）的取消逻辑本来就一样，
+    // 早先是逐个槽取三遍 —— 现在由 `Session::cancel` 一次做完
+    // （置停止标志 + 关麦）。
+    //
+    // 不停识别线程的话，它会一直空转（队列空了也每 60ms 醒一次）；
+    // 云端模式不停的话，上传线程会一直开着连接。
+    if let Some(session) = state.session.lock().ok().and_then(|mut slot| slot.take()) {
+        session.cancel();
     }
     log::info("录音已取消");
     Ok(())

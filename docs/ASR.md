@@ -28,7 +28,7 @@
 
 - **分片恒为 200 ms（3200 样本），且只在 `is_ready()` 为真时 `decode()`**（`asr.rs` 的 `StreamingSession`）。改小分片或无条件 decode 都会让 sherpa-onnx 特征缓冲越界直接 abort（`features.cc GetFrames`）。`start_streaming_recording` 先 `ensure_streaming_engine` 再起采集（`lib.rs`）。
 - **收尾补 300 ms 静音**（`TAIL_SILENCE_SAMPLES`，在 `asr.rs`）：解码器需要尾部上下文才吐出最后一个字，不补就丢句尾（「产品评审会」→「产品评审」）。补的静音不计入时长。
-- **VAD 门控**（在 `record.rs` 的 `run_streaming_core`）：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字）；起音前留 0.4 s 预录避免切字头。
+- **VAD 门控**（在 `record.rs` 的 `run_local_streaming`）：Silero 判到静音就 `force_end()` 提交并 reset，静音段不喂模型（否则 transducer 会在噪声上编出重复字）；起音前留 0.4 s 预录避免切字头。
 - 流式模型是独立的一组 assets（`models.rs` 的 `STREAM_*`：`streaming-zipformer-zh-int8-2025-06-30` + `silero_vad.onnx`），只覆盖中文；选粤/日/韩时前端自动切回整段。**流式的 `silero_vad.onnx` 与整段的是同一个 v5 文件**（`STREAM_VAD` 和 `VAD` 指向同一 commit 下的 `silero_vad_v5.onnx`）—— 两种模式的切句边界要一致。
 - **流式结果就是最终结果**（不要用 SenseVoice 覆盖它，这个功能已删）：实测流式明显更准，而且覆盖要保留全部音频，和「不限时长、内存恒定」直接冲突。
 - **流式文本要从 token 列表重建，别用 sherpa 的 `text` 字段**（`asr.rs` 的 `text_from_tokens`）：流式模型词表只有 1426 个汉字，表外的字（番、茄、腩、苹、莓、酪……）只能拆成**字节 token** `<0xE7><0x95><0xAA>` 拼；sherpa 的符号表把 `<0xE7>` 还原成**裸字节**放进 `text`（`symbol-table.cc` 的 `is_bpe_with_byte_fallback_` 分支），切分点落在半个字上时 `text` 就是非法 UTF-8，sherpa 自己的 `Utf8ToUtf32()` 会把它**固化成 U+FFFD** —— 界面上就是「�」。**token 列表是无损的**：从它重建，末尾没解完的半个字先扣住、等下一帧补齐。`clean()` 里另有兜底（丢掉 U+FFFD 并记 WARN）。回归测试 `streaming_smoke::keeps_out_of_vocab_chars_intact` + fixture `tests/fixtures/zh-oov.wav`（macOS TTS 造的「番茄牛腩。苹果派要苹果。草莓奶酪。」）。**整段模式没这个问题** —— SenseVoice 的词表没有字节 token。

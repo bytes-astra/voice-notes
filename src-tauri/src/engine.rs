@@ -22,27 +22,27 @@ use crate::asr::{
     clean, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript, PRE_ROLL_SAMPLES,
     SAMPLE_RATE, VAD_WINDOW,
 };
-use crate::audio::Recorder;
 use crate::log::{self, on_off};
 use crate::models;
 use crate::models::ModelPaths;
-use crate::record::RecordingRun;
 use crate::settings::{self, Settings};
 use crate::{code, code_detail};
 pub struct AppState {
     /// 设置的锁外面包一层 `Arc`：加载引擎的阻塞线程要在**持有引擎锁**的前提下
     /// 读设置（见 `install_engine`），得能把它带进那个线程。
     pub settings: Arc<Mutex<Settings>>,
-    pub recorder: Mutex<Option<Recorder>>,
+    /// 正在进行的录音（采集器 + 识别会话的停止信号 + 模式）。
+    ///
+    /// **一个槽**：采集器与它的识别会话必须同行（只持有其一，识别线程永远
+    /// 收不到 stop → 线程泄漏、麦克风不关、语言/ITN 永久锁死）。
+    /// 装进一个值里，这个配对由类型保证 —— 早先是四个槽（采集器 + 三个会话
+    /// 槽），三个会话槽类型完全相同，写错编译不报错、也没测试盯。
+    pub session: Mutex<Option<crate::record::Session>>,
     pub recording_starting: AtomicBool,
     pub next_recording_id: std::sync::atomic::AtomicU64,
     pub engine: Arc<Mutex<Option<Arc<Engine>>>>,
     pub streaming_engine: Arc<Mutex<Option<Arc<StreamingEngine>>>>,
     pub punct_engine: Arc<Mutex<Option<Arc<PunctuationEngine>>>>,
-    pub stream: Mutex<Option<RecordingRun>>,
-    pub offline_session: Mutex<Option<RecordingRun>>,
-    /// 云端模式的会话槽：云端录音也要登记，停止 / 取消才停得下来。
-    pub cloud_session: Mutex<Option<RecordingRun>>,
     pub cancel_download: Arc<AtomicBool>,
     pub downloading: Arc<AtomicBool>,
     /// 流式模型下载有自己的一套标志：整段在下载时不该把流式也挡住
@@ -83,15 +83,12 @@ impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
             settings: Arc::new(Mutex::new(settings)),
-            recorder: Mutex::new(None),
+            session: Mutex::new(None),
             recording_starting: AtomicBool::new(false),
             next_recording_id: std::sync::atomic::AtomicU64::new(1),
             engine: Arc::new(Mutex::new(None)),
             streaming_engine: Arc::new(Mutex::new(None)),
             punct_engine: Arc::new(Mutex::new(None)),
-            stream: Mutex::new(None),
-            offline_session: Mutex::new(None),
-            cloud_session: Mutex::new(None),
             cancel_download: Arc::new(AtomicBool::new(false)),
             downloading: Arc::new(AtomicBool::new(false)),
             cancel_download_streaming: Arc::new(AtomicBool::new(false)),

@@ -143,7 +143,7 @@ fn streaming_duration_includes_leading_silence() {
         std::thread::sleep(Duration::from_millis(2_000));
         stopper.store(true, Ordering::Relaxed);
     });
-    let transcript = run_streaming_core(
+    let transcript = run_local_streaming(
         engine,
         None,
         queue,
@@ -166,7 +166,7 @@ fn streaming_duration_includes_audio_arriving_after_stop() {
     };
     let queue = audio::SampleQueue::new(16_000);
     queue.push(&vec![0.0f32; 3_200]);
-    let transcript = run_streaming_core(
+    let transcript = run_local_streaming(
         engine,
         None,
         queue,
@@ -186,7 +186,7 @@ fn streaming_dropped_audio_advances_recording_clock() {
     };
     let queue = audio::SampleQueue::with_limit(Some(1_000));
     queue.push(&vec![0.0f32; 17_000]);
-    let transcript = run_streaming_core(
+    let transcript = run_local_streaming(
         engine,
         None,
         queue,
@@ -223,7 +223,7 @@ fn streams_from_buffer_with_resampling() {
     });
 
     let mut partials = 0usize;
-    let transcript = run_streaming_core(
+    let transcript = run_local_streaming(
         engine,
         None,
         queue,
@@ -270,7 +270,7 @@ fn streaming_gap_marker_reaches_transcript() {
         stopper.store(true, Ordering::SeqCst);
     });
 
-    let transcript = run_streaming_core(
+    let transcript = run_local_streaming(
         engine,
         None,
         queue,
@@ -417,7 +417,7 @@ fn offline_gap_marker_reaches_transcript() {
 
     let mut events = Vec::new();
     let session = crate::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
-    let transcript = run_offline(
+    let transcript = run_local_offline(
         session,
         queue,
         16_000,
@@ -484,7 +484,7 @@ fn streaming_gap_marker_precedes_the_following_sentence() {
     let queue = audio::SampleQueue::with_limit(Some(32_000));
     queue.push(wave.samples());
     let stop = Arc::new(AtomicBool::new(true));
-    let transcript = run_streaming_core(
+    let transcript = run_local_streaming(
         engine,
         None,
         queue,
@@ -588,7 +588,7 @@ fn wait_failure_returns_no_partial_result() {
 
 /// 停止录音时，识别期间麦克风采到的那段音频不能被丢掉。
 ///
-/// 回归测试：run_offline 的循环是「取音频 → 识别 → 看停止标志」，
+/// 回归测试：run_local_offline 的循环是「取音频 → 识别 → 看停止标志」，
 /// 停止标志在识别期间被置位时循环直接跳出，那段音频就永远留在队列里
 /// （流式路径在循环后有收尾取样，整段原来没有）。
 #[test]
@@ -621,7 +621,7 @@ fn offline_stop_keeps_the_tail() {
     });
 
     let session = crate::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
-    let _transcript = run_offline(
+    let _transcript = run_local_offline(
         session,
         queue.clone(),
         16_000,
@@ -662,80 +662,197 @@ fn peek(slot: &Mutex<Option<u8>>) -> Option<u8> {
     *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// 会话槽坏了，采集器槽也必须没被写过。
+/// 会话槽坏了，登记必须失败，**槽里不能留下半个会话**。
 ///
 /// 登记分两步写（先采集器、后会话）时，第二步失败就会留下「有采集器、
 /// 没会话」的中间态：识别线程永远收不到 stop（线程泄漏、永久占着 239 MB
 /// 引擎）、麦克风不关、语言/ITN 永久锁死。
+///
+/// 合并成一个槽后，这个中间态**在类型上就不可能**（采集器与它的会话装在
+/// 一个值里）—— 但「装不进槽时不能写进去」这条仍然要守。
 #[test]
-fn session_slot_poison_does_not_write_recorder_slot() {
-    let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
+fn session_slot_poison_leaves_the_slot_empty() {
     let session_slot: Mutex<Option<u8>> = Mutex::new(None);
     poison(&session_slot);
 
-    let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
+    let result = register_session(&session_slot, 1u8);
     assert!(result.is_err(), "会话槽被 poison 时登记必须失败");
-    assert_eq!(
-        peek(&recorder_slot),
-        None,
-        "登记失败时采集器槽必须没被写过 —— 有采集器没会话 = 识别线程永远收不到 stop"
-    );
-    assert_eq!(peek(&session_slot), None, "会话槽必须没被写过");
-}
-
-/// 采集器槽坏了，会话槽也不能被写过。
-#[test]
-fn recorder_slot_poison_does_not_write_session_slot() {
-    let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
-    let session_slot: Mutex<Option<u8>> = Mutex::new(None);
-    poison(&recorder_slot);
-
-    let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
-    assert!(result.is_err(), "采集器槽被 poison 时登记必须失败");
-    assert_eq!(peek(&recorder_slot), None, "采集器槽必须没被写过");
     assert_eq!(
         peek(&session_slot),
         None,
-        "登记失败时会话槽必须没被写过 —— 有会话没采集器 = 停不掉"
+        "登记失败时槽里必须没被写过 —— 有半个会话 = 识别线程永远收不到 stop"
     );
 }
 
-/// 登记成功：两个槽都装上了。
+/// 登记成功：槽里装上了。
 #[test]
-fn register_slots_fills_both_slots() {
-    let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
+fn register_session_fills_the_slot() {
     let session_slot: Mutex<Option<u8>> = Mutex::new(None);
-    register_slots(&recorder_slot, &session_slot, 1u8, 2u8).expect("登记");
-    assert_eq!(peek(&recorder_slot), Some(1));
-    assert_eq!(peek(&session_slot), Some(2));
+    register_session(&session_slot, 1u8).expect("登记");
+    assert_eq!(peek(&session_slot), Some(1));
 }
 
-/// register_slots_reports_busy_when_recording，且不能动任何一个槽。
+/// 已经在录音时要报占用，且不能顶掉已有的会话。
 #[test]
-fn register_slots_reports_busy_when_recording() {
-    let recorder_slot: Mutex<Option<u8>> = Mutex::new(Some(9));
-    let session_slot: Mutex<Option<u8>> = Mutex::new(None);
-    let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
+fn register_session_reports_busy_when_recording() {
+    let session_slot: Mutex<Option<u8>> = Mutex::new(Some(9));
+    let result = register_session(&session_slot, 1u8);
     assert!(
         matches!(result, Err(SlotError::AlreadyRecording)),
         "已经在录音时要报占用"
     );
-    assert_eq!(peek(&recorder_slot), Some(9), "已有的采集器不能被顶掉");
-    assert_eq!(peek(&session_slot), None, "占用时不该写会话槽");
+    assert_eq!(peek(&session_slot), Some(9), "已有的会话不能被顶掉");
 }
 
-/// 会话槽还占着（上一轮没清干净）时也不能登记。
+// ──────────────────── 护句尾的收尾顺序 ────────────────────
+
+/// `finish_recording` 的函数体（源码级守卫用）。
+///
+/// 为什么要读源码而不是跑行为：这条顺序**只有真麦克风才测得到**（需要
+/// 「识别线程收尾时采集线程还在往队列里推」这个真实场景），而真麦克风测试
+/// 默认跳过（`VOICE_NOTES_RECORD_TEST`）—— 跑不到就等于没有守卫。
+///
+/// **顺序反了的后果**：尾巴（句尾最后那截音频）由识别线程自己
+/// `take_new()` 取。先停线程的话，线程最后一次取样之后、采集线程 join
+/// 之前采到的音频就没人取 → **句尾最后一个字被静默切掉**。
+fn finish_recording_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/record.rs");
+    std::fs::read_to_string(path).expect("读 record.rs")
+}
+
+/// 从 `finish_recording` 的函数体里取出「停采集」与「停线程」两个动作的**先后**。
+///
+/// 返回 `(stop_capture_at, stop_thread_at)`（字符下标）；找不到就是 `None`。
+fn capture_and_thread_stop_order(source: &str) -> (Option<usize>, Option<usize>) {
+    // 只看 finish_recording 的**函数体**：按大括号配平切出来。
+    //
+    // 不用「下一个 `pub fn`」切 —— 后面跟的是私有 `fn` 时会切过头，
+    // 把别的函数里的 `recorder.stop()` 也算进来，顺序就判错了。
+    let start = source
+        .find("pub fn finish_recording")
+        .expect("有 finish_recording");
+    let body = &source[start..];
+    let open = body.find('{').expect("函数体有 {");
+    let mut depth = 0usize;
+    let mut close = None;
+    for (offset, ch) in body[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let body = &body[..close.expect("函数体有闭合大括号")];
+    let capture = body.find("recorder.stop()");
+    let thread = body.find("run.stop.store");
+    (capture, thread)
+}
+
+/// 收尾必须**先停采集、再停线程** —— 顺序反了会切掉句尾的字。
+///
+/// 源码级守卫（`finish_recording` 的两行顺序）：真麦克风测试默认跳过，
+/// 跑不到就等于没守卫 —— 这条顺序恰好是最容易在按 mode 分派时被写反的。
 #[test]
-fn register_slots_reports_busy_when_session_slot_taken() {
-    let recorder_slot: Mutex<Option<u8>> = Mutex::new(None);
-    let session_slot: Mutex<Option<u8>> = Mutex::new(Some(7));
-    let result = register_slots(&recorder_slot, &session_slot, 1u8, 2u8);
+fn finish_recording_stops_capture_before_the_thread() {
+    let source = finish_recording_source();
+    let (capture, thread) = capture_and_thread_stop_order(&source);
     assert!(
-        matches!(result, Err(SlotError::AlreadyRecording)),
-        "会话槽占着时要报占用 —— 顶掉它，上一轮的识别线程就永远收不到 stop"
+        capture.is_some() && thread.is_some(),
+        "在 finish_recording 里找不到这两行 —— 写法变了，守卫要跟着改"
     );
-    assert_eq!(peek(&recorder_slot), None, "占用时不该写采集器槽");
-    assert_eq!(peek(&session_slot), Some(7), "已有的会话不能被顶掉");
+    assert!(
+        capture < thread,
+        "finish_recording 必须**先 recorder.stop()（停采集）再 run.stop.store（停线程）**：\
+         尾巴由识别线程自己 take_new() 取，反过来会切掉句尾最后一个字"
+    );
+}
+
+/// 顺序写反时这条守卫必须能抓住（mutation 自证）。
+#[test]
+fn the_guard_catches_a_reversed_stop_order() {
+    let source = "pub fn finish_recording(\n    run.stop.store(true, Ordering::SeqCst);\n    let stopped = recorder.stop();\n}\npub fn next() {}\n";
+    let (capture, thread) = capture_and_thread_stop_order(source);
+    assert!(capture.is_some() && thread.is_some());
+    assert!(
+        !(capture < thread),
+        "顺序反了这条守卫却没抓住 —— 它没在守顺序"
+    );
+}
+
+/// `lib.rs` 的源码（源码级守卫用）。
+fn lib_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+    std::fs::read_to_string(path).expect("读 lib.rs")
+}
+
+/// 每个 `start_*_recording` 登记的 `SessionMode` 必须与它跑的识别核心一致。
+///
+/// 模式错了 → 停止时走错分支：超时秒数（20 / 20 / 30）、失败文案
+/// （`record.streamTimeout` / `record.cloudTimeout` / `record.offlineTimeout`）、
+/// 以及云端那套「断连保句」逻辑全错。
+///
+/// 源码级守卫：mode 与识别核心都在函数体里，肉眼可查；真麦克风测试默认跳过，
+/// 跑不到就等于没守卫。
+#[test]
+fn each_start_registers_the_mode_it_actually_runs() {
+    let source = lib_source();
+    // (命令名, 它跑的识别核心, 它该登记的 mode)
+    let cases = [
+        (
+            "start_streaming_recording",
+            "run_local_streaming",
+            "SessionMode::LocalStreaming",
+        ),
+        (
+            "start_offline_recording",
+            "run_local_offline",
+            "SessionMode::LocalOffline",
+        ),
+        (
+            "start_cloud_recording",
+            "run_cloud_streaming",
+            "SessionMode::CloudStreaming",
+        ),
+    ];
+    for (command, core, mode) in cases {
+        let start = source
+            .find(&format!("fn {command}"))
+            .unwrap_or_else(|| panic!("有 {command}"));
+        let body = &source[start..];
+        // 按大括号配平切出函数体（不用「下一个 async fn」—— 切过头会
+        // 把别的命令的识别核心算进来，mode 就判错了）。
+        let open = body.find('{').expect("函数体有 {");
+        let mut depth = 0usize;
+        let mut close = None;
+        for (offset, ch) in body[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &body[..close.expect("函数体有闭合大括号")];
+        assert!(
+            body.contains(core),
+            "{command} 里找不到 {core} —— 写法变了，守卫要跟着改"
+        );
+        assert!(
+            body.contains(mode),
+            "{command} 跑的是 {core}，登记的却是别的 mode（该是 {mode}）"
+        );
+    }
 }
 
 /// 云端链路：采集 → 上传 → provider 回结果 → 句子。
@@ -764,7 +881,7 @@ fn cloud_core_keeps_finalized_sentences_when_disconnected() {
         std::thread::sleep(Duration::from_millis(400));
         stopper.store(true, Ordering::SeqCst);
     });
-    let transcript = run_cloud_streaming_core(
+    let transcript = run_cloud_streaming(
         session,
         None,
         queue,
@@ -807,7 +924,7 @@ fn cloud_core_does_not_double_count_upload_drops() {
         std::thread::sleep(Duration::from_millis(300));
         stopper.store(true, Ordering::SeqCst);
     });
-    let transcript = run_cloud_streaming_core(
+    let transcript = run_cloud_streaming(
         session,
         None,
         queue,
@@ -880,7 +997,7 @@ fn cloud_tail_gap_follows_last_sentence() {
         }
         stopper.store(true, Ordering::SeqCst);
     });
-    let transcript = run_cloud_streaming_core(
+    let transcript = run_cloud_streaming(
         session,
         None,
         queue,

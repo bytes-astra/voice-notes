@@ -42,7 +42,7 @@
 
 ## 日志
 
-**逐句都要记日志**：整段录音记 `识别出一句：起 → 止，N 字`；流式（`record.rs` 的 `run_streaming_core`）记 `流式识别出一句` / `流式收尾识别出一句`，文件转写（`lib.rs` 的 `transcribe_file`）记 `文件识别出一句` —— 只记边界和字数、不记内容，配合总时长就能算出哪一段没被覆盖。**缺口占位符不算句子**（那是「丢了音频」的标记，不是识别结果）。
+**逐句都要记日志**：整段录音记 `识别出一句：起 → 止，N 字`；流式（`record.rs` 的 `run_local_streaming`）记 `流式识别出一句` / `流式收尾识别出一句`，文件转写（`lib.rs` 的 `transcribe_file`）记 `文件识别出一句` —— 只记边界和字数、不记内容，配合总时长就能算出哪一段没被覆盖。**缺口占位符不算句子**（那是「丢了音频」的标记，不是识别结果）。
 
 **日志一直开着，不需要用户配置**：`log.rs`（`log::info` / `warn` / `error`）写到系统标准日志目录 —— macOS `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，Windows `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log`；超 1 MB 轮转一次保留 `.1`，同时镜像 stderr。没有开关、没有设置页 —— 用户反馈问题直接把这个文件发过来。前端那边用 `client_log` 命令写进同一个文件（`src/tauri.js` 的 `logEvent()`），这样一份文件就是完整的一份记录。
 
