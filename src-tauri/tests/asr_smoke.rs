@@ -5,9 +5,9 @@
 
 use std::path::PathBuf;
 
+use sherpa_onnx::{SileroVadModelConfig, VadModelConfig};
 use voice_notes_lib::asr::{OfflineEvent, OfflineSession};
 use voice_notes_lib::engine::Engine;
-use sherpa_onnx::{SileroVadModelConfig, VadModelConfig};
 use voice_notes_lib::models::ModelPaths;
 
 fn model_paths() -> Option<ModelPaths> {
@@ -103,7 +103,8 @@ fn offline_session_matches_batch_transcribe() {
     let engine = std::sync::Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
 
     // 路径 A：边录边（按 3200 样本推进）
-    let mut session = OfflineSession::new(engine.clone(), vad_config(paths.vad.as_deref())).expect("建整段会话");
+    let mut session =
+        OfflineSession::new(engine.clone(), vad_config(paths.vad.as_deref())).expect("建整段会话");
     let mut events = Vec::new();
     for chunk in wave.samples().chunks(3200) {
         events.extend(session.push(chunk));
@@ -123,7 +124,11 @@ fn offline_session_matches_batch_transcribe() {
     println!("整条一次：{}", batch.text);
     let norm = |s: &str| -> String {
         s.chars()
-            .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation() && !"，。！？、；：“”‘’（）《》".contains(*c))
+            .filter(|c| {
+                !c.is_whitespace()
+                    && !c.is_ascii_punctuation()
+                    && !"，。！？、；：“”‘’（）《》".contains(*c)
+            })
             .collect()
     };
     assert!(!norm(&live).is_empty());
@@ -139,7 +144,8 @@ fn offline_session_finishes_partial_sentence() {
     };
     let wave = sherpa_onnx::Wave::read("tests/fixtures/zh.wav").expect("读取测试音频");
     let engine = std::sync::Arc::new(Engine::new(&paths, "zh", true).expect("加载模型"));
-    let mut session = OfflineSession::new(engine, vad_config(paths.vad.as_deref())).expect("建整段会话");
+    let mut session =
+        OfflineSession::new(engine, vad_config(paths.vad.as_deref())).expect("建整段会话");
     // 只喂前 1.2 秒（不够 VAD 判静音成句），然后 finish
     let head = &wave.samples()[..(16_000 * 12 / 10).min(wave.samples().len())];
     let _ = session.push(head);
@@ -151,7 +157,10 @@ fn offline_session_finishes_partial_sentence() {
         })
         .collect();
     println!("收尾识别：{text}");
-    assert!(!text.trim().is_empty(), "收尾时应该把没说完的半句也识别出来");
+    assert!(
+        !text.trim().is_empty(),
+        "收尾时应该把没说完的半句也识别出来"
+    );
 }
 
 /// 与 asr.rs 里整段模式同一套 VAD 参数。
@@ -179,7 +188,10 @@ fn vad_config(vad_model: Option<&str>) -> VadModelConfig {
 ///   VOICE_NOTES_MODEL_DIR=/path/to/models cargo test --test asr_smoke -- --nocapture
 #[test]
 fn handles_fifteen_minute_recording() {
-    let Some(dir) = std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(std::path::PathBuf::from) else {
+    let Some(dir) = std::env::var("VOICE_NOTES_MODEL_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+    else {
         eprintln!("跳过：未设置 VOICE_NOTES_MODEL_DIR");
         return;
     };
@@ -223,7 +235,8 @@ fn handles_fifteen_minute_recording() {
     println!("模拟录音 {minutes:.1} 分钟（{total_samples} 个采样）");
 
     let queue = voice_notes_lib::audio::SampleQueue::new(16_000);
-    let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
+    let mut session =
+        voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
     let mut segments = 0usize;
     let mut max_pending = 0usize;
 
@@ -252,7 +265,8 @@ fn handles_fifteen_minute_recording() {
         "识别出 {segments} 句，未消费缓冲峰值 {max_pending} 个采样（{:.1} 秒）",
         max_pending as f32 / 16_000.0
     );
-    let text = voice_notes_lib::asr::join_segments(session.segments().iter().map(|s| s.text.as_str()));
+    let text =
+        voice_notes_lib::asr::join_segments(session.segments().iter().map(|s| s.text.as_str()));
     println!("总字数：{}", text.chars().count());
 
     // 15 分钟 ≈ 160 段，每段都应该识别出来（允许 VAD 边界处的少量出入）
@@ -262,6 +276,9 @@ fn handles_fifteen_minute_recording() {
     );
     // 未消费缓冲必须恒定在上限以内（内存恒定的核心）
     let limit = 60 * 16_000;
-    assert!(max_pending <= limit, "未消费缓冲涨到了 {max_pending}（上限 {limit}）");
+    assert!(
+        max_pending <= limit,
+        "未消费缓冲涨到了 {max_pending}（上限 {limit}）"
+    );
     assert!(text.chars().count() > 1000, "识别出的字数太少");
 }

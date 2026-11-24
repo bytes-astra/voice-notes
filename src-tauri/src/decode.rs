@@ -182,9 +182,7 @@ pub fn decode_to_16k(
         // 留一点余量：重采样和编解码器的延迟/填充会造成少量差异。
         let tolerance = SAMPLE_RATE as u64;
         if expected > tolerance && total + tolerance < expected {
-            problems.push(format!(
-                "truncated: decoded {total} of {expected} samples"
-            ));
+            problems.push(format!("truncated: decoded {total} of {expected} samples"));
         }
     }
     let warning = if problems.is_empty() {

@@ -24,13 +24,21 @@ mod common;
 use common::{model_paths, trim_silence};
 
 /// 直接喂会话（**不经过 AGC**）：返回字数。
-fn chars_without_agc(engine: &Arc<Engine>, vad: &sherpa_onnx::VadModelConfig, audio: &[f32]) -> usize {
+fn chars_without_agc(
+    engine: &Arc<Engine>,
+    vad: &sherpa_onnx::VadModelConfig,
+    audio: &[f32],
+) -> usize {
     let mut session = OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
     for chunk in audio.chunks(512) {
         session.push(chunk);
     }
     session.finish();
-    session.segments().iter().map(|s| s.text.chars().count()).sum()
+    session
+        .segments()
+        .iter()
+        .map(|s| s.text.chars().count())
+        .sum()
 }
 
 /// 走生产管线（`record::run_offline`）：返回字数。
@@ -43,8 +51,8 @@ fn chars_through_pipeline(
     queue.push(audio);
     let stop = Arc::new(AtomicBool::new(true));
     let discard = Arc::new(AtomicBool::new(false));
-    let session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone())
-        .expect("建整段会话");
+    let session =
+        voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
     let transcript = voice_notes_lib::record::run_offline(
         session,
         queue,
@@ -104,7 +112,10 @@ fn probe_quiet_recording_still_gets_transcribed() {
     }
     let noise = white_noise(signal.len(), 0x9E3779B97F4A7C15);
 
-    println!("{:<18} {:>9} {:>11} {:>11}", "信号", "增益", "不经AGC", "经生产管线");
+    println!(
+        "{:<18} {:>9} {:>11} {:>11}",
+        "信号", "增益", "不经AGC", "经生产管线"
+    );
     for (label, snr) in [("干净人声", f32::INFINITY), ("人声+噪声 10dB", 10.0)] {
         let base = if snr.is_finite() {
             mix(&signal, &noise, snr)

@@ -27,7 +27,6 @@ pub mod volcengine;
 // 云端日志的**唯一出口**：写入前脱敏（见 `logging.rs`）。
 pub(crate) mod logging;
 
-
 /// 句标识：协议给的句子 id。没有 id 的协议（服务端断句族）用 `None`。
 pub type SentenceId = Option<String>;
 
@@ -43,7 +42,10 @@ pub struct SendOutcome {
 impl SendOutcome {
     /// 全部送出去了。
     pub fn delivered() -> Self {
-        Self { dropped: 0, delivered: true }
+        Self {
+            dropped: 0,
+            delivered: true,
+        }
     }
 }
 
@@ -114,9 +116,7 @@ pub enum CloudEvent {
     ///
     /// **必须按提交顺序到达** —— 会话层按顺序把区间绑到 id 上，
     /// 顺序乱了区间就会绑错。
-    CommitAck {
-        item_id: Option<String>,
-    },
+    CommitAck { item_id: Option<String> },
     /// 一句定稿。
     Final {
         /// 服务端给这一轮的 `item_id`：会话层靠它找到对应的句子区间。
@@ -203,13 +203,15 @@ pub fn create_provider(
         .ok_or_else(|| crate::code("cloud.notConfigured"))?;
     let id = profile.provider.as_str();
     // 能力先查表：这是「要不要下 VAD」「状态回传什么能力」的同一个来源。
-    let caps = provider_capabilities(id).ok_or_else(|| logging::code_detail(
-        "cloud.unsupportedProvider",
-        id,
-        Some(&profile.api_key),
-    ))?;
+    let caps = provider_capabilities(id).ok_or_else(|| {
+        logging::code_detail("cloud.unsupportedProvider", id, Some(&profile.api_key))
+    })?;
     if !valid_capabilities(&caps) {
-        return Err(logging::code_detail("cloud.unsupportedProvider", id, Some(&profile.api_key)));
+        return Err(logging::code_detail(
+            "cloud.unsupportedProvider",
+            id,
+            Some(&profile.api_key),
+        ));
     }
     match id {
         "realtime" => {
@@ -285,7 +287,11 @@ pub fn create_provider(
             // 模型白名单：协议骨架相同，但参数与结果结构不同（本模型有 stash
             // 草稿、即时热词、方言开关），不按「名字随便填」处理。
             if !aliyun::SUPPORTED_MODELS.contains(&model.as_str()) {
-                return Err(logging::code_detail("cloud.unsupportedModel", &model, Some(&profile.api_key)));
+                return Err(logging::code_detail(
+                    "cloud.unsupportedModel",
+                    &model,
+                    Some(&profile.api_key),
+                ));
             }
             // 术语表：能力层决定要不要带，协议层决定能带多少（2000 条，带权重）。
             let (words, cap_ignored) = cloud_keywords(settings, &caps);
@@ -294,15 +300,21 @@ pub fn create_provider(
             if ignored > 0 {
                 log_ignored_hotwords(ignored, &profile.api_key);
             }
-            Ok(Box::new(aliyun::AliyunProvider::new(aliyun::AliyunConfig {
-                base_url: profile.base_url.clone(),
-                api_key: profile.api_key.clone(),
-                model,
-                language_hint: aliyun::language_hint(&settings.language),
-                vocabulary,
-            })))
+            Ok(Box::new(aliyun::AliyunProvider::new(
+                aliyun::AliyunConfig {
+                    base_url: profile.base_url.clone(),
+                    api_key: profile.api_key.clone(),
+                    model,
+                    language_hint: aliyun::language_hint(&settings.language),
+                    vocabulary,
+                },
+            )))
         }
-        other => Err(logging::code_detail("cloud.unsupportedProvider", other, Some(&profile.api_key))),
+        other => Err(logging::code_detail(
+            "cloud.unsupportedProvider",
+            other,
+            Some(&profile.api_key),
+        )),
     }
 }
 
@@ -513,7 +525,9 @@ impl CloudStreamingSession {
                 CloudEvent::Partial(text) => {
                     if text != self.partial {
                         self.partial = text.clone();
-                        if !text.is_empty() { events.push(StreamEvent::Partial(text)); }
+                        if !text.is_empty() {
+                            events.push(StreamEvent::Partial(text));
+                        }
                     }
                 }
                 CloudEvent::CommitAck { item_id } => {
@@ -538,7 +552,10 @@ impl CloudStreamingSession {
                         Some(span) => span,
                         None => {
                             let (start, end) = self.timeline.commit_at(self.fed_end, true);
-                            (start as f32 / SAMPLE_RATE as f32, end as f32 / SAMPLE_RATE as f32)
+                            (
+                                start as f32 / SAMPLE_RATE as f32,
+                                end as f32 / SAMPLE_RATE as f32,
+                            )
                         }
                     };
                     // 空句不产句子，但区间已配掉；失败的 item 也走这里，防止后续句子全被卡住。

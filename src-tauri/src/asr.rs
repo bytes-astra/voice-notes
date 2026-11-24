@@ -130,11 +130,7 @@ const NO_SEGMENT_PEAK_FLOOR: f32 = 0.01;
 /// **这时的「没有句子」是正常的** —— 连续说话时 VAD 要等到句尾才切段，
 /// 音频没丢，只是还在攒。真正要报的是「有能量、VAD 却没在攒」：那种情况下
 /// 音频被判成非语音，被 sherpa 直接丢掉了。
-fn no_segment_warning(
-    silence_seconds: f32,
-    peak: f32,
-    vad_holding_speech: bool,
-) -> Option<String> {
+fn no_segment_warning(silence_seconds: f32, peak: f32, vad_holding_speech: bool) -> Option<String> {
     if vad_holding_speech {
         return None;
     }

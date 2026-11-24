@@ -230,9 +230,7 @@ fn report_gaps(samples: &[f32], segments: &[(f32, f32, String)]) {
         );
         cursor = *end;
     }
-    println!(
-        "  合计空档 {total_gap:.1}s（其中 {loud_gaps} 段有声音）"
-    );
+    println!("  合计空档 {total_gap:.1}s（其中 {loud_gaps} 段有声音）");
 }
 
 /// 跑完整会话：句子列表、覆盖秒数、字数。
@@ -265,8 +263,8 @@ fn probe_real_mic() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(15.0);
-    let out_prefix = std::env::var("VOICE_NOTES_MIC_OUT")
-        .unwrap_or_else(|_| "/tmp/voice-notes-mic".into());
+    let out_prefix =
+        std::env::var("VOICE_NOTES_MIC_OUT").unwrap_or_else(|_| "/tmp/voice-notes-mic".into());
 
     // 离线模式：分析已有的 WAV（抓过一次之后反复迭代用，不用重新录）
     let mono16: Vec<f32> = if let Ok(path) = std::env::var("VOICE_NOTES_MIC_FILE") {
@@ -279,7 +277,11 @@ fn probe_real_mic() {
             return;
         };
         let seconds_captured = raw.len() as f32 / rate as f32;
-        println!("抓到 {:.1}s（{rate} Hz，{} 采样）", seconds_captured, raw.len());
+        println!(
+            "抓到 {:.1}s（{rate} Hz，{} 采样）",
+            seconds_captured,
+            raw.len()
+        );
 
         // 落盘：原始 48k + 重采样后的 16k（和 record.rs 走同一个 LinearResampler）
         let raw_path = format!("{out_prefix}-raw.wav");
@@ -306,7 +308,10 @@ fn probe_real_mic() {
         20.0 * rms.max(1e-9).log10()
     );
     if mean.abs() > 0.2 * peak.max(1e-9) {
-        println!("  ⚠️ 直流分量占了峰值的 {:.0}% —— 波形看着有起伏，其实是人声被直流顶掉了", mean.abs() / peak.max(1e-9) * 100.0);
+        println!(
+            "  ⚠️ 直流分量占了峰值的 {:.0}% —— 波形看着有起伏，其实是人声被直流顶掉了",
+            mean.abs() / peak.max(1e-9) * 100.0
+        );
     }
 
     let Some(paths) = model_paths() else {
@@ -323,7 +328,10 @@ fn probe_real_mic() {
         ("归一化+限幅 0.7", peak_normalize_limited(&mono16, 0.7)),
     ];
 
-    println!("\n{:<16} {:>10} {:>10} {:>8} {:>10} {:>6}", "处理", "峰值", "RMS", "VAD语音", "覆盖", "字数");
+    println!(
+        "\n{:<16} {:>10} {:>10} {:>8} {:>10} {:>6}",
+        "处理", "峰值", "RMS", "VAD语音", "覆盖", "字数"
+    );
     for (label, audio) in &variants {
         let (peak, rms, _) = stats(audio);
         let ratio = vad_speech_ratio(&vad, 60.0, audio);

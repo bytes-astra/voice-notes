@@ -20,7 +20,10 @@ fn writes_lines_and_rotates() {
     write_line(&dir, "2026-01-01 00:00:02.000 [INFO] 轮转之后");
     assert!(dir.join("voice-notes.log.1").exists(), "没有生成轮转文件");
     let current = fs::read_to_string(dir.join(FILE_NAME)).expect("读当前日志");
-    assert!(current.contains("轮转之后"), "轮转后新行没写进去：{current}");
+    assert!(
+        current.contains("轮转之后"),
+        "轮转后新行没写进去：{current}"
+    );
     assert!(!current.contains('x'), "轮转后当前文件还是旧内容");
 
     let _ = fs::remove_dir_all(&dir);

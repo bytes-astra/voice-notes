@@ -19,8 +19,8 @@ use sherpa_onnx::{
 use tauri::{AppHandle, Emitter};
 
 use crate::asr::{
-    clean, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript,
-    PRE_ROLL_SAMPLES, SAMPLE_RATE, VAD_WINDOW,
+    clean, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript, PRE_ROLL_SAMPLES,
+    SAMPLE_RATE, VAD_WINDOW,
 };
 use crate::audio::Recorder;
 use crate::log::{self, on_off};
@@ -501,8 +501,8 @@ pub async fn ensure_streaming_engine(
     let settings = state.settings.clone();
     let build_app = app.clone();
     // 检查和加载放在同一把锁里：预热和点录音并发时只会加载一份 161 MB 模型。
-    let outcome =
-        match tauri::async_runtime::spawn_blocking(move || -> Result<Arc<StreamingEngine>, String> {
+    let outcome = match tauri::async_runtime::spawn_blocking(
+        move || -> Result<Arc<StreamingEngine>, String> {
             install_engine(
                 &slot,
                 &settings,
@@ -526,12 +526,13 @@ pub async fn ensure_streaming_engine(
                 },
                 "error.streamEngineState",
             )
-        })
-        .await
-        {
-            Ok(inner) => inner,
-            Err(e) => Err(code_detail("model.streamLoadFailed", e)),
-        };
+        },
+    )
+    .await
+    {
+        Ok(inner) => inner,
+        Err(e) => Err(code_detail("model.streamLoadFailed", e)),
+    };
 
     // 成功发 ready，失败发 error —— 和整段侧 load_engine 一个范式。
     // 少了 error 事件，前端 state.engine 会永远停在 loading（徽标卡「加载中」）。
@@ -551,7 +552,9 @@ pub async fn ensure_punctuation(
     let engine_slot = state.punct_engine.clone();
     let engine =
         tauri::async_runtime::spawn_blocking(move || -> Result<Arc<PunctuationEngine>, String> {
-            let mut guard = engine_slot.lock().map_err(|_| code("error.punctEngineState"))?;
+            let mut guard = engine_slot
+                .lock()
+                .map_err(|_| code("error.punctEngineState"))?;
             if let Some(engine) = guard.as_ref() {
                 return Ok(engine.clone());
             }
@@ -996,7 +999,9 @@ pub(crate) fn streaming_engine_for_test() -> Option<Arc<StreamingEngine>> {
             .find(|path| path.is_file())
             .map(|path| path.display().to_string()),
     };
-    Some(Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型")))
+    Some(Arc::new(
+        StreamingEngine::new(&paths, &[]).expect("加载流式模型"),
+    ))
 }
 
 // ──────────────────── 识别规则（pre-roll）────────────────────

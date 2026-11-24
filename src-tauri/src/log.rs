@@ -101,7 +101,9 @@ fn rotate(file: &Path) {
 
 /// 本地时间戳（用户看日志时不用自己换算时区）。
 fn timestamp() -> String {
-    chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+    chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string()
 }
 
 /// 布尔开关在日志里写「开 / 关」。

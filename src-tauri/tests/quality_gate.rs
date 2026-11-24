@@ -34,7 +34,7 @@ use voice_notes_lib::engine::{Engine, StreamingEngine};
 use voice_notes_lib::models::{ModelPaths, StreamingPaths};
 
 mod common;
-use common::{cer, corpus, category, env_f64, reference_for};
+use common::{category, cer, corpus, env_f64, reference_for};
 
 /// 整段 CER 上限（%）。基线是 TTS 语料上的实测值，留了余量：
 /// 语料是本机合成的，不同 macOS 版本的 `say` 声线会有细微差别。
@@ -45,7 +45,9 @@ const DEFAULT_MAX_STREAMING_CER: f64 = 55.0;
 const DEFAULT_MAX_RTF: f64 = 1.0;
 
 fn offline_model_dir() -> Option<PathBuf> {
-    std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(PathBuf::from)
+    std::env::var("VOICE_NOTES_MODEL_DIR")
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn streaming_model_dir() -> Option<PathBuf> {

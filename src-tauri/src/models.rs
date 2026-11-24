@@ -404,7 +404,10 @@ async fn fetch_one(
 ) -> Result<(), String> {
     let part = dest.with_extension("part");
     // 旧版本/损坏的缓存不可能用于断点续传，先删掉再从头下载。
-    if fs::metadata(&part).map(|m| m.len() > asset.bytes).unwrap_or(false) {
+    if fs::metadata(&part)
+        .map(|m| m.len() > asset.bytes)
+        .unwrap_or(false)
+    {
         let _ = fs::remove_file(&part);
     }
     let offset = fs::metadata(&part)

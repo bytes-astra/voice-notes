@@ -508,13 +508,7 @@ pub fn start_with(
                     last_tick = Instant::now();
                     let level = thread_levels.peak();
                     if let Some(app) = &app {
-                        let _ = app.emit(
-                            "audio:level",
-                            LevelPayload {
-                                session_id,
-                                level,
-                            },
-                        );
+                        let _ = app.emit("audio:level", LevelPayload { session_id, level });
                     }
                 }
             }

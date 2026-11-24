@@ -19,7 +19,9 @@ use common::trim_silence;
 
 /// 模型目录（同其他冒烟测试）
 fn model_dir() -> Option<PathBuf> {
-    let dir = std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(PathBuf::from)?;
+    let dir = std::env::var("VOICE_NOTES_MODEL_DIR")
+        .ok()
+        .map(PathBuf::from)?;
     dir.join("silero_vad.onnx").is_file().then_some(dir)
 }
 

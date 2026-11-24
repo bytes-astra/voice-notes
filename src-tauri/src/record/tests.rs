@@ -330,8 +330,16 @@ fn offline_timeline_shifts_by_dropped_audio() {
         },
         &drops,
     );
-    assert!((segment.start - 3.0).abs() < 1e-6, "起点应后移 1 秒: {}", segment.start);
-    assert!((segment.end - 4.0).abs() < 1e-6, "终点应后移 1 秒: {}", segment.end);
+    assert!(
+        (segment.start - 3.0).abs() < 1e-6,
+        "起点应后移 1 秒: {}",
+        segment.start
+    );
+    assert!(
+        (segment.end - 4.0).abs() < 1e-6,
+        "终点应后移 1 秒: {}",
+        segment.end
+    );
     // 缺口落在缺口终点：1 秒喂入 + 1 秒被丢掉 = 2 秒
     assert!((super::gap_at(16_000, &drops) - 2.0).abs() < 1e-6);
 }
@@ -557,9 +565,7 @@ fn capture_failure_without_transcript_returns_error() {
         discard: Arc::new(AtomicBool::new(false)),
         rx,
     };
-    assert!(
-        matches!(finish_recording(recorder, run, 1), Err(error) if error == "record.micError")
-    );
+    assert!(matches!(finish_recording(recorder, run, 1), Err(error) if error == "record.micError"));
 }
 
 /// 等待收尾失败时必须报错，不能把半截结果当成成功交出去。
@@ -573,7 +579,10 @@ fn wait_failure_returns_no_partial_result() {
         wait_transcript(&rx, &discard, 0),
         Err(error) if error == STOP_FAILED
     ));
-    assert!(discard.load(Ordering::SeqCst), "超时要置 discard，别再让旧线程发射");
+    assert!(
+        discard.load(Ordering::SeqCst),
+        "超时要置 discard，别再让旧线程发射"
+    );
     drop(tx);
 }
 
@@ -961,5 +970,8 @@ fn server_endpoint_uploads_silence() {
     session.advance_samples(16_000);
     session.push(&[0.2; 16_000]);
     let sent = state.lock().unwrap().sent.len();
-    assert_eq!(sent, 16_000, "整段音频（含静音）都该送出去，实际 {sent} 个采样");
+    assert_eq!(
+        sent, 16_000,
+        "整段音频（含静音）都该送出去，实际 {sent} 个采样"
+    );
 }

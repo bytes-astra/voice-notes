@@ -68,8 +68,13 @@ pub fn encode_full_request(payload: &[u8]) -> Vec<u8> {
 
 /// 音频包：头 + payload size + 原始音频。`last` 为真时是末包（负包）。
 pub fn encode_audio(payload: &[u8], last: bool) -> Vec<u8> {
-    let flags = if last { FLAG_LAST_NO_SEQUENCE } else { FLAG_NO_SEQUENCE };
-    let mut out = encode_header(MESSAGE_TYPE_AUDIO_ONLY_REQUEST, flags, SERIALIZATION_NONE).to_vec();
+    let flags = if last {
+        FLAG_LAST_NO_SEQUENCE
+    } else {
+        FLAG_NO_SEQUENCE
+    };
+    let mut out =
+        encode_header(MESSAGE_TYPE_AUDIO_ONLY_REQUEST, flags, SERIALIZATION_NONE).to_vec();
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(payload);
     out
@@ -79,7 +84,11 @@ pub fn encode_audio(payload: &[u8], last: bool) -> Vec<u8> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerFrame {
     /// 识别结果（`sequence` 为负数、或 flags 带末包位，都表示这是最终响应）。
-    Response { sequence: i32, flags: u8, payload: Vec<u8> },
+    Response {
+        sequence: i32,
+        flags: u8,
+        payload: Vec<u8>,
+    },
     /// 协议错误帧。
     Error { code: u32, message: String },
 }
@@ -109,10 +118,10 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
             let end = offset + size as usize;
             if end > data.len() {
                 return Err(crate::asr::cloud::logging::code_detail(
-            "cloud.protocolError",
-            "帧长度不够：payload 被截断",
-            None,
-        ));
+                    "cloud.protocolError",
+                    "帧长度不够：payload 被截断",
+                    None,
+                ));
             }
             Ok(ServerFrame::Response {
                 sequence,
@@ -127,10 +136,10 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
             let end = offset + size as usize;
             if end > data.len() {
                 return Err(crate::asr::cloud::logging::code_detail(
-            "cloud.protocolError",
-            "错误帧长度不够：消息被截断",
-            None,
-        ));
+                    "cloud.protocolError",
+                    "错误帧长度不够：消息被截断",
+                    None,
+                ));
             }
             Ok(ServerFrame::Error {
                 code,
@@ -148,7 +157,11 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
 fn read_bytes<'a>(data: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8], String> {
     let end = *offset + len;
     if end > data.len() {
-        return Err(crate::asr::cloud::logging::code_detail("cloud.protocolError", "帧长度不够", None));
+        return Err(crate::asr::cloud::logging::code_detail(
+            "cloud.protocolError",
+            "帧长度不够",
+            None,
+        ));
     }
     let slice = &data[*offset..end];
     *offset = end;

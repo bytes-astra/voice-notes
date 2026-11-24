@@ -67,7 +67,10 @@ fn decodes_error_event() {
 #[test]
 fn ignores_unknown_frames() {
     assert_eq!(decode_event("not json"), ServerEvent::Other);
-    assert_eq!(decode_event(r#"{"type":"session.created"}"#), ServerEvent::Other);
+    assert_eq!(
+        decode_event(r#"{"type":"session.created"}"#),
+        ServerEvent::Other
+    );
 }
 
 /// 音频帧：`input_audio_buffer.append` + base64。
@@ -295,7 +298,10 @@ fn control_frame_reports_disconnect_when_closed() {
 /// 配置确认事件：connect 要等它才能报告成功。
 #[test]
 fn decodes_session_updated_event() {
-    assert_eq!(decode_event(r#"{"type":"session.updated"}"#), ServerEvent::SessionUpdated);
+    assert_eq!(
+        decode_event(r#"{"type":"session.updated"}"#),
+        ServerEvent::SessionUpdated
+    );
 }
 
 /// 失败的 item 用空 final 占住提交队列里的位置：它后面那些**先到**的
@@ -320,7 +326,11 @@ fn failed_item_releases_later_final_in_commit_order() {
             _ => None,
         })
         .collect();
-    assert_eq!(texts, vec![String::new(), "第二句".to_string()], "顺序必须是 a（空）→ b");
+    assert_eq!(
+        texts,
+        vec![String::new(), "第二句".to_string()],
+        "顺序必须是 a（空）→ b"
+    );
     assert!(tracker.is_empty());
 }
 
@@ -350,7 +360,8 @@ fn server_error_redacts_secret() {
 /// 外发热词按 Realtime 协议过滤：`<`、`>`、CR、LF 不能进 keywords。
 #[test]
 fn clean_cloud_keywords_drops_protocol_illegal_chars() {
-    let (clean, ignored) = clean_cloud_keywords(&["正常".into(), "C<plus>".into(), "换\n行".into()]);
+    let (clean, ignored) =
+        clean_cloud_keywords(&["正常".into(), "C<plus>".into(), "换\n行".into()]);
     assert_eq!(clean, vec!["正常".to_string()]);
     assert_eq!(ignored, 2);
 }
@@ -436,9 +447,8 @@ fn deltas_accumulate_into_the_sentence_so_far() {
             other => panic!("realtime/Delta: 该解出增量事件，实际是 {other:?}"),
         };
         deltas.push(delta.clone());
-        accumulated.push(
-            accumulator.apply(Some("item_1".into()), partial::PartialUpdate::Delta(delta)),
-        );
+        accumulated
+            .push(accumulator.apply(Some("item_1".into()), partial::PartialUpdate::Delta(delta)));
     }
     // 期望值是**手写字面量**。
     assert_eq!(
@@ -454,7 +464,8 @@ fn deltas_accumulate_into_the_sentence_so_far() {
     assert_eq!(
         RealtimeProvider::CAPABILITIES.partial_semantics,
         derived,
-        "realtime/{:?}: 声明的形态与协议实际形态不符", derived
+        "realtime/{:?}: 声明的形态与协议实际形态不符",
+        derived
     );
 }
 
@@ -486,7 +497,9 @@ fn deltas_accumulate_on_the_production_path() {
             // 先等客户端的 session.update，回 session.updated（connect 在等它）。
             while let Some(message) = socket.next().await {
                 let Ok(message) = message else { break };
-                let Message::Text(text) = message else { continue };
+                let Message::Text(text) = message else {
+                    continue;
+                };
                 let Ok(value) = serde_json::from_str::<Value>(&text) else {
                     continue;
                 };

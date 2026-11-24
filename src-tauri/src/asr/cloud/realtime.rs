@@ -122,10 +122,7 @@ impl CloudProvider for RealtimeProvider {
         Self::CAPABILITIES
     }
 
-    fn connect(
-        &mut self,
-        on_event: Box<dyn Fn(CloudEvent) + Send + Sync>,
-    ) -> Result<(), String> {
+    fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String> {
         let (commands_tx, commands_rx) = tokio_mpsc::channel(UPLOAD_QUEUE_CAPACITY);
         let (ready_tx, ready_rx) = channel::<Result<(), String>>();
         let config = RealtimeConfig {
@@ -162,9 +159,14 @@ impl CloudProvider for RealtimeProvider {
             Err(tokio_mpsc::error::TrySendError::Full(_)) => {
                 // 队列满：这一段整段没送出去。调用方据此在结果里留缺口。
                 let samples = pcm.len() * 16000 / TARGET_SAMPLE_RATE as usize;
-                Ok(SendOutcome { dropped: samples, delivered: false })
+                Ok(SendOutcome {
+                    dropped: samples,
+                    delivered: false,
+                })
             }
-            Err(tokio_mpsc::error::TrySendError::Closed(_)) => Err(crate::code("cloud.disconnected")),
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                Err(crate::code("cloud.disconnected"))
+            }
         }
     }
 
@@ -254,7 +256,11 @@ async fn run(
         .send(Message::Text(encode_session_update(&config).into()))
         .await
     {
-        let error = super::logging::code_detail("cloud.connectFailed", error.to_string(), Some(&config.api_key));
+        let error = super::logging::code_detail(
+            "cloud.connectFailed",
+            error.to_string(),
+            Some(&config.api_key),
+        );
         let _ = ready.send(Err(error.clone()));
         let _ = errors.send(error);
         return;
@@ -490,16 +496,21 @@ async fn run(
 /// 连上 Realtime。
 async fn connect_socket(
     config: &RealtimeConfig,
-) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    String,
+> {
     let mut request = config
         .base_url
         .as_str()
         .into_client_request()
-        .map_err(|error| super::logging::code_detail(
-            "cloud.connectFailed",
-            error.to_string(),
-            Some(&config.api_key),
-        ))?;
+        .map_err(|error| {
+            super::logging::code_detail(
+                "cloud.connectFailed",
+                error.to_string(),
+                Some(&config.api_key),
+            )
+        })?;
     // 凭据只进请求头：URL 与日志里都不许出现。
     let auth = format!("Bearer {}", config.api_key);
     let header = auth
@@ -777,7 +788,9 @@ impl CommitTracker {
     ///
     /// 返回按提交顺序可以上抛的事件（回执优先）。
     fn committed(&mut self, item_id: Option<String>) -> Vec<CloudEvent> {
-        let Some(item_id) = item_id else { return Vec::new() };
+        let Some(item_id) = item_id else {
+            return Vec::new();
+        };
         if self
             .slots
             .iter()

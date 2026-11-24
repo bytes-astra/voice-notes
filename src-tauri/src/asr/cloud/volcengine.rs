@@ -119,10 +119,7 @@ impl CloudProvider for VolcengineProvider {
         Self::CAPABILITIES
     }
 
-    fn connect(
-        &mut self,
-        on_event: Box<dyn Fn(CloudEvent) + Send + Sync>,
-    ) -> Result<(), String> {
+    fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String> {
         let (commands_tx, commands_rx) = tokio_mpsc::channel(64);
         let (ready_tx, ready_rx) = channel::<Result<(), String>>();
         let config = self.config.clone();
@@ -168,7 +165,10 @@ impl CloudProvider for VolcengineProvider {
         // **只是攒进包里、一个包都没发出去 ≠ 投递了**：会话层靠这个信号
         // 判断「丢包段是否结束」—— 攒包时若当成投递，正在累积的丢包段会被
         // 提前闭合，连续丢包永远并不成一条。
-        Ok(SendOutcome { dropped: dropped_samples, delivered })
+        Ok(SendOutcome {
+            dropped: dropped_samples,
+            delivered,
+        })
     }
 
     fn commit(&mut self) -> Result<(), String> {
@@ -234,10 +234,7 @@ fn encode_corpus_context(words: &[String]) -> Option<String> {
     if words.is_empty() {
         return None;
     }
-    let hotwords: Vec<Value> = words
-        .iter()
-        .map(|word| json!({ "word": word }))
-        .collect();
+    let hotwords: Vec<Value> = words.iter().map(|word| json!({ "word": word })).collect();
     Some(json!({ "hotwords": hotwords }).to_string())
 }
 
@@ -329,7 +326,11 @@ async fn run(
     // 首次全量请求：音频参数 + 断句参数 + 热词。
     let frame = frame::encode_full_request(&encode_full_request(&config));
     if let Err(error) = socket.send(Message::Binary(frame.into())).await {
-        let error = super::logging::code_detail("cloud.connectFailed", error.to_string(), Some(&config.api_key));
+        let error = super::logging::code_detail(
+            "cloud.connectFailed",
+            error.to_string(),
+            Some(&config.api_key),
+        );
         let _ = ready.send(Err(error.clone()));
         let _ = errors.send(error);
         return;
@@ -444,13 +445,13 @@ async fn connect_socket(
     } else {
         config.base_url.trim()
     };
-    let mut request = base_url
-        .into_client_request()
-        .map_err(|error| super::logging::code_detail(
+    let mut request = base_url.into_client_request().map_err(|error| {
+        super::logging::code_detail(
             "cloud.connectFailed",
             error.to_string(),
             Some(&config.api_key),
-        ))?;
+        )
+    })?;
     let resource_id = if config.resource_id.trim().is_empty() {
         DEFAULT_RESOURCE_ID
     } else {

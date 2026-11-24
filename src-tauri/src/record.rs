@@ -61,7 +61,9 @@ pub fn register_slots<R, S>(
     recorder: R,
     session: S,
 ) -> Result<(), SlotError> {
-    let mut recorder_guard = recorder_slot.lock().map_err(|_| SlotError::RecorderLocked)?;
+    let mut recorder_guard = recorder_slot
+        .lock()
+        .map_err(|_| SlotError::RecorderLocked)?;
     let mut session_guard = session_slot.lock().map_err(|_| SlotError::SessionLocked)?;
     // 两个槽都要空：会话槽还占着说明上一轮没清干净，
     // 顶掉它，上一轮的识别线程就永远收不到 stop。
@@ -94,7 +96,10 @@ pub const MIN_TRANSCRIPT_SECONDS: f32 = 0.2;
 /// 否则一边显示「至少说 0.2 秒」、另一边显示「至少说 {seconds} 秒」。
 pub fn ensure_transcript_usable(text: &str, duration_seconds: f32) -> Result<(), String> {
     if duration_seconds < MIN_TRANSCRIPT_SECONDS {
-        return Err(crate::code_detail("record.tooShort", MIN_TRANSCRIPT_SECONDS));
+        return Err(crate::code_detail(
+            "record.tooShort",
+            MIN_TRANSCRIPT_SECONDS,
+        ));
     }
     if text.trim().is_empty() {
         return Err(crate::code("record.empty"));
@@ -659,7 +664,11 @@ where
             let marker = audio::gap_marker(dropped as u32, asr::SAMPLE_RATE as u32);
             // 起点是 16 kHz 采样数 → 转成秒（与句子区间同一把尺子）。
             let at = start as f32 / asr::SAMPLE_RATE as f32;
-            let segment = asr::Segment { text: marker, start: at, end: at };
+            let segment = asr::Segment {
+                text: marker,
+                start: at,
+                end: at,
+            };
             gaps.push(segment.clone());
             if !discard.load(Ordering::Relaxed) {
                 emit(vec![StreamEvent::Segment(segment)]);
@@ -791,7 +800,11 @@ where
     for (start, dropped) in session.take_upload_gaps() {
         let marker = audio::gap_marker(dropped as u32, asr::SAMPLE_RATE as u32);
         let at = start as f32 / asr::SAMPLE_RATE as f32;
-        let segment = asr::Segment { text: marker, start: at, end: at };
+        let segment = asr::Segment {
+            text: marker,
+            start: at,
+            end: at,
+        };
         gaps.push(segment.clone());
         emit(vec![StreamEvent::Segment(segment)]);
     }

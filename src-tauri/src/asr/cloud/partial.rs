@@ -40,7 +40,11 @@ pub enum PartialUpdate {
     /// `#[allow(dead_code)]` 的**移除条件**：第一个在**非测试代码**中构造
     /// `PartialUpdate::Replace` 的 provider 落地时。
     #[allow(dead_code)]
-    Replace { from: usize, to: usize, text: String },
+    Replace {
+        from: usize,
+        to: usize,
+        text: String,
+    },
 }
 
 /// 一个句子的累计状态：按识别顺序保存片段。

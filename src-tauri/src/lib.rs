@@ -367,15 +367,7 @@ fn save_cloud_profile(
             .settings
             .lock()
             .map_err(|_| code("error.settingsState"))?;
-        settings::upsert_cloud_profile(
-            &mut guard,
-            id,
-            label,
-            provider,
-            base_url,
-            api_key,
-            model,
-        );
+        settings::upsert_cloud_profile(&mut guard, id, label, provider, base_url, api_key, model);
     }
     persist(&app, &state)?;
     // 凭据不进日志：这里只记「连接已保存」，不打印任何 key。
@@ -603,10 +595,7 @@ async fn download_streaming_model(
 ///
 /// 「缺 VAD」绝不能被当成「改用服务端断句」—— 那是另一个能力
 /// （`needs_local_vad`）；两者混在一起会让客户端提交族静默退化。
-fn vad_precondition(
-    caps: &asr::cloud::Capabilities,
-    vad_present: bool,
-) -> Result<(), String> {
+fn vad_precondition(caps: &asr::cloud::Capabilities, vad_present: bool) -> Result<(), String> {
     if !caps.needs_local_vad {
         return Ok(());
     }
@@ -762,11 +751,9 @@ async fn start_offline_recording(
     // （会话本来就要交给识别线程，Send 是现成的）。
     let session = {
         let engine = engine.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            asr::OfflineSession::new(engine, vad)
-        })
-        .await
-        .map_err(|e| code_detail("error.offlineThreadFailed", e))??
+        tauri::async_runtime::spawn_blocking(move || asr::OfflineSession::new(engine, vad))
+            .await
+            .map_err(|e| code_detail("error.offlineThreadFailed", e))??
     };
     let recorder = {
         let audio_app = app.clone();
@@ -823,7 +810,8 @@ async fn start_offline_recording(
         discard: discard.clone(),
         rx,
     };
-    if let Err(error) = record::register_slots(&state.recorder, &state.offline_session, recorder, run)
+    if let Err(error) =
+        record::register_slots(&state.recorder, &state.offline_session, recorder, run)
     {
         // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
         stop.store(true, Ordering::SeqCst);
@@ -880,7 +868,9 @@ async fn start_cloud_recording(
             return Err(code("setup.busy"));
         }
         let _download = DownloadFlagGuard::new(state.downloading_streaming.clone());
-        state.cancel_download_streaming.store(false, Ordering::SeqCst);
+        state
+            .cancel_download_streaming
+            .store(false, Ordering::SeqCst);
         let dir = models::streaming_install_dir(&app)?;
         let sink = EventSink::new(app.clone(), "streaming");
         models::download_asset(
@@ -965,7 +955,8 @@ async fn start_cloud_recording(
         discard: discard.clone(),
         rx,
     };
-    if let Err(error) = record::register_slots(&state.recorder, &state.cloud_session, recorder, run) {
+    if let Err(error) = record::register_slots(&state.recorder, &state.cloud_session, recorder, run)
+    {
         // 登记失败：识别线程已经起来了，必须让它退出（否则线程永远空转）。
         stop.store(true, Ordering::SeqCst);
         discard.store(true, Ordering::SeqCst);
@@ -1060,22 +1051,23 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
     let Some(offline) = offline else {
         return Err(code("record.threadExited"));
     };
-    let finished = tauri::async_runtime::spawn_blocking(move || -> Result<FinishedRecording, String> {
-        let finished = finish_recording(recorder, offline, 30).map_err(|error| {
-            if record::is_stop_failed(&error) {
-                code("record.offlineTimeout")
-            } else {
-                error
-            }
-        })?;
-        ensure_transcript_usable(
-            &finished.transcript.text,
-            finished.transcript.duration_seconds,
-        )?;
-        Ok(finished)
-    })
-    .await
-    .map_err(|e| code_detail(STOP_FAILED, e))??;
+    let finished =
+        tauri::async_runtime::spawn_blocking(move || -> Result<FinishedRecording, String> {
+            let finished = finish_recording(recorder, offline, 30).map_err(|error| {
+                if record::is_stop_failed(&error) {
+                    code("record.offlineTimeout")
+                } else {
+                    error
+                }
+            })?;
+            ensure_transcript_usable(
+                &finished.transcript.text,
+                finished.transcript.duration_seconds,
+            )?;
+            Ok(finished)
+        })
+        .await
+        .map_err(|e| code_detail(STOP_FAILED, e))??;
     let mut transcript = finished.transcript;
     if finished.capture_error.is_some() {
         transcript.warning = Some(code("record.micError"));
@@ -1139,9 +1131,8 @@ async fn transcribe_file(
             emit_segment(&segment);
         }
 
-        let transcript = session.transcript(
-            session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32,
-        );
+        let transcript =
+            session.transcript(session.recorded_samples() as f32 / asr::SAMPLE_RATE as f32);
         log::info(format!(
             "文件转写完成：时长 {:.1}s，句子 {} 段",
             transcript.duration_seconds,

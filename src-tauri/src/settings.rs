@@ -291,16 +291,26 @@ pub fn upsert_cloud_profile(
     let label = label.trim().to_string();
 
     // 已有的连接 → 改它；没有 → 新建一条。
-    let id = match id.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
-        Some(id) if settings.cloud_profiles.iter().any(|profile| profile.id == id) => id,
-        _ => {
-            let id = next_profile_id(
-            &settings
+    let id = match id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(id)
+            if settings
                 .cloud_profiles
                 .iter()
-                .map(|profile| profile.id.clone())
-                .collect::<Vec<_>>(),
-        );
+                .any(|profile| profile.id == id) =>
+        {
+            id
+        }
+        _ => {
+            let id = next_profile_id(
+                &settings
+                    .cloud_profiles
+                    .iter()
+                    .map(|profile| profile.id.clone())
+                    .collect::<Vec<_>>(),
+            );
             settings.cloud_profiles.push(CloudProfile {
                 id: id.clone(),
                 label: label.clone(),
@@ -388,7 +398,10 @@ pub fn delete_cloud_profile(settings: &mut Settings, id: &str) -> Result<(), Str
 /// （不连带提交编辑区里其它还没保存的字段）。
 pub fn clear_cloud_profile_key(settings: &mut Settings, id: &str) -> Result<(), String> {
     let id = id.trim();
-    let Some(profile) = settings.cloud_profiles.iter_mut().find(|profile| profile.id == id)
+    let Some(profile) = settings
+        .cloud_profiles
+        .iter_mut()
+        .find(|profile| profile.id == id)
     else {
         return Err(crate::code("cloud.profileNotFound"));
     };
@@ -432,6 +445,6 @@ pub fn mask_secret(secret: &str) -> String {
 }
 
 #[cfg(test)]
-mod hotword_tests;
-#[cfg(test)]
 mod cloud_tests;
+#[cfg(test)]
+mod hotword_tests;

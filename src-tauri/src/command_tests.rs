@@ -77,7 +77,10 @@ fn vad_precondition_follows_capability() {
         needs_local_vad: false,
         ..client_commit
     };
-    assert!(vad_precondition(&client_commit, true).is_ok(), "已就绪应放行");
+    assert!(
+        vad_precondition(&client_commit, true).is_ok(),
+        "已就绪应放行"
+    );
     assert_eq!(
         vad_precondition(&client_commit, false).unwrap_err(),
         "cloud.vadMissing"

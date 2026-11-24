@@ -246,7 +246,10 @@ fn oversized_partial_file_is_replaced_by_a_fresh_download() {
             }
             request.push_str(&line);
         }
-        assert!(request.to_ascii_lowercase().contains("range: bytes=0-"), "{request}");
+        assert!(
+            request.to_ascii_lowercase().contains("range: bytes=0-"),
+            "{request}"
+        );
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnew")
             .unwrap();

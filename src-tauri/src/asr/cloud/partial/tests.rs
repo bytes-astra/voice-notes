@@ -18,12 +18,18 @@ fn preview_replaces_whole_sentence() {
     let mut acc = PartialAccumulator::new(PartialSemantics::Preview);
     let first = acc.apply(
         Some("a".into()),
-        PartialUpdate::Preview { confirmed: "你好".into(), draft: "，".into() },
+        PartialUpdate::Preview {
+            confirmed: "你好".into(),
+            draft: "，".into(),
+        },
     );
     assert_eq!(first, "你好，");
     let second = acc.apply(
         Some("a".into()),
-        PartialUpdate::Preview { confirmed: "你好，".into(), draft: "世界".into() },
+        PartialUpdate::Preview {
+            confirmed: "你好，".into(),
+            draft: "世界".into(),
+        },
     );
     assert_eq!(second, "你好，世界");
 }
@@ -36,7 +42,11 @@ fn range_update_rewrites_only_given_range() {
     acc.apply(Some("a".into()), PartialUpdate::Delta("好".into()));
     let text = acc.apply(
         Some("a".into()),
-        PartialUpdate::Replace { from: 0, to: 0, text: "您".into() },
+        PartialUpdate::Replace {
+            from: 0,
+            to: 0,
+            text: "您".into(),
+        },
     );
     assert_eq!(text, "您好");
 }

@@ -129,7 +129,10 @@ pub enum ServerEvent {
     TaskStarted,
     Sentence(Sentence),
     TaskFinished,
-    TaskFailed { code: String, message: String },
+    TaskFailed {
+        code: String,
+        message: String,
+    },
     /// 未知事件：向前兼容，不报错。
     Other,
 }
@@ -186,10 +189,7 @@ impl CloudProvider for AliyunProvider {
         Self::CAPABILITIES
     }
 
-    fn connect(
-        &mut self,
-        on_event: Box<dyn Fn(CloudEvent) + Send + Sync>,
-    ) -> Result<(), String> {
+    fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String> {
         let (commands_tx, commands_rx) = tokio_mpsc::channel(64);
         let (ready_tx, ready_rx) = channel::<Result<(), String>>();
         let config = self.config.clone();
@@ -433,8 +433,9 @@ fn hotword_text_fits(word: &str) -> bool {
 
 /// 解码一条服务端文本帧。
 pub fn decode_server_event(raw: &str) -> Result<ServerEvent, String> {
-    let value: Value = serde_json::from_str(raw)
-        .map_err(|error| super::logging::code_detail("cloud.protocolError", error.to_string(), None))?;
+    let value: Value = serde_json::from_str(raw).map_err(|error| {
+        super::logging::code_detail("cloud.protocolError", error.to_string(), None)
+    })?;
     let header = value.get("header").cloned().unwrap_or(Value::Null);
     let event = header.get("event").and_then(Value::as_str).unwrap_or("");
     Ok(match event {
@@ -487,7 +488,9 @@ fn parse_sentence(value: &Value) -> Sentence {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        draft_id: stash.and_then(|stash| stash.get("sentence_id")).and_then(Value::as_i64),
+        draft_id: stash
+            .and_then(|stash| stash.get("sentence_id"))
+            .and_then(Value::as_i64),
         heartbeat: value
             .get("heartbeat")
             .and_then(Value::as_bool)
@@ -680,8 +683,14 @@ impl AliyunMapper {
         // ⑦ 实时行 = 已确认文本 + 草稿。
         let live = format!(
             "{}{}",
-            self.open.as_ref().map(|(_, text)| text.as_str()).unwrap_or(""),
-            self.draft.as_ref().map(|(_, text)| text.as_str()).unwrap_or("")
+            self.open
+                .as_ref()
+                .map(|(_, text)| text.as_str())
+                .unwrap_or(""),
+            self.draft
+                .as_ref()
+                .map(|(_, text)| text.as_str())
+                .unwrap_or("")
         );
         if !live.trim().is_empty() {
             events.push(CloudEvent::Partial(live));
@@ -737,7 +746,11 @@ async fn run(
         .send(Message::Text(encode_run_task(&config, &task_id).into()))
         .await
     {
-        let error = super::logging::code_detail("cloud.sendFailed", error.to_string(), Some(&config.api_key));
+        let error = super::logging::code_detail(
+            "cloud.sendFailed",
+            error.to_string(),
+            Some(&config.api_key),
+        );
         let _ = ready.send(Err(error.clone()));
         let _ = errors.send(error);
         return;
@@ -882,8 +895,14 @@ fn log_usage(raw: &str) {
         return;
     }
     let duration = usage.get("duration").and_then(Value::as_i64).unwrap_or(0);
-    let input = usage.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
-    let output = usage.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
+    let input = usage
+        .get("input_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     super::logging::info(
         &format!("阿里云端：任务完成 时长 {duration}s，输入 {input} token，输出 {output} token"),
         None,
@@ -897,14 +916,13 @@ async fn connect_socket(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     String,
 > {
-    let mut request = config
-        .base_url()
-        .into_client_request()
-        .map_err(|error| super::logging::code_detail(
+    let mut request = config.base_url().into_client_request().map_err(|error| {
+        super::logging::code_detail(
             "cloud.connectFailed",
             error.to_string(),
             Some(&config.api_key),
-        ))?;
+        )
+    })?;
     let header = format!("Bearer {}", config.api_key)
         .parse()
         .map_err(|_| crate::code("cloud.connectFailed"))?;

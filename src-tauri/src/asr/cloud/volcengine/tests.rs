@@ -26,7 +26,10 @@ fn definite_sentence_maps_to_final() {
             _ => None,
         })
         .collect();
-    assert_eq!(finals, vec!["这是字节跳动，".to_string(), "今日头条母公司。".to_string()]);
+    assert_eq!(
+        finals,
+        vec!["这是字节跳动，".to_string(), "今日头条母公司。".to_string()]
+    );
     assert_eq!(emitted, 2);
 }
 
@@ -72,7 +75,10 @@ fn keywords_encoded_as_corpus_context() {
     let context = encode_corpus_context(&["玄戒芯片".into()]).expect("应有 context");
     let value: Value = serde_json::from_str(&context).expect("应是合法 JSON");
     assert_eq!(value["hotwords"][0]["word"], "玄戒芯片");
-    assert!(encode_corpus_context(&[]).is_none(), "没有热词就不带 context");
+    assert!(
+        encode_corpus_context(&[]).is_none(),
+        "没有热词就不带 context"
+    );
 }
 
 /// 能力声明：服务端断句、不需要本地 VAD、16 kHz。
@@ -95,7 +101,8 @@ fn first_request_payload_is_correct() {
         itn: false,
         punct: true,
     };
-    let value: Value = serde_json::from_slice(&encode_full_request(&config)).expect("应是合法 JSON");
+    let value: Value =
+        serde_json::from_slice(&encode_full_request(&config)).expect("应是合法 JSON");
     assert_eq!(value["request"]["model_name"], "bigmodel");
     assert_eq!(value["audio"]["format"], "pcm");
     assert_eq!(value["audio"]["rate"], 16000);
@@ -108,14 +115,18 @@ fn first_request_payload_is_correct() {
     assert_eq!(value["request"]["enable_punc"], true);
     // 热词在 corpus.context 里（JSON 字符串）。
     let context: Value =
-        serde_json::from_str(value["request"]["corpus"]["context"].as_str().unwrap()).expect("context 应是 JSON");
+        serde_json::from_str(value["request"]["corpus"]["context"].as_str().unwrap())
+            .expect("context 应是 JSON");
     assert_eq!(context["hotwords"][0]["word"], "玄戒芯片");
 }
 
 /// 错误码映射：空音频 → 没有结果；等包超时 → 超时；其余 → 协议错误（带细节）。
 #[test]
 fn error_code_maps_to_dictionary_key() {
-    assert_eq!(map_error_code(45000002, "empty audio", "k"), "cloud.noResult");
+    assert_eq!(
+        map_error_code(45000002, "empty audio", "k"),
+        "cloud.noResult"
+    );
     assert_eq!(map_error_code(45000081, "timeout", "k"), "cloud.timeout");
     let other = map_error_code(45000151, "bad format", "k");
     assert!(other.starts_with("cloud.protocolError"), "实际 {other}");
@@ -232,7 +243,11 @@ fn server_error_message_redacts_secret() {
         detail
     );
     assert!(detail.contains("***"), "凭据要脱敏：{}", detail);
-    assert!(!detail.contains(key), "凭据不能出现在错误详情里：{}", detail);
+    assert!(
+        !detail.contains(key),
+        "凭据不能出现在错误详情里：{}",
+        detail
+    );
 }
 
 // ── provider 契约守卫（RC-K1 / RC-K2）────────────────────────────────────
@@ -322,7 +337,8 @@ fn partial_is_a_whole_sentence_replacement() {
     // 期望值是**手写字面量**：不从样例 JSON 里再读一遍 `utterances[..].text`。
     assert_eq!(
         first_texts[0], "你好世界",
-        "volcengine/{:?}: 第一次上抛的中间结果应是整句草稿", derived
+        "volcengine/{:?}: 第一次上抛的中间结果应是整句草稿",
+        derived
     );
     assert_eq!(
         second_texts[0], "你好",
@@ -333,6 +349,7 @@ fn partial_is_a_whole_sentence_replacement() {
     assert_eq!(
         VolcengineProvider::CAPABILITIES.partial_semantics,
         derived,
-        "volcengine/{:?}: 声明的形态与协议实际形态不符", derived
+        "volcengine/{:?}: 声明的形态与协议实际形态不符",
+        derived
     );
 }

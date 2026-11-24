@@ -25,16 +25,24 @@ fn run_task_carries_required_fields() {
     assert_eq!(value["payload"]["task_group"], "audio");
     assert_eq!(value["payload"]["task"], "asr");
     assert_eq!(value["payload"]["function"], "recognition");
-    assert_eq!(value["payload"]["model"], "qwen-audio-3.1-asr-flash-streaming");
+    assert_eq!(
+        value["payload"]["model"],
+        "qwen-audio-3.1-asr-flash-streaming"
+    );
     assert_eq!(value["payload"]["parameters"]["format"], "pcm");
     assert_eq!(value["payload"]["parameters"]["sample_rate"], 16_000);
     assert_eq!(value["payload"]["parameters"]["max_sentence_silence"], 800);
     assert_eq!(value["payload"]["parameters"]["heartbeat"], true);
     // 保留方言表达（录音工具要用户实际说的话）+ 近场 VAD（桌面麦克风）。
     assert_eq!(value["payload"]["parameters"]["keep_dialect"], true);
-    assert_eq!(value["payload"]["parameters"]["vad_model"], "near_meeting_16k");
+    assert_eq!(
+        value["payload"]["parameters"]["vad_model"],
+        "near_meeting_16k"
+    );
     // 没指定语言：不传 language_hints，让模型自动识别。
-    assert!(value["payload"]["parameters"].get("language_hints").is_none());
+    assert!(value["payload"]["parameters"]
+        .get("language_hints")
+        .is_none());
     // 没术语表：input 是空对象。
     assert_eq!(value["payload"]["input"], serde_json::json!({}));
 }
@@ -89,7 +97,10 @@ fn glossary_becomes_weighted_hotwords() {
     let (vocabulary, ignored) = build_vocabulary(&words);
     assert_eq!(
         vocabulary,
-        vec![("祺元".to_string(), DEFAULT_HOTWORD_WEIGHT), ("洛柯".to_string(), DEFAULT_HOTWORD_WEIGHT)]
+        vec![
+            ("祺元".to_string(), DEFAULT_HOTWORD_WEIGHT),
+            ("洛柯".to_string(), DEFAULT_HOTWORD_WEIGHT)
+        ]
     );
     assert_eq!(ignored, 0);
 }
@@ -101,21 +112,24 @@ fn over_limit_drops_whole_hotwords() {
     assert_eq!(ignored, 3, "超出的三条整条被丢弃");
     assert_eq!(vocabulary.len(), MAX_VOCABULARY);
     // 丢的是**末尾**的整条，不是把最后一个词截成半个。
-    assert_eq!(vocabulary.last().unwrap().0, format!("词{}", MAX_VOCABULARY - 1));
+    assert_eq!(
+        vocabulary.last().unwrap().0,
+        format!("词{}", MAX_VOCABULARY - 1)
+    );
 }
 
 // ── 事件解码 ────────────────────────────────────────────────────────
 
 #[test]
 fn decodes_all_four_server_events() {
-    let started = r#"{"header":{"task_id":"t","event":"task-started","attributes":{}},"payload":{}}"#;
+    let started =
+        r#"{"header":{"task_id":"t","event":"task-started","attributes":{}},"payload":{}}"#;
     assert!(matches!(
         decode_server_event(started).unwrap(),
         ServerEvent::TaskStarted
     ));
 
-    let finished =
-        r#"{"header":{"task_id":"t","event":"task-finished","attributes":{}},"payload":{"output":{},"usage":null}}"#;
+    let finished = r#"{"header":{"task_id":"t","event":"task-finished","attributes":{}},"payload":{"output":{},"usage":null}}"#;
     assert!(matches!(
         decode_server_event(finished).unwrap(),
         ServerEvent::TaskFinished
@@ -164,7 +178,13 @@ fn sentence(id: i64, end: bool, text: &str) -> Sentence {
 }
 
 /// 造一条句子：`id` 为 `None` 表示服务端没给 `sentence_id`。
-fn sentence_with(id: Option<i64>, end: bool, text: &str, draft: &str, draft_id: Option<i64>) -> Sentence {
+fn sentence_with(
+    id: Option<i64>,
+    end: bool,
+    text: &str,
+    draft: &str,
+    draft_id: Option<i64>,
+) -> Sentence {
     Sentence {
         id,
         end,
@@ -218,7 +238,8 @@ fn result_generated(sentence_id: i64, text: &str, stash_text: &str, stash_id: i6
 /// 守卫了（实测：把 `parse_sentence` 里的 stash 解析改成 `String::new()`，
 /// 276 条测试全绿）。
 fn map_protocol_json(mapper: &mut AliyunMapper, raw: &str) -> Vec<CloudEvent> {
-    let ServerEvent::Sentence(sentence) = decode_server_event(raw).expect("协议帧应能解码") else {
+    let ServerEvent::Sentence(sentence) = decode_server_event(raw).expect("协议帧应能解码")
+    else {
         panic!("该解出句子事件");
     };
     mapper.map_sentence(sentence)
@@ -255,7 +276,10 @@ fn declared_partial_semantics_matches_samples() {
         &mut mapper,
         &result_generated(1, "你好世界", "", 2),
     ));
-    let second = partials(&map_protocol_json(&mut mapper, &result_generated(1, "你好", "呀", 2)));
+    let second = partials(&map_protocol_json(
+        &mut mapper,
+        &result_generated(1, "你好", "呀", 2),
+    ));
     let (first, second) = (first[0].clone(), second[0].clone());
 
     // 推导：第二次若包含第一次的全部内容且更长 → 增量；否则（更短/改写）→ 整句替换。
@@ -268,7 +292,8 @@ fn declared_partial_semantics_matches_samples() {
     assert_eq!(
         AliyunProvider::CAPABILITIES.partial_semantics,
         derived,
-        "aliyun/{:?}: 声明的形态与协议实际形态不符", derived
+        "aliyun/{:?}: 声明的形态与协议实际形态不符",
+        derived
     );
 }
 
@@ -304,7 +329,11 @@ fn new_sentence_finalizes_previous_by_snapshot() {
     mapper.map_sentence(sentence(1, false, "说了一半"));
     // 服务端直接开新句（官方没承诺一定会先给 sentence_end=true）。
     let events = mapper.map_sentence(sentence(2, false, "第二句"));
-    assert_eq!(finals(&events), vec!["说了一半".to_string()], "上一句按快照定稿");
+    assert_eq!(
+        finals(&events),
+        vec!["说了一半".to_string()],
+        "上一句按快照定稿"
+    );
     assert_eq!(partials(&events), vec!["第二句".to_string()]);
 }
 
@@ -554,14 +583,15 @@ fn live_smoke() {
 
     let mut finals: Vec<String> = Vec::new();
     let mut partials: Vec<String> = Vec::new();
-    let collect = |events: Vec<StreamEvent>, finals: &mut Vec<String>, partials: &mut Vec<String>| {
-        for event in events {
-            match event {
-                StreamEvent::Partial(text) => partials.push(text),
-                StreamEvent::Segment(segment) => finals.push(segment.text),
+    let collect =
+        |events: Vec<StreamEvent>, finals: &mut Vec<String>, partials: &mut Vec<String>| {
+            for event in events {
+                match event {
+                    StreamEvent::Partial(text) => partials.push(text),
+                    StreamEvent::Segment(segment) => finals.push(segment.text),
+                }
             }
-        }
-    };
+        };
     // 按 20 ms 一批喂进去，每批之后收一次后台事件。
     for part in samples.chunks(16_000 / 50) {
         session.advance_samples(part.len());
@@ -637,7 +667,10 @@ fn task_failed_before_started_reports_the_real_error() {
     server.join().unwrap();
 
     assert!(error.starts_with("cloud.protocolError"), "{error}");
-    assert!(error.contains("InvalidApiKey"), "要带回服务端给的错误码：{error}");
+    assert!(
+        error.contains("InvalidApiKey"),
+        "要带回服务端给的错误码：{error}"
+    );
 }
 
 /// `finish-task` 之后服务端直接关连接（没有 `task-finished`）：
@@ -658,7 +691,9 @@ fn close_without_task_finished_reports_disconnected() {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
             while let Some(Ok(message)) = socket.next().await {
-                let Message::Text(text) = message else { continue };
+                let Message::Text(text) = message else {
+                    continue;
+                };
                 let Ok(value) = serde_json::from_str::<Value>(&text) else {
                     continue;
                 };
@@ -691,7 +726,9 @@ fn close_without_task_finished_reports_disconnected() {
     provider
         .connect(Box::new(|_| {}))
         .expect("应当连上假服务端");
-    let error = provider.finish().expect_err("没有 task-finished 就不算正常结束");
+    let error = provider
+        .finish()
+        .expect_err("没有 task-finished 就不算正常结束");
     server.join().unwrap();
 
     assert!(error.starts_with("cloud.disconnected"), "{error}");
@@ -871,11 +908,7 @@ fn empty_final_does_not_block_later_text_for_the_same_id() {
     let mut mapper = AliyunMapper::new();
     // 一条**空文本**的定稿（同 id）。
     let empty = mapper.map_sentence(sentence_with(Some(2), true, "", "", None));
-    assert!(
-        finals(&empty).is_empty(),
-        "空文本不该产出定稿：{:?}",
-        empty
-    );
+    assert!(finals(&empty).is_empty(), "空文本不该产出定稿：{:?}", empty);
     // 同一个 id 的**真实文本**必须还能出来。
     let later = mapper.map_sentence(sentence_with(Some(2), false, "第二句", "", None));
     assert_eq!(

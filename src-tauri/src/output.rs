@@ -57,6 +57,5 @@ pub fn write_text_file(
     Ok((path, file_name))
 }
 
-
 #[cfg(test)]
 mod tests;

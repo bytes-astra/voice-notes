@@ -20,7 +20,9 @@ fn fixture(name: &str) -> Option<std::path::PathBuf> {
 
 #[test]
 fn decodes_wav_to_16k() {
-    let Some(path) = fixture("zh.wav") else { return };
+    let Some(path) = fixture("zh.wav") else {
+        return;
+    };
     let mut total = 0usize;
     let info = decode_to_16k(&path, |chunk| {
         total += chunk.len();
@@ -35,7 +37,9 @@ fn decodes_wav_to_16k() {
 
 #[test]
 fn decodes_m4a_aac() {
-    let Some(path) = fixture("sample.m4a") else { return };
+    let Some(path) = fixture("sample.m4a") else {
+        return;
+    };
     let mut total = 0usize;
     let info = decode_to_16k(&path, |chunk| {
         total += chunk.len();
@@ -49,7 +53,9 @@ fn decodes_m4a_aac() {
 
 #[test]
 fn corrupted_file_returns_error() {
-    let Some(path) = fixture("broken.mp4") else { return };
+    let Some(path) = fixture("broken.mp4") else {
+        return;
+    };
     let err = decode_to_16k(&path, |_| Ok(())).expect_err("损坏文件应该报错");
     println!("损坏文件报错：{err}");
     assert!(!err.is_empty());
@@ -68,7 +74,10 @@ fn missing_file_returns_error() {
 ///   VOICE_NOTES_MODEL_DIR=/path/to/models cargo test --test decode_smoke -- --nocapture
 #[test]
 fn transcribes_file_end_to_end() {
-    let Some(dir) = std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(std::path::PathBuf::from) else {
+    let Some(dir) = std::env::var("VOICE_NOTES_MODEL_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+    else {
         eprintln!("跳过：未设置 VOICE_NOTES_MODEL_DIR");
         return;
     };
@@ -102,7 +111,8 @@ fn transcribes_file_end_to_end() {
         voice_notes_lib::engine::Engine::new(&paths, "zh", true).expect("加载模型"),
     );
     let vad = engine.vad_config().expect("VAD 配置");
-    let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
+    let mut session =
+        voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad).expect("建整段会话");
 
     let path = Path::new("tests/fixtures/sample.m4a");
     if !path.exists() {
@@ -112,7 +122,10 @@ fn transcribes_file_end_to_end() {
     let info = decode_to_16k(path, |chunk| {
         for event in session.push(chunk) {
             let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event;
-            println!("  句子：{}（{:.2}s~{:.2}s）", segment.text, segment.start, segment.end);
+            println!(
+                "  句子：{}（{:.2}s~{:.2}s）",
+                segment.text, segment.start, segment.end
+            );
         }
         Ok(())
     })
@@ -122,8 +135,13 @@ fn transcribes_file_end_to_end() {
         println!("  收尾句子：{}", segment.text);
     }
 
-    let text = voice_notes_lib::asr::join_segments(session.segments().iter().map(|s| s.text.as_str()));
-    println!("识别结果：{text}（{:.2}s 音频，{} 句）", info.samples as f32 / 16000.0, session.segments().len());
+    let text =
+        voice_notes_lib::asr::join_segments(session.segments().iter().map(|s| s.text.as_str()));
+    println!(
+        "识别结果：{text}（{:.2}s 音频，{} 句）",
+        info.samples as f32 / 16000.0,
+        session.segments().len()
+    );
     assert!(!text.trim().is_empty(), "识别结果为空");
     assert!(!session.segments().is_empty());
 }
