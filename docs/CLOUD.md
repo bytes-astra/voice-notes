@@ -27,7 +27,10 @@
   | 区间替换（改写已识别片段的某一段） | `Range` | 讯飞 IAT 的 `pgs=rpl` + `rg=[start,end]` |
 
   本仓库接了**三家**：OpenAI Realtime、火山、阿里；其余是协议形态的调研实例。
-  **火山与阿里不走归一器**（`partial.rs`）—— 它们的映射器（`map_response` / `AliyunMapper`）直接产出 `CloudEvent::Partial`；归一器目前**只被 Realtime 自建使用**。
+  **Realtime 与火山走归一器**（`partial.rs`）—— 它们的映射器只把协议事件翻译成归一器的更新，
+  「当前句累计串」由归一器算（火山没有句 id → **单桶**，一条定稿清空整桶）。
+  **阿里不走**（`AliyunMapper` 直接产出 `CloudEvent::Partial`）—— 它的 `stash` 属于**下一句**的
+  `sentence_id`，与单桶形态结构上不同（2026-11-24 评估：归一阿里要处理交错语义，另一条改动）。
   三家的形态都要有守卫：声明的 `partial_semantics` 必须与协议实际形态一致，且上抛的中间结果必须是**当前句的累计文本**（整句替换，不追加）—— 见 `REVIEW-CHECKLIST.md` 的 RC-K1 / RC-K2。
 - **句子时间以本地 16 kHz 时钟为准**：provider 给的时间戳只作可选增强，**不覆盖本地轴**。区间按 item_id 绑定（`CommitAck` / `Final{item_id}`）—— 服务端可能乱序返回，按到达顺序配对会整体错位一格。
   - **已知取舍（2026-11-17 单独评估过，暂不修）**：服务端断句族在 `finish()` 之后一次性 drain 到多条 final 时，**第一条**占用收尾那段区间，第 2 条起退化为零时长（`commit_at` 已把游标推到 `fed_end`）。触发要「**两条 final 之间没有新音频喂入**」—— 最常见的是收尾时服务端一次性 flush 多句（同一个 drain 批次）；客户端提交族**协议正常时不可达**（每次 commit 登记一段区间、final 与 commit 一一对应；provider 多回一条 final 才会退化）。

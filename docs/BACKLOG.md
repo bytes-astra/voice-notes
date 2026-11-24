@@ -5,8 +5,8 @@
 > （审的是「有没有缺陷漏网」），这份是**「现状不够好」**的改进清单（审的是「能不能更好」）。
 > 两份不要合并 —— 前者的条目是「必须守住」，后者的条目是「可以变好」，混在一起会稀释优先级。
 >
-> **当前状态**：10 条待办（第一档 1 条 / 第二档 3 条 / 第三档 6 条），全部**未开始**；
-> 另有 2 条已完成（BL-2 格式门禁、BL-12 经典脚本技术债的处置口径，均 2026-11-24）。
+> **当前状态**：9 条待办（第一档 1 条 / 第二档 2 条 / 第三档 6 条），全部**未开始**；
+> 另有 3 条已完成（BL-2 格式门禁、BL-5 云端归一器、BL-12 经典脚本技术债的处置口径，均 2026-11-24）。
 > 登记于 2026-11-23，来自一次全库分析（未改任何生产代码）。
 
 ## 怎么用
@@ -115,7 +115,7 @@ RC-K25 已经做过一轮对齐（空 key = 不改 / 删活动项落点 / 未知
 **验证**：改完 `cargo test --lib` 300 条（`record/tests.rs` 的 `stop_failed_is_recognised_with_and_without_detail`
 等直接覆盖这条）+ `npm run check:i18n`（后端错误码扫描要跟着调整扫描方式）。
 
-### BL-5 · 云端中间结果归一器：让火山也走，或收窄抽象 ⬜
+### BL-5 · 云端中间结果归一器：让火山也走，或收窄抽象 ✅ 2026-11-24
 
 **现状**：`asr/cloud/partial.rs` 是通用的归一器（三种归一档 `Delta` / `Preview` / `Range`），
 但**只有 Realtime 一个消费者** —— 火山与阿里都绕过它，映射器直接产出 `CloudEvent::Partial`。
@@ -128,8 +128,20 @@ RC-K25 已经做过一轮对齐（空 key = 不改 / 删活动项落点 / 未知
 
 **建议 A**（协议形态是硬事实，`CLOUD.md` 已经把三家的形态列成表了，归一器本来就是为这个设计的）。
 
-**验证**：RC-K1 / RC-K2 的守卫（`asr/cloud/volcengine/tests.rs::partial_is_a_whole_sentence_replacement` 等）
-必须全绿 —— 火山那条目前直接守映射器，改成走归一器后守卫要跟着调整，但**结论不能变**。
+**做完了（2026-11-24）· 选了 A 的「只做火山」**：
+- 火山的映射器不再直接产 `CloudEvent::Partial`，改为产 `VolcengineEvent::Partial(PartialUpdate::Preview { confirmed: "", draft: 整句 })`
+  —— 火山的协议形态本就是「确认前缀为空、整句都是草稿」；provider 层建 `PartialAccumulator`（火山无句 id → **单桶**）做归一，
+  定稿时清桶。**对外行为逐字不变** —— 改的是「谁做归一」，不是「归一成什么」。
+- **阿里不动**：它的 `stash` 属于**下一句**的 `sentence_id`，与火山的单桶形态结构上不同（要归一阿里得处理交错语义）。
+- `PartialUpdate::Preview` 的 `#[allow(dead_code)]` 解除 —— 火山在非测试代码里真构造它了。
+- **mutation 验证查出两条既有守卫是空测**：
+  ① 「`Preview` 的 confirmed/draft 互换」守不住（归一器是 `format!("{confirmed}{draft}")`，两种拼法结果相同 —— **这条守不住是对的**，它不是缺陷）；
+  ② 「映射器改用 `Delta` 档」只有 `indefinite_sentence_maps_to_partial` 变红，**核心守卫 `partial_is_a_whole_sentence_replacement` 反而全绿**
+  （`Preview` 与 `Delta` 在「第二次比第一次短」的样例上表现一样）→ 补两条新守卫：
+  `mapper_emits_the_declared_normalization_tier`（直接看映射器产出的**归一档**）与
+  `finalized_sentence_clears_the_normalizer_bucket`（直接测归一器的**桶状态** —— 火山 `Preview` 档是整句替换，残留在文本上看不出来）。
+  两条新守卫都经 mutation 验证承重（`Preview`→`Delta`、不清桶，各自变红）。
+- **验证**：`cargo test --lib` 300 → **302 passed**；`npm run check` 全绿（含新增的 `check:fmt`）；`npm run check:ui` **239/239**。
 
 ---
 
