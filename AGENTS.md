@@ -73,13 +73,14 @@ npm run build          # 打包（→ src-tauri/target/release/bundle/）
 
 | 命令 | 守什么 | 什么时候必跑 |
 | --- | --- | --- |
-| `npm run check` | 全部门禁：i18n → 依赖图 → 拼句规则 → 契约 → 打包配置 → async 阻塞 → clippy（`-D warnings`）→ `cargo test --lib` | 提交前 |
+| `npm run check` | 全部门禁：i18n → 依赖图 → 拼句规则 → 契约 → 打包配置 → async 阻塞 → **格式（`cargo fmt --check`）** → clippy（`-D warnings`）→ `cargo test --lib` | 提交前 |
 | `npm run check:i18n` | 字典对齐 + 后端错误码 + 裸字符串错误 + 经典脚本 | 改了文案 |
 | `npm run check:deps` | 前端 import 图的单向性 | 改了前端依赖 |
 | `npm run check:join` | 前后端拼句规则一致 | 改了 `joinText()` / `join_segments()` |
 | `npm run check:contract` | 前后端命令名与载荷字段一致 | 改了命令名 / 参数名 / `Status` |
 | `npm run check:bundle` | ad-hoc 签名、麦克风 entitlement、macOS 专属代码的 cfg | 改了打包或原生层配置 |
 | `npm run check:async` | async 路径上的阻塞锁与阻塞构造器 | 改了引擎加载 / 会话构造 / 新增 async 命令 |
+| `npm run check:fmt` | Rust 源码格式（`cargo fmt --check`） | 改了 `src-tauri/` 下的 Rust 代码 |
 | `npm run check:ui` | 界面检查（真实 WebKit + 假 `__TAURI__`） | 改了前端 |
 | `npm run shots` | 重出 README 截图 | 改了界面 |
 

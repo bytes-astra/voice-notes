@@ -217,6 +217,15 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   **参数形态**：闭包（`move || {…}`）只可能是 OS 线程，`async` 块 / future 是执行器任务。
   门禁自己有测试（`scripts/check-async.test.mjs`，含「把旧的 `shared_engine` 加回真源码会被抓住」
   与「执行器 spawn 的豁免真的不在（mutation）」）。
+- `npm run check:fmt` 查 **Rust 源码格式**：`cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check`。
+  格式不查不会让功能出错，但会让**真正的 diff 淹没在空白改动里** —— review 时分不清
+  哪些是格式化、哪些是真改动。门禁挂在 `npm run check` 里（排在 `check:rust` 前 —— 格式先过，
+  再编译）。仓库用 rustfmt 默认配置，**没有** `rustfmt.toml`。
+  - **2026-11-24 起格式已统一**：一次性跑 `cargo fmt --all`（46 个文件 / 220 处），
+    **单独成提交**（不改逻辑），门禁在它之后挂上。
+  - **注意**：`cargo fmt` 只重排空白、换行与尾逗号，**不改语义** —— 但它会让
+    「用逐字文本匹配做 mutation」的自测悄悄失效（匹配不上 → 什么都没改 → 假绿）。
+    写这类自测要用宽松正则，并**断言替换真的发生了**。
 
 ## ☁️ 云端模式的验证手段
 
