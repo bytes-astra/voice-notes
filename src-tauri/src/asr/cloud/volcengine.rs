@@ -23,6 +23,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::{
+    partial::{PartialAccumulator, PartialUpdate},
     sanitize, Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome,
 };
 
@@ -260,13 +261,27 @@ fn encode_full_request(config: &VolcengineConfig) -> Vec<u8> {
     serde_json::to_vec(&request).unwrap_or_default()
 }
 
+/// 火山协议层的一个事件（**还没归一**）。
+///
+/// 映射器只做「协议 → 归一器更新」的翻译；「当前句累计串」由归一器算
+/// （`PartialAccumulator`）—— 与 Realtime 同款，不在映射器里重实现一遍归一。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VolcengineEvent {
+    /// 未定稿的句子 → 归一器的更新。
+    ///
+    /// 火山的协议形态是「确认前缀为空、整句都是草稿」—— 正是 `Preview` 档。
+    Partial(PartialUpdate),
+    /// 定稿的句子。
+    Final(String),
+}
+
 /// 把服务端的识别结果映射成事件。
 ///
 /// - `utterances[]` 里 `definite=true` 的句子 → 定稿（Final）；
-/// - 最后一条 `definite=false` 的句子 → 当前句的累计串（Partial）。
+/// - 最后一条 `definite=false` 的句子 → 当前句的草稿（交给归一器算累计串）。
 ///
 /// **`result.text` 不用**：它是全会话累计，当实时行会让整场文本滚动。
-fn map_response(payload: &[u8], emitted: &mut usize) -> Vec<CloudEvent> {
+fn map_response(payload: &[u8], emitted: &mut usize) -> Vec<VolcengineEvent> {
     let Ok(value) = serde_json::from_slice::<Value>(payload) else {
         return Vec::new();
     };
@@ -293,18 +308,49 @@ fn map_response(payload: &[u8], emitted: &mut usize) -> Vec<CloudEvent> {
             .to_string();
         if definite {
             *emitted = index + 1;
-            events.push(CloudEvent::Final {
-                item_id: None,
-                text,
-                start_ms: None,
-                end_ms: None,
-            });
+            events.push(VolcengineEvent::Final(text));
         } else {
             // 当前句的累计串（草稿）：确认前缀为空，整句都是草稿。
-            events.push(CloudEvent::Partial(text));
+            events.push(VolcengineEvent::Partial(PartialUpdate::Preview {
+                confirmed: String::new(),
+                draft: text,
+            }));
         }
     }
     events
+}
+
+/// 把协议事件归一成上层事件（**归一器在这里**）。
+///
+/// 火山没有句 id → 单桶：一条定稿清空整桶，下一句的草稿不会带上上一句的残留。
+///
+/// 纯函数（可单测）：`accumulator` 由调用方持有 —— 它的状态跨多次响应。
+fn normalize_events(
+    accumulator: &mut PartialAccumulator,
+    events: Vec<VolcengineEvent>,
+) -> Vec<CloudEvent> {
+    let mut out = Vec::new();
+    for event in events {
+        match event {
+            VolcengineEvent::Partial(update) => {
+                let text = accumulator.apply(None, update);
+                if !text.is_empty() {
+                    out.push(CloudEvent::Partial(text));
+                }
+            }
+            VolcengineEvent::Final(text) => {
+                // 定稿：清掉归一器的桶（单桶 → 清空整桶）。
+                accumulator.finish_sentence(None);
+                out.push(CloudEvent::Final {
+                    item_id: None,
+                    text,
+                    start_ms: None,
+                    end_ms: None,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// 后台任务：建连 → 发首次请求 → 收音频 → 收结果 → 收尾。
@@ -315,6 +361,10 @@ async fn run(
     ready: Sender<Result<(), String>>,
     errors: Sender<String>,
 ) {
+    // 中间结果归一器：火山没有句 id → 单桶（一条定稿清空整桶）。
+    // 归一器算「当前句累计串」，映射器只翻译协议 —— 与 Realtime 同款。
+    let mut accumulator =
+        PartialAccumulator::new(VolcengineProvider::CAPABILITIES.partial_semantics);
     let mut socket = match connect_socket(&config).await {
         Ok(socket) => socket,
         Err(error) => {
@@ -399,7 +449,8 @@ async fn run(
                 };
                 match frame::decode_server_frame(&raw) {
                     Ok(ServerFrame::Response { sequence, flags, payload }) => {
-                        for event in map_response(&payload, &mut emitted) {
+                        let events = map_response(&payload, &mut emitted);
+                        for event in normalize_events(&mut accumulator, events) {
                             on_event(event);
                         }
                         // 最终响应：sequence 为负数，或 flags 带「末包」位

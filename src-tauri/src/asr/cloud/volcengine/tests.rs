@@ -22,7 +22,7 @@ fn definite_sentence_maps_to_final() {
     let finals: Vec<String> = events
         .iter()
         .filter_map(|event| match event {
-            CloudEvent::Final { text, .. } => Some(text.clone()),
+            VolcengineEvent::Final(text) => Some(text.clone()),
             _ => None,
         })
         .collect();
@@ -42,7 +42,9 @@ fn indefinite_sentence_maps_to_partial() {
     let partials: Vec<String> = events
         .iter()
         .filter_map(|event| match event {
-            CloudEvent::Partial(text) => Some(text.clone()),
+            VolcengineEvent::Partial(PartialUpdate::Preview { confirmed, draft }) => {
+                Some(format!("{confirmed}{draft}"))
+            }
             _ => None,
         })
         .collect();
@@ -284,15 +286,23 @@ const SECOND_RESPONSE: &str = r#"{
   }
 }"#;
 
-/// 上抛的中间结果（`CloudEvent::Partial`）文本。
-fn partial_texts(events: &[CloudEvent]) -> Vec<String> {
-    events
-        .iter()
-        .filter_map(|event| match event {
-            CloudEvent::Partial(text) => Some(text.clone()),
-            _ => None,
-        })
-        .collect()
+/// 上抛的中间结果文本（**过一遍归一器** —— 与 provider 实际走的是同一条路）。
+///
+/// 归一器算出的「当前句累计串」就是上层看到的东西；这里用同样的算法，
+/// 守的仍然是「上抛给上层的文本」，不是「协议层长什么样」。
+fn partial_texts(events: &[VolcengineEvent]) -> Vec<String> {
+    let mut accumulator =
+        PartialAccumulator::new(VolcengineProvider::CAPABILITIES.partial_semantics);
+    let mut texts = Vec::new();
+    for event in events {
+        if let VolcengineEvent::Partial(update) = event {
+            let text = accumulator.apply(None, update.clone());
+            if !text.is_empty() {
+                texts.push(text);
+            }
+        }
+    }
+    texts
 }
 
 /// 从两次中间结果推导协议形态。
@@ -351,5 +361,73 @@ fn partial_is_a_whole_sentence_replacement() {
         derived,
         "volcengine/{:?}: 声明的形态与协议实际形态不符",
         derived
+    );
+}
+
+/// 映射器产出的更新必须落在**声明的那一档**。
+///
+/// 上面的 `partial_is_a_whole_sentence_replacement` 守的是**上抛的文本**
+/// —— 文本对了不代表归一档对了：`Preview` 与 `Delta` 在「第二次比第一次短」
+/// 的样例上**表现一样**（都是替换），把档换成 `Delta` 它照样绿。
+///
+/// 这条直接看**映射器产出的更新变体**：火山声明 `Preview`，映射器就必须
+/// 产 `PartialUpdate::Preview`；换成 `Delta` 就红。
+#[test]
+fn mapper_emits_the_declared_normalization_tier() {
+    let payload = r#"{"result":{"utterances":[{"definite":false,"text":"正在说"}]}}"#;
+    let mut emitted = 0;
+    let events = map_response(payload.as_bytes(), &mut emitted);
+    let tiers: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            VolcengineEvent::Partial(PartialUpdate::Preview { .. }) => Some("Preview"),
+            VolcengineEvent::Partial(PartialUpdate::Delta(_)) => Some("Delta"),
+            VolcengineEvent::Partial(PartialUpdate::Replace { .. }) => Some("Range"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tiers,
+        vec!["Preview"],
+        "volcengine: 映射器产出的归一档与声明的 {:?} 不符",
+        VolcengineProvider::CAPABILITIES.partial_semantics
+    );
+}
+
+/// 句定稿后，下一句的草稿**不能**带上上一句的残留。
+///
+/// 火山没有句 id → 归一器走**单桶**。单桶的清空靠 `finish_sentence` ——
+/// 不清的话，**增量档**的下一句会变成「上一句 + 下一句」。
+///
+/// **为什么这条对火山用不上文本断言**：火山的协议形态是 `Preview`（整句替换），
+/// 草稿每次都被整体覆盖 —— 不清桶在文本上**看不出来**。所以这条直接测
+/// **归一器的桶状态**（定稿后没有活跃句），那才是「清了」的证据。
+///
+/// 走完整流程（映射 → 归一 → 上层事件），与 provider 实际走的是同一条路。
+#[test]
+fn finalized_sentence_clears_the_normalizer_bucket() {
+    let mut emitted = 0usize;
+    let mut accumulator =
+        PartialAccumulator::new(VolcengineProvider::CAPABILITIES.partial_semantics);
+
+    // **先草稿、后定稿**（真实顺序：先说话，出草稿；停顿后定稿）。
+    // 草稿在前时桶是活的，定稿后才该清掉。
+    let payload = r#"{"result":{"utterances":[
+        {"definite": false, "text": "正在说"},
+        {"definite": true, "text": "正在说。"}
+    ]}}"#;
+    let events = map_response(payload.as_bytes(), &mut emitted);
+    let normalized = normalize_events(&mut accumulator, events);
+    assert!(
+        normalized
+            .iter()
+            .any(|event| matches!(event, CloudEvent::Final { .. })),
+        "响应里应有一条定稿"
+    );
+
+    // 定稿后桶必须清掉：下一句的草稿不能带上这一句的残留。
+    assert!(
+        accumulator.current().is_none(),
+        "定稿后归一器的桶没清 —— 下一句的草稿会带上这一句的残留"
     );
 }
