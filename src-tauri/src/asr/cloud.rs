@@ -7,6 +7,7 @@
 //!
 //! provider 的实现放在 `cloud/realtime.rs`（OpenAI Realtime JSON 族）。
 
+use crate::error_code::ErrorCode;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Instant;
@@ -200,15 +201,19 @@ pub fn create_provider(
     // 没有活动连接 = 没配过云端（凭据、地址都在连接里）。
     let profile = settings
         .active_cloud_profile()
-        .ok_or_else(|| crate::code("cloud.notConfigured"))?;
+        .ok_or_else(|| crate::code(ErrorCode::CloudNotConfigured))?;
     let id = profile.provider.as_str();
     // 能力先查表：这是「要不要下 VAD」「状态回传什么能力」的同一个来源。
     let caps = provider_capabilities(id).ok_or_else(|| {
-        logging::code_detail("cloud.unsupportedProvider", id, Some(&profile.api_key))
+        logging::code_detail(
+            ErrorCode::CloudUnsupportedProvider,
+            id,
+            Some(&profile.api_key),
+        )
     })?;
     if !valid_capabilities(&caps) {
         return Err(logging::code_detail(
-            "cloud.unsupportedProvider",
+            ErrorCode::CloudUnsupportedProvider,
             id,
             Some(&profile.api_key),
         ));
@@ -288,7 +293,7 @@ pub fn create_provider(
             // 草稿、即时热词、方言开关），不按「名字随便填」处理。
             if !aliyun::SUPPORTED_MODELS.contains(&model.as_str()) {
                 return Err(logging::code_detail(
-                    "cloud.unsupportedModel",
+                    ErrorCode::CloudUnsupportedModel,
                     &model,
                     Some(&profile.api_key),
                 ));
@@ -311,7 +316,7 @@ pub fn create_provider(
             )))
         }
         other => Err(logging::code_detail(
-            "cloud.unsupportedProvider",
+            ErrorCode::CloudUnsupportedProvider,
             other,
             Some(&profile.api_key),
         )),

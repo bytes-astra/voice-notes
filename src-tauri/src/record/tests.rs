@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::engine::Engine;
+use crate::error_code::ErrorCode;
 use crate::models;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,7 +21,7 @@ fn too_short_transcript_reports_seconds() {
 /// 整串比较会失配 → 超时文案换不上，界面直接显示未知错误。
 #[test]
 fn stop_failed_is_recognised_with_and_without_detail() {
-    assert!(is_stop_failed(STOP_FAILED));
+    assert!(is_stop_failed(&ErrorCode::RecordStopFailed.to_string()));
     assert!(is_stop_failed("record.stopFailed:通道关闭"));
     assert!(!is_stop_failed("record.empty"));
     assert!(!is_stop_failed("record.stopFailedOther"));
@@ -520,7 +521,7 @@ fn capture_failure_does_not_discard_finished_transcript() {
         eprintln!("跳过：没有可用麦克风");
         return;
     };
-    recorder.inject_error(crate::code("record.micError"));
+    recorder.inject_error(crate::code(ErrorCode::RecordMicError));
     let (tx, rx) = mpsc::channel();
     tx.send(Transcript {
         text: "已经识别的一句".into(),
@@ -549,7 +550,7 @@ fn capture_failure_without_transcript_returns_error() {
         eprintln!("跳过：没有可用麦克风");
         return;
     };
-    recorder.inject_error(crate::code("record.micError"));
+    recorder.inject_error(crate::code(ErrorCode::RecordMicError));
     let (tx, rx) = mpsc::channel();
     tx.send(Transcript {
         text: String::new(),
@@ -577,7 +578,7 @@ fn wait_failure_returns_no_partial_result() {
     let discard = AtomicBool::new(false);
     assert!(matches!(
         wait_transcript(&rx, &discard, 0),
-        Err(error) if error == STOP_FAILED
+        Err(error) if error == ErrorCode::RecordStopFailed.to_string()
     ));
     assert!(
         discard.load(Ordering::SeqCst),

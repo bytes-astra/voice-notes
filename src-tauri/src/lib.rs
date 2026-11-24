@@ -4,6 +4,7 @@ pub mod asr;
 pub mod audio;
 pub mod decode;
 pub mod engine;
+pub mod error_code;
 pub mod log;
 pub mod menu;
 pub mod models;
@@ -25,6 +26,7 @@ use engine::{
     AppState, Status,
 };
 use engine::{DownloadFlagGuard, RecordingStartGuard};
+use error_code::{code, code_detail, ErrorCode};
 use log::on_off;
 // install_menu 只在 macOS 存在（menu.rs 里是 cfg 掉的），import 也要跟着 cfg，
 // 否则 Windows 上会报 unresolved import。
@@ -33,30 +35,8 @@ use menu::install_menu;
 use output::{sanitize_name, write_text_file, Saved};
 use record::{
     ensure_transcript_usable, log_transcript, run_cloud_streaming, run_local_offline,
-    run_local_streaming, FinishedRecording, RecordingRun, SlotError, STOP_FAILED,
+    run_local_streaming, FinishedRecording, RecordingRun, SlotError,
 };
-
-/// 错误码：后端只返回字典 key（前端 i18n 翻译），不返回展示文案。
-///
-/// `code("record.empty")` → `"record.empty"`；`code_detail("record.micError", e)` →
-/// `"record.micError:<e>"`。前端 `core.js` 的 `fmtError()` 查字典翻译。
-pub fn code(key: &str) -> String {
-    key.to_string()
-}
-
-/// 带细节的错误码：细节是技术信息（路径、系统错误文本、格式名）。
-///
-/// **细节只进日志，不进界面**：用户看到的是字典里的干净文案
-/// （`record.micError` → 「麦克风发生异常」），细节写进日志文件
-/// （`~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，见 log.rs）。
-/// 细节仍然跟着错误码一起回给前端，是为了填 `{value}` 这类
-/// 用户看得懂的参数（比如「找不到输入设备：{value}」）。
-pub fn code_detail(key: &str, detail: impl std::fmt::Display) -> String {
-    let detail = detail.to_string();
-    // 细节只进日志：用户看到的是字典里的干净文案。
-    log::error(format!("{key}: {detail}"));
-    format!("{key}:{detail}")
-}
 
 /// 进度事件的接收端。
 ///
@@ -171,14 +151,14 @@ fn ensure_recognition_config_unlocked(state: &AppState) -> Result<(), String> {
         || state
             .session
             .lock()
-            .map_err(|_| code("error.recordState"))?
+            .map_err(|_| code(ErrorCode::ErrorRecordState))?
             .is_some();
     ensure_config_unlocked(recording)
 }
 
 fn ensure_config_unlocked(recording: bool) -> Result<(), String> {
     if recording {
-        return Err(code("record.configLocked"));
+        return Err(code(ErrorCode::RecordConfigLocked));
     }
     Ok(())
 }
@@ -204,13 +184,13 @@ fn set_language(
 ) -> Result<Status, String> {
     ensure_recognition_config_unlocked(&state)?;
     if !settings::LANGUAGES.contains(&language.as_str()) {
-        return Err(code_detail("error.unsupportedLanguage", language));
+        return Err(code_detail(ErrorCode::ErrorUnsupportedLanguage, language));
     }
     {
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         guard.language = language.clone();
     }
     persist(&app, &state)?;
@@ -225,7 +205,7 @@ fn set_itn(app: AppHandle, state: State<AppState>, enabled: bool) -> Result<Stat
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         guard.itn = enabled;
     }
     persist(&app, &state)?;
@@ -245,7 +225,7 @@ fn set_output_dir(
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         guard.output_dir = dir;
     }
     persist(&app, &state)?;
@@ -266,7 +246,7 @@ async fn set_model_dir(
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         guard.model_dir = dir.filter(|d| !d.trim().is_empty());
     }
     persist(&app, &state)?;
@@ -310,13 +290,13 @@ async fn set_mode(
     mode: String,
 ) -> Result<Status, String> {
     if !settings::MODES.contains(&mode.as_str()) {
-        return Err(code_detail("error.unsupportedMode", mode));
+        return Err(code_detail(ErrorCode::ErrorUnsupportedMode, mode));
     }
     {
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         guard.mode = mode.clone();
     }
     persist(&app, &state)?;
@@ -366,7 +346,7 @@ fn save_cloud_profile(
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         settings::upsert_cloud_profile(&mut guard, id, label, provider, base_url, api_key, model);
     }
     persist(&app, &state)?;
@@ -386,7 +366,7 @@ fn delete_cloud_profile(
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         settings::delete_cloud_profile(&mut guard, &id)?;
     }
     persist(&app, &state)?;
@@ -407,7 +387,7 @@ fn clear_cloud_profile_key(
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         settings::clear_cloud_profile_key(&mut guard, &id)?;
     }
     persist(&app, &state)?;
@@ -427,7 +407,7 @@ fn set_active_cloud_profile(
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         settings::set_active_cloud_profile(&mut guard, &id);
     }
     persist(&app, &state)?;
@@ -450,7 +430,7 @@ async fn set_hotwords(
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         guard.hotwords = settings::clean_hotwords(hotwords);
     }
     persist(&app, &state)?;
@@ -489,7 +469,7 @@ async fn set_punct(
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         guard.punct = enabled;
     }
     if !enabled {
@@ -514,7 +494,7 @@ async fn warm_up_mic(state: State<'_, AppState>) -> Result<(), String> {
     let device = state.settings().input_device;
     tauri::async_runtime::spawn_blocking(move || audio::probe_input(device.as_deref()))
         .await
-        .map_err(|e| code_detail("record.micWarmupFailed", e))??;
+        .map_err(|e| code_detail(ErrorCode::RecordMicWarmupFailed, e))??;
     log::info("麦克风预热完成");
     Ok(())
 }
@@ -535,7 +515,7 @@ fn set_input_device(
         let mut guard = state
             .settings
             .lock()
-            .map_err(|_| code("error.settingsState"))?;
+            .map_err(|_| code(ErrorCode::ErrorSettingsState))?;
         guard.input_device = name.filter(|value| !value.trim().is_empty());
     }
     persist(&app, &state)?;
@@ -556,7 +536,7 @@ async fn download_streaming_model(
     state: State<'_, AppState>,
 ) -> Result<Status, String> {
     if state.downloading_streaming.swap(true, Ordering::SeqCst) {
-        return Err(code("setup.busy"));
+        return Err(code(ErrorCode::SetupBusy));
     }
     let _download = DownloadFlagGuard::new(state.downloading_streaming.clone());
     state
@@ -602,7 +582,7 @@ fn vad_precondition(caps: &asr::cloud::Capabilities, vad_present: bool) -> Resul
     if vad_present {
         return Ok(());
     }
-    Err(code("cloud.vadMissing"))
+    Err(code(ErrorCode::CloudVadMissing))
 }
 
 /// 登记录音会话失败的错误码。
@@ -612,11 +592,11 @@ fn vad_precondition(caps: &asr::cloud::Capabilities, vad_present: bool) -> Resul
 fn slot_error_code(error: SlotError, mode: &str) -> String {
     match error {
         SlotError::SessionLocked => match mode {
-            "streaming" => code("error.streamState"),
-            "cloud" => code("error.cloudState"),
-            _ => code("error.recordState"),
+            "streaming" => code(ErrorCode::ErrorStreamState),
+            "cloud" => code(ErrorCode::ErrorCloudState),
+            _ => code(ErrorCode::ErrorRecordState),
         },
-        SlotError::AlreadyRecording => code("record.alreadyRecording"),
+        SlotError::AlreadyRecording => code(ErrorCode::RecordAlreadyRecording),
     }
 }
 
@@ -627,16 +607,16 @@ async fn start_streaming_recording(
     session_id: u64,
 ) -> Result<u64, String> {
     if state.recording_starting.swap(true, Ordering::SeqCst) {
-        return Err(code("record.alreadyRecording"));
+        return Err(code(ErrorCode::RecordAlreadyRecording));
     }
     let starting = RecordingStartGuard(&state.recording_starting);
     {
         let slot = state
             .session
             .lock()
-            .map_err(|_| code("error.recordState"))?;
+            .map_err(|_| code(ErrorCode::ErrorRecordState))?;
         if slot.is_some() {
-            return Err(code("record.alreadyRecording"));
+            return Err(code(ErrorCode::RecordAlreadyRecording));
         }
     }
     let settings = state.settings();
@@ -645,7 +625,7 @@ async fn start_streaming_recording(
         .clone()
         .unwrap_or_else(|| "默认".into());
     if models::resolve_streaming(&app).is_none() {
-        return Err(code("model.needStreaming"));
+        return Err(code(ErrorCode::ModelNeedStreaming));
     }
     let engine = ensure_streaming_engine(&app, &state).await?;
     let punctuator = if settings.punct {
@@ -661,7 +641,7 @@ async fn start_streaming_recording(
             audio::start(audio_app, device.as_deref(), session_id)
         })
         .await
-        .map_err(|e| code_detail("record.micOpenFailed", e))??
+        .map_err(|e| code_detail(ErrorCode::RecordMicOpenFailed, e))??
     };
     let queue = recorder.queue();
     let rate = recorder.sample_rate();
@@ -693,7 +673,7 @@ async fn start_streaming_recording(
             );
             let _ = tx.send(transcript);
         })
-        .map_err(|e| code_detail("error.streamThreadFailed", e))?;
+        .map_err(|e| code_detail(ErrorCode::ErrorStreamThreadFailed, e))?;
     // 采集器和会话一起登记：只写采集器不写会话，识别线程就永远收不到 stop
     // （线程泄漏、麦克风不关、语言/ITN 永久锁死）。
     let run = RecordingRun {
@@ -721,16 +701,16 @@ async fn start_offline_recording(
     session_id: u64,
 ) -> Result<u64, String> {
     if state.recording_starting.swap(true, Ordering::SeqCst) {
-        return Err(code("record.alreadyRecording"));
+        return Err(code(ErrorCode::RecordAlreadyRecording));
     }
     let starting = RecordingStartGuard(&state.recording_starting);
     {
         let slot = state
             .session
             .lock()
-            .map_err(|_| code("error.recordState"))?;
+            .map_err(|_| code(ErrorCode::ErrorRecordState))?;
         if slot.is_some() {
-            return Err(code("record.alreadyRecording"));
+            return Err(code(ErrorCode::RecordAlreadyRecording));
         }
     }
     let settings = state.settings();
@@ -742,7 +722,7 @@ async fn start_offline_recording(
     let engine = load_engine(&app, &state).await?;
     let vad = engine
         .vad_config()
-        .ok_or_else(|| code("model.vadMissing"))?;
+        .ok_or_else(|| code(ErrorCode::ModelVadMissing))?;
     // 会话在这里建：VAD 建不起来（模型损坏）要在开始录音时就报错，
     // 不能让识别线程 panic 掉、用户录完只看到「停止超时」。
     //
@@ -754,7 +734,7 @@ async fn start_offline_recording(
         let engine = engine.clone();
         tauri::async_runtime::spawn_blocking(move || asr::OfflineSession::new(engine, vad))
             .await
-            .map_err(|e| code_detail("error.offlineThreadFailed", e))??
+            .map_err(|e| code_detail(ErrorCode::ErrorOfflineThreadFailed, e))??
     };
     let recorder = {
         let audio_app = app.clone();
@@ -763,7 +743,7 @@ async fn start_offline_recording(
             audio::start(audio_app, device.as_deref(), session_id)
         })
         .await
-        .map_err(|e| code_detail("record.micOpenFailed", e))??
+        .map_err(|e| code_detail(ErrorCode::RecordMicOpenFailed, e))??
     };
     let queue = recorder.queue();
     let rate = recorder.sample_rate();
@@ -804,7 +784,7 @@ async fn start_offline_recording(
             );
             let _ = tx.send(transcript);
         })
-        .map_err(|e| code_detail("error.offlineThreadFailed", e))?;
+        .map_err(|e| code_detail(ErrorCode::ErrorOfflineThreadFailed, e))?;
     // 同上：采集器和会话一起登记，并发 start 只能成功一个。
     let run = RecordingRun {
         stop: stop.clone(),
@@ -831,16 +811,16 @@ async fn start_cloud_recording(
     session_id: u64,
 ) -> Result<u64, String> {
     if state.recording_starting.swap(true, Ordering::SeqCst) {
-        return Err(code("record.alreadyRecording"));
+        return Err(code(ErrorCode::RecordAlreadyRecording));
     }
     let starting = RecordingStartGuard(&state.recording_starting);
     {
         let slot = state
             .session
             .lock()
-            .map_err(|_| code("error.recordState"))?;
+            .map_err(|_| code(ErrorCode::ErrorRecordState))?;
         if slot.is_some() {
-            return Err(code("record.alreadyRecording"));
+            return Err(code(ErrorCode::RecordAlreadyRecording));
         }
     }
     let settings = state.settings();
@@ -852,21 +832,21 @@ async fn start_cloud_recording(
     // **用哪一条连接**：设置里的活动连接（`cloud_active_profile` 指向的那条）。
     let profile = settings
         .active_cloud_profile()
-        .ok_or_else(|| code("cloud.notConfigured"))?;
+        .ok_or_else(|| code(ErrorCode::CloudNotConfigured))?;
     if profile.api_key.trim().is_empty() {
-        return Err(code("cloud.notConfigured"));
+        return Err(code(ErrorCode::CloudNotConfigured));
     }
     // gpt-live-transcribe 不支持 server_vad：必须有本地 VAD 做客户端断句。
     // 只下载这份 2.3 MB 的 VAD，不要求整份流式模型；复用流式下载忙碌标志，
     // 避免与设置页的下载同时写同一个文件。
     // 能力先查表：VAD 前置条件与状态回传用的是同一份来源。
     let caps = asr::cloud::provider_capabilities(&profile.provider)
-        .ok_or_else(|| code_detail("cloud.unsupportedProvider", &profile.provider))?;
+        .ok_or_else(|| code_detail(ErrorCode::CloudUnsupportedProvider, &profile.provider))?;
     let mut vad_path = models::resolve_cloud_vad(&app);
     // 需要本地 VAD 而本机没有 → 先下载那一份（2.3 MB），仍没有就报错。
     if caps.needs_local_vad && vad_path.is_none() {
         if state.downloading_streaming.swap(true, Ordering::SeqCst) {
-            return Err(code("setup.busy"));
+            return Err(code(ErrorCode::SetupBusy));
         }
         let _download = DownloadFlagGuard::new(state.downloading_streaming.clone());
         state
@@ -893,7 +873,7 @@ async fn start_cloud_recording(
                     engine::validate_cloud_vad(&config).map(|_| config)
                 })
                 .await
-                .map_err(|e| code_detail("cloud.vadInvalid", e))??,
+                .map_err(|e| code_detail(ErrorCode::CloudVadInvalid, e))??,
             )
         }
         _ => None,
@@ -908,7 +888,7 @@ async fn start_cloud_recording(
         (session, result)
     })
     .await
-    .map_err(|e| code_detail("cloud.connectFailed", e))?;
+    .map_err(|e| code_detail(ErrorCode::CloudConnectFailed, e))?;
     connected?;
     let recorder = {
         let audio_app = app.clone();
@@ -917,7 +897,7 @@ async fn start_cloud_recording(
             audio::start(audio_app, device.as_deref(), session_id)
         })
         .await
-        .map_err(|e| code_detail("record.micOpenFailed", e))??
+        .map_err(|e| code_detail(ErrorCode::RecordMicOpenFailed, e))??
     };
     let queue = recorder.queue();
     let rate = recorder.sample_rate();
@@ -949,7 +929,7 @@ async fn start_cloud_recording(
             );
             let _ = tx.send(transcript);
         })
-        .map_err(|e| code_detail("error.cloudThreadFailed", e))?;
+        .map_err(|e| code_detail(ErrorCode::ErrorCloudThreadFailed, e))?;
     // 采集器和会话一起登记：只写采集器不写会话，识别线程就永远收不到 stop。
     let run = RecordingRun {
         stop: stop.clone(),
@@ -977,10 +957,10 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
         let mut slot = state
             .session
             .lock()
-            .map_err(|_| code("error.recordState"))?;
+            .map_err(|_| code(ErrorCode::ErrorRecordState))?;
         slot.take()
     }
-    .ok_or_else(|| code("record.notRecording"))?;
+    .ok_or_else(|| code(ErrorCode::RecordNotRecording))?;
 
     // 停止采集 + 等识别线程收尾都是阻塞操作（最长 20/30 秒），放进阻塞线程。
     //
@@ -991,21 +971,21 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
             let finished = tauri::async_runtime::spawn_blocking(move || {
                 session.finish(20).map_err(|error| {
                     if record::is_stop_failed(&error) {
-                        code("record.streamTimeout")
+                        code(ErrorCode::RecordStreamTimeout)
                     } else {
                         error
                     }
                 })
             })
             .await
-            .map_err(|e| code_detail(STOP_FAILED, e))??;
+            .map_err(|e| code_detail(ErrorCode::RecordStopFailed, e))??;
             ensure_transcript_usable(
                 &finished.transcript.text,
                 finished.transcript.duration_seconds,
             )?;
             let mut transcript = finished.transcript;
             if finished.capture_error.is_some() {
-                transcript.warning = Some(code("record.micError"));
+                transcript.warning = Some(code(ErrorCode::RecordMicError));
             }
             log_transcript("流式", &transcript);
             Ok(transcript)
@@ -1016,14 +996,14 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
             let finished = tauri::async_runtime::spawn_blocking(move || {
                 session.finish(20).map_err(|error| {
                     if record::is_stop_failed(&error) {
-                        code("record.cloudTimeout")
+                        code(ErrorCode::RecordCloudTimeout)
                     } else {
                         error
                     }
                 })
             })
             .await
-            .map_err(|e| code_detail(STOP_FAILED, e))??;
+            .map_err(|e| code_detail(ErrorCode::RecordStopFailed, e))??;
             if finished.transcript.text.trim().is_empty() {
                 if let Some(warning) = finished.transcript.warning.clone() {
                     return Err(warning);
@@ -1035,7 +1015,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
             )?;
             let mut transcript = finished.transcript;
             if finished.capture_error.is_some() && transcript.warning.is_none() {
-                transcript.warning = Some(code("record.micError"));
+                transcript.warning = Some(code(ErrorCode::RecordMicError));
             }
             log_transcript("云端", &transcript);
             Ok(transcript)
@@ -1047,7 +1027,7 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
                 move || -> Result<FinishedRecording, String> {
                     let finished = session.finish(30).map_err(|error| {
                         if record::is_stop_failed(&error) {
-                            code("record.offlineTimeout")
+                            code(ErrorCode::RecordOfflineTimeout)
                         } else {
                             error
                         }
@@ -1060,10 +1040,10 @@ async fn stop_recording(_app: AppHandle, state: State<'_, AppState>) -> Result<T
                 },
             )
             .await
-            .map_err(|e| code_detail(STOP_FAILED, e))??;
+            .map_err(|e| code_detail(ErrorCode::RecordStopFailed, e))??;
             let mut transcript = finished.transcript;
             if finished.capture_error.is_some() {
-                transcript.warning = Some(code("record.micError"));
+                transcript.warning = Some(code(ErrorCode::RecordMicError));
             }
             log_transcript("整段", &transcript);
             Ok(transcript)
@@ -1088,7 +1068,7 @@ async fn transcribe_file(
     tauri::async_runtime::spawn_blocking(move || -> Result<Transcript, String> {
         let vad = engine
             .vad_config()
-            .ok_or_else(|| code("model.vadMissing"))?;
+            .ok_or_else(|| code(ErrorCode::ModelVadMissing))?;
         let mut session = asr::OfflineSession::new(engine.clone(), vad)?;
 
         let emit_segment = |segment: &asr::Segment| {
@@ -1136,7 +1116,7 @@ async fn transcribe_file(
         Ok(transcript)
     })
     .await
-    .map_err(|e| code_detail(STOP_FAILED, e))?
+    .map_err(|e| code_detail(ErrorCode::RecordStopFailed, e))?
 }
 
 #[tauri::command]
@@ -1167,7 +1147,7 @@ fn cancel_recording_impl(state: &AppState) -> Result<(), String> {
 #[tauri::command]
 async fn download_model(app: AppHandle, state: State<'_, AppState>) -> Result<Status, String> {
     if state.downloading.swap(true, Ordering::SeqCst) {
-        return Err(code("setup.busy"));
+        return Err(code(ErrorCode::SetupBusy));
     }
     let _download = DownloadFlagGuard::new(state.downloading.clone());
     state.cancel_download.store(false, Ordering::SeqCst);
@@ -1201,7 +1181,7 @@ fn open_output_dir(app: AppHandle, state: State<AppState>) -> Result<(), String>
     cmd.arg(&dir)
         .spawn()
         .map(|_| ())
-        .map_err(|e| code_detail("settings.openDirFailed", e))
+        .map_err(|e| code_detail(ErrorCode::SettingsOpenDirFailed, e))
 }
 
 #[tauri::command]
@@ -1233,12 +1213,16 @@ fn save_text(
     file_name: Option<String>,
 ) -> Result<Saved, String> {
     if text.trim().is_empty() {
-        return Err(code("result.noSave"));
+        return Err(code(ErrorCode::ResultNoSave));
     }
     let settings = state.settings();
     let dir = output_dir(&app, &settings);
-    fs::create_dir_all(&dir)
-        .map_err(|e| code_detail("error.createOutputDir", format!("{}: {e}", dir.display())))?;
+    fs::create_dir_all(&dir).map_err(|e| {
+        code_detail(
+            ErrorCode::ErrorCreateOutputDir,
+            format!("{}: {e}", dir.display()),
+        )
+    })?;
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1273,7 +1257,7 @@ fn client_log(level: String, message: String) {
 #[tauri::command]
 fn set_menu_texts(app: AppHandle, edit: String, view: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    menu::set_texts(&app, &edit, &view).map_err(|e| code_detail("error.menuFailed", e))?;
+    menu::set_texts(&app, &edit, &view).map_err(|e| code_detail(ErrorCode::ErrorMenuFailed, e))?;
     // 非 macOS 没有原生菜单：参数照收（命令签名与前端一致），只是用不上。
     #[cfg(not(target_os = "macos"))]
     let _ = (&app, &edit, &view);

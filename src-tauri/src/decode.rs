@@ -21,7 +21,7 @@ use symphonia::core::probe::Hint;
 
 use crate::asr::SAMPLE_RATE;
 use crate::audio::Agc;
-use crate::{code, code_detail};
+use crate::error_code::{code, code_detail, ErrorCode};
 
 /// 解码结果的基本信息。
 #[derive(Clone, Debug)]
@@ -56,7 +56,7 @@ pub fn decode_to_16k(
     path: &Path,
     mut on_chunk: impl FnMut(&[f32]) -> Result<(), String>,
 ) -> Result<DecodeInfo, String> {
-    let file = File::open(path).map_err(|e| code_detail("decode.openFailed", e))?;
+    let file = File::open(path).map_err(|e| code_detail(ErrorCode::DecodeOpenFailed, e))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -69,19 +69,19 @@ pub fn decode_to_16k(
             &FormatOptions::default(),
             &MetadataOptions::default(),
         )
-        .map_err(|e| code_detail("decode.unknownFormat", e))?;
+        .map_err(|e| code_detail(ErrorCode::DecodeUnknownFormat, e))?;
     let mut format = probed.format;
 
     let track = format
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| code("decode.noAudioTrack"))?;
+        .ok_or_else(|| code(ErrorCode::DecodeNoAudioTrack))?;
     let track_id = track.id;
     let source_rate = track.codec_params.sample_rate.unwrap_or(0).max(1) as i32;
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|e| code_detail("decode.failed", e))?;
+        .map_err(|e| code_detail(ErrorCode::DecodeFailed, e))?;
 
     let mut resampler = LinearResampler::create(source_rate, SAMPLE_RATE);
     let mut total = 0u64;
@@ -158,7 +158,7 @@ pub fn decode_to_16k(
         let reason = stream_error
             .or(last_codec_error)
             .unwrap_or_else(|| "no audio data".to_string());
-        return Err(code_detail("decode.failed", reason));
+        return Err(code_detail(ErrorCode::DecodeFailed, reason));
     }
 
     // 解出了一部分：把原因带回去，调用方要报给用户，不能静默截断。

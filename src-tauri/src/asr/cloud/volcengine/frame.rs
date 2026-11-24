@@ -14,6 +14,8 @@
 //! **压缩选「不压缩」**：协议允许（服务端跟随客户端的选择），省掉一个依赖；
 //! 带宽 = 16 kHz PCM16 = 32 KB/s。
 
+use crate::error_code::ErrorCode;
+
 /// 首次全量请求（带请求参数）。
 pub const MESSAGE_TYPE_FULL_CLIENT_REQUEST: u8 = 0b0001;
 /// 音频包。
@@ -97,7 +99,7 @@ pub enum ServerFrame {
 pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
     if data.len() < 4 {
         return Err(crate::asr::cloud::logging::code_detail(
-            "cloud.protocolError",
+            ErrorCode::CloudProtocolError,
             "帧太短：连 4 字节头都不够",
             None,
         ));
@@ -118,7 +120,7 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
             let end = offset + size as usize;
             if end > data.len() {
                 return Err(crate::asr::cloud::logging::code_detail(
-                    "cloud.protocolError",
+                    ErrorCode::CloudProtocolError,
                     "帧长度不够：payload 被截断",
                     None,
                 ));
@@ -136,7 +138,7 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
             let end = offset + size as usize;
             if end > data.len() {
                 return Err(crate::asr::cloud::logging::code_detail(
-                    "cloud.protocolError",
+                    ErrorCode::CloudProtocolError,
                     "错误帧长度不够：消息被截断",
                     None,
                 ));
@@ -147,7 +149,7 @@ pub fn decode_server_frame(data: &[u8]) -> Result<ServerFrame, String> {
             })
         }
         other => Err(crate::asr::cloud::logging::code_detail(
-            "cloud.protocolError",
+            ErrorCode::CloudProtocolError,
             format!("不认识的服务端消息类型：{other:b}"),
             None,
         )),
@@ -158,7 +160,7 @@ fn read_bytes<'a>(data: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a 
     let end = *offset + len;
     if end > data.len() {
         return Err(crate::asr::cloud::logging::code_detail(
-            "cloud.protocolError",
+            ErrorCode::CloudProtocolError,
             "帧长度不够",
             None,
         ));

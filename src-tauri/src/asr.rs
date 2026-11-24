@@ -14,6 +14,7 @@ use sherpa_onnx::{VadModelConfig, VoiceActivityDetector};
 
 use crate::audio::{ends_with_gap_marker, is_gap_marker};
 use crate::engine::{Engine, PunctuationEngine, StreamingEngine};
+use crate::error_code::ErrorCode;
 use crate::log;
 
 pub const SAMPLE_RATE: i32 = 16_000;
@@ -518,7 +519,7 @@ pub struct OfflineSession {
 /// （sherpa 会打印 Overflow 警告）。
 fn create_vad_detector(vad: &VadModelConfig) -> Result<VoiceActivityDetector, String> {
     VoiceActivityDetector::create(vad, 60.0)
-        .ok_or_else(|| crate::code_detail("model.loadFailed", "silero_vad.onnx"))
+        .ok_or_else(|| crate::code_detail(ErrorCode::ModelLoadFailed, "silero_vad.onnx"))
 }
 
 /// 整段会话产出的事件。

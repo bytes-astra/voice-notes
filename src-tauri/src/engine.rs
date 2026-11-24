@@ -22,11 +22,11 @@ use crate::asr::{
     clean, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript, PRE_ROLL_SAMPLES,
     SAMPLE_RATE, VAD_WINDOW,
 };
+use crate::error_code::{code, code_detail, ErrorCode};
 use crate::log::{self, on_off};
 use crate::models;
 use crate::models::ModelPaths;
 use crate::settings::{self, Settings};
-use crate::{code, code_detail};
 pub struct AppState {
     /// 设置的锁外面包一层 `Arc`：加载引擎的阻塞线程要在**持有引擎锁**的前提下
     /// 读设置（见 `install_engine`），得能把它带进那个线程。
@@ -372,7 +372,7 @@ pub fn install_engine<T, K, P>(
     key_of: impl Fn(&T) -> K,
     prepare: impl Fn(&Settings) -> Result<(K, P), String>,
     build: impl FnOnce(P) -> Result<T, String>,
-    lock_error: &str,
+    lock_error: ErrorCode,
 ) -> Result<Arc<T>, String>
 where
     K: PartialEq,
@@ -415,7 +415,7 @@ pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<Arc<Engine
             |engine: &Engine| engine.key.clone(),
             |s: &Settings| {
                 let paths = models::resolve(&build_app, s.model_dir.as_deref())
-                    .ok_or_else(|| code("model.needOffline"))?;
+                    .ok_or_else(|| code(ErrorCode::ModelNeedOffline))?;
                 let key = OfflineEngineKey {
                     model_dir: paths.dir.clone(),
                     language: s.language.clone(),
@@ -433,11 +433,11 @@ pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<Arc<Engine
                 ));
                 Ok(loaded)
             },
-            "error.engineState",
+            ErrorCode::ErrorEngineState,
         )
     })
     .await
-    .map_err(|e| code_detail("model.loadFailed", e))?;
+    .map_err(|e| code_detail(ErrorCode::ModelLoadFailed, e))?;
 
     let _ = handle.emit("engine:state", engine_state_for(&outcome));
     outcome
@@ -512,7 +512,7 @@ pub async fn ensure_streaming_engine(
                 },
                 |key: StreamingEngineKey| {
                     let paths = models::resolve_streaming(&build_app)
-                        .ok_or_else(|| code("model.needStreaming"))?;
+                        .ok_or_else(|| code(ErrorCode::ModelNeedStreaming))?;
                     let engine = StreamingEngine::new(&paths, &key.hotwords)?;
                     log::info(format!(
                         "流式引擎加载完成：热词 {} 条，模型 {}",
@@ -521,14 +521,14 @@ pub async fn ensure_streaming_engine(
                     ));
                     Ok(engine)
                 },
-                "error.streamEngineState",
+                ErrorCode::ErrorStreamEngineState,
             )
         },
     )
     .await
     {
         Ok(inner) => inner,
-        Err(e) => Err(code_detail("model.streamLoadFailed", e)),
+        Err(e) => Err(code_detail(ErrorCode::ModelStreamLoadFailed, e)),
     };
 
     // 成功发 ready，失败发 error —— 和整段侧 load_engine 一个范式。
@@ -544,14 +544,15 @@ pub async fn ensure_punctuation(
     if let Some(engine) = cached_engine(&state.punct_engine) {
         return Ok(engine);
     }
-    let model = models::resolve_punctuation(app).ok_or_else(|| code("model.punctNotReady"))?;
+    let model =
+        models::resolve_punctuation(app).ok_or_else(|| code(ErrorCode::ModelPunctNotReady))?;
     // 同上：检查和加载在同一把锁里，避免并发加载两份 294 MB 标点模型。
     let engine_slot = state.punct_engine.clone();
     let engine =
         tauri::async_runtime::spawn_blocking(move || -> Result<Arc<PunctuationEngine>, String> {
             let mut guard = engine_slot
                 .lock()
-                .map_err(|_| code("error.punctEngineState"))?;
+                .map_err(|_| code(ErrorCode::ErrorPunctEngineState))?;
             if let Some(engine) = guard.as_ref() {
                 return Ok(engine.clone());
             }
@@ -561,7 +562,7 @@ pub async fn ensure_punctuation(
             Ok(engine)
         })
         .await
-        .map_err(|e| code_detail("model.punctLoadFailed", e))??;
+        .map_err(|e| code_detail(ErrorCode::ModelPunctLoadFailed, e))??;
     Ok(engine)
 }
 
@@ -629,7 +630,7 @@ pub fn cloud_vad_config(model: String) -> VadModelConfig {
 pub fn validate_cloud_vad(config: &VadModelConfig) -> Result<(), String> {
     sherpa_onnx::VoiceActivityDetector::create(config, 60.0)
         .map(|_| ())
-        .ok_or_else(|| crate::code("cloud.vadInvalid"))
+        .ok_or_else(|| crate::code(ErrorCode::CloudVadInvalid))
 }
 
 pub struct Engine {
@@ -654,7 +655,7 @@ impl Engine {
 
         // 细节是模型路径（技术信息，不是展示文案）：字典里 model.loadFailed 要一个 {error}。
         let recognizer = OfflineRecognizer::create(&config)
-            .ok_or_else(|| code_detail("model.loadFailed", &paths.model))?;
+            .ok_or_else(|| code_detail(ErrorCode::ModelLoadFailed, &paths.model))?;
 
         let vad = paths
             .vad
@@ -907,7 +908,7 @@ impl StreamingEngine {
         config.rule3_min_utterance_length = 60.0;
 
         let recognizer = OnlineRecognizer::create(&config)
-            .ok_or_else(|| code_detail("model.streamLoadFailed", &paths.encoder))?;
+            .ok_or_else(|| code_detail(ErrorCode::ModelStreamLoadFailed, &paths.encoder))?;
         let vad = paths
             .vad
             .as_ref()
@@ -947,7 +948,7 @@ impl PunctuationEngine {
             },
         };
         let punct = OfflinePunctuation::create(&config)
-            .ok_or_else(|| code_detail("model.punctLoadFailed", model))?;
+            .ok_or_else(|| code_detail(ErrorCode::ModelPunctLoadFailed, model))?;
         Ok(Self { punct })
     }
 

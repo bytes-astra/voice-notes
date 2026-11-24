@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::code_detail;
+use crate::error_code::ErrorCode;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Saved {
@@ -49,7 +50,7 @@ pub fn write_text_file(
         path = dir.join(format!("{stem} ({index}).txt"));
         index += 1;
     }
-    fs::write(&path, text).map_err(|e| code_detail("error.writeFailed", e))?;
+    fs::write(&path, text).map_err(|e| code_detail(ErrorCode::ErrorWriteFailed, e))?;
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())

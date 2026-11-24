@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::{code, code_detail};
+use crate::error_code::{code, code_detail, ErrorCode};
 
 pub const LANGUAGES: [&str; 6] = ["auto", "zh", "en", "yue", "ja", "ko"];
 /// 术语表上限：条数太多会明显增加热词误插与解码耗时。
@@ -192,13 +192,14 @@ pub fn load(app: &AppHandle) -> Settings {
 }
 
 pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
-    let path = config_path(app).ok_or_else(|| code("error.appConfigDir"))?;
+    let path = config_path(app).ok_or_else(|| code(ErrorCode::ErrorAppConfigDir))?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| code_detail("error.createSettingsDir", e))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| code_detail(ErrorCode::ErrorCreateSettingsDir, e))?;
     }
     let text = serde_json::to_string_pretty(settings)
-        .map_err(|e| code_detail("error.saveSettingsFailed", e))?;
-    fs::write(&path, text).map_err(|e| code_detail("error.saveSettingsFailed", e))
+        .map_err(|e| code_detail(ErrorCode::ErrorSaveSettingsFailed, e))?;
+    fs::write(&path, text).map_err(|e| code_detail(ErrorCode::ErrorSaveSettingsFailed, e))
 }
 
 /// 默认输出目录：文档/语音转文字。
@@ -222,7 +223,7 @@ pub fn prepare_output_dir(dir: Option<String>) -> Result<Option<String>, String>
         return Ok(None);
     };
     fs::create_dir_all(&dir)
-        .map_err(|e| code_detail("error.createDirFailed", format!("{dir}: {e}")))?;
+        .map_err(|e| code_detail(ErrorCode::ErrorCreateDirFailed, format!("{dir}: {e}")))?;
     Ok(Some(dir))
 }
 
@@ -373,7 +374,7 @@ pub fn delete_cloud_profile(settings: &mut Settings, id: &str) -> Result<(), Str
         .iter()
         .position(|profile| profile.id == id)
     else {
-        return Err(crate::code("cloud.profileNotFound"));
+        return Err(crate::code(ErrorCode::CloudProfileNotFound));
     };
     let was_active = settings.cloud_active_profile.trim() == id;
     settings.cloud_profiles.retain(|profile| profile.id != id);
@@ -403,7 +404,7 @@ pub fn clear_cloud_profile_key(settings: &mut Settings, id: &str) -> Result<(), 
         .iter_mut()
         .find(|profile| profile.id == id)
     else {
-        return Err(crate::code("cloud.profileNotFound"));
+        return Err(crate::code(ErrorCode::CloudProfileNotFound));
     };
     profile.api_key = String::new();
     Ok(())

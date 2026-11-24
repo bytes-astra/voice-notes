@@ -1008,7 +1008,7 @@ fn log_choke_point_redacts_the_credential() {
 ///
 /// - `crate::log` —— 盖住 `crate::log::warn/info/error/write`，也盖住
 ///   `use crate::log;` 与 `use crate::log as l;`（import 那一行就含这个片段）。
-/// - `crate::code_detail` —— 它内部就是 `log::error` → 写日志文件，但**不脱敏**。
+/// - crate 的 `error_code::code_detail` —— 它内部就是 `log::error` → 写日志文件，但**不脱敏**。
 ///   云端模块一律用 `logging::code_detail`（先脱敏再委托）。
 ///
 /// 关口自己的路径（`logging::warn` / `logging::code_detail`）不匹配 ✓。
@@ -1045,7 +1045,7 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
         //    它内部是 `log::error` → 写日志文件，却不脱敏。
         assert!(
             !calls_code_detail_directly(&code),
-            "{}: 错误详情必须走 asr/cloud/logging.rs 的 code_detail（先脱敏再委托），不许直接调 crate::code_detail",
+            "{}: 错误详情必须走 asr/cloud/logging.rs 的 code_detail（先脱敏再委托），不许直接调 crate 的 code_detail",
             file.display()
         );
         // ③ 成组导入 / glob 导入：`use crate::{log, code_detail};` 里**没有**
@@ -1059,15 +1059,19 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
     }
 }
 
-/// 直接调了 `crate::code_detail` 吗（而不是关口的 `logging::code_detail`）。
+/// 直接调了 crate 的 `code_detail` 吗（而不是关口的 `logging::code_detail`）。
 ///
-/// **按调用点的路径前缀判断** —— `crate::code_detail` / `super::super::code_detail`
-/// 都是绕过；`super::logging::code_detail` 是关口自己。
+/// **按调用点的路径前缀判断** —— `crate::error_code::code_detail` /
+/// `super::super::error_code::code_detail` 都是绕过；
+/// `super::logging::code_detail` 是关口自己。
 // （字面量里不写 `code_detail(`：i18n 扫描器会把它当错误码。）
 fn calls_code_detail_directly(code: &str) -> bool {
     let mut rest = code;
     while let Some(index) = rest.find("code_detail") {
-        if !rest[..index].ends_with("logging::") {
+        // 关口自己（`…logging::code_detail`）不算绕过。
+        let is_choke_point = rest[..index].ends_with("logging::");
+        // crate 的错误码模块（`crate::error_code::code_detail`）也不脱敏 → 绕过。
+        if !is_choke_point {
             return true;
         }
         rest = &rest[index + "code_detail".len()..];

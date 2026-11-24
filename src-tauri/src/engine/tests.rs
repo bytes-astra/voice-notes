@@ -1,6 +1,7 @@
 //! `engine` 模块的单元测试（从 `engine.rs` 拆出）。
 
 use super::*;
+use crate::error_code::ErrorCode;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -40,7 +41,7 @@ fn fake_offline_engine(
             Ok((key.clone(), key))
         },
         |key: OfflineEngineKey| Ok(FakeEngine { key }),
-        "error.engineState",
+        ErrorCode::ErrorEngineState,
     )
 }
 
@@ -60,7 +61,7 @@ fn fake_streaming_engine(
             Ok((key.clone(), key))
         },
         |key: StreamingEngineKey| Ok(FakeStreaming { key }),
-        "error.streamEngineState",
+        ErrorCode::ErrorStreamEngineState,
     )
 }
 

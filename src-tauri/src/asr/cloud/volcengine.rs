@@ -13,6 +13,7 @@
 //!
 //! 音频：16 kHz / 16 bit / 单声道 PCM（与仓库内部轴一致 → 不重采样）。
 
+use crate::error_code::ErrorCode;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
@@ -132,7 +133,7 @@ impl CloudProvider for VolcengineProvider {
         match ready_rx.recv_timeout(Duration::from_secs(15)) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(error),
-            Err(_) => Err(crate::code("cloud.connectFailed")),
+            Err(_) => Err(crate::code(ErrorCode::CloudConnectFailed)),
         }
     }
 
@@ -141,7 +142,7 @@ impl CloudProvider for VolcengineProvider {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
-            return Err(crate::code("cloud.disconnected"));
+            return Err(crate::code(ErrorCode::CloudDisconnected));
         };
         // 攒够 200ms 一包再发（官方建议的发包节奏）。
         self.packet
@@ -159,7 +160,7 @@ impl CloudProvider for VolcengineProvider {
                     dropped_samples += AUDIO_PACKET_BYTES / 2;
                 }
                 Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(crate::code("cloud.disconnected"));
+                    return Err(crate::code(ErrorCode::CloudDisconnected));
                 }
             }
         }
@@ -188,7 +189,7 @@ impl CloudProvider for VolcengineProvider {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
-            return Err(crate::code("cloud.disconnected"));
+            return Err(crate::code(ErrorCode::CloudDisconnected));
         };
         // 收尾前把不足一包的残包发出去：留在缓冲里就等于最后 0~199 ms
         // 永远不上传 → 句尾少字。控制帧不能丢（丢了等不到最后一句）→ 有界等待。
@@ -202,7 +203,7 @@ impl CloudProvider for VolcengineProvider {
             Ok(()) => self.take_background_error().map_or(Ok(()), Err),
             Err(_) => Err(self
                 .take_background_error()
-                .unwrap_or_else(|| crate::code("cloud.timeout"))),
+                .unwrap_or_else(|| crate::code(ErrorCode::CloudTimeout))),
         }
     }
 }
@@ -377,7 +378,7 @@ async fn run(
     let frame = frame::encode_full_request(&encode_full_request(&config));
     if let Err(error) = socket.send(Message::Binary(frame.into())).await {
         let error = super::logging::code_detail(
-            "cloud.connectFailed",
+            ErrorCode::CloudConnectFailed,
             error.to_string(),
             Some(&config.api_key),
         );
@@ -400,7 +401,7 @@ async fn run(
                         let frame = frame::encode_audio(&packet, false);
                         if let Err(error) = socket.send(Message::Binary(frame.into())).await {
                             let _ = errors.send(super::logging::code_detail(
-                                "cloud.sendFailed",
+                                ErrorCode::CloudSendFailed,
                                 error.to_string(),
                                 Some(&config.api_key),
                             ));
@@ -411,7 +412,7 @@ async fn run(
                         let frame = frame::encode_audio(&[], true);
                         if let Err(error) = socket.send(Message::Binary(frame.into())).await {
                             let _ = errors.send(super::logging::code_detail(
-                                "cloud.sendFailed",
+                                ErrorCode::CloudSendFailed,
                                 error.to_string(),
                                 Some(&config.api_key),
                             ));
@@ -425,21 +426,21 @@ async fn run(
             }
             message = socket.next() => {
                 let Some(message) = message else {
-                    let _ = errors.send(crate::code("cloud.disconnected"));
+                    let _ = errors.send(crate::code(ErrorCode::CloudDisconnected));
                     if let Some(done) = finishing.take() { let _ = done.send(()); }
                     break;
                 };
                 let raw = match message {
                     Ok(Message::Binary(raw)) => raw,
                     Ok(Message::Close(_)) => {
-                        let _ = errors.send(crate::code("cloud.disconnected"));
+                        let _ = errors.send(crate::code(ErrorCode::CloudDisconnected));
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
                     }
                     Ok(_) => continue,
                     Err(error) => {
                         let _ = errors.send(super::logging::code_detail(
-                            "cloud.disconnected",
+                            ErrorCode::CloudDisconnected,
                             error.to_string(),
                             Some(&config.api_key),
                         ));
@@ -468,7 +469,7 @@ async fn run(
                     }
                     Err(error) => {
                         let _ = errors.send(super::logging::code_detail(
-                            "cloud.protocolError",
+                            ErrorCode::CloudProtocolError,
                             error,
                             Some(&config.api_key),
                         ));
@@ -498,7 +499,7 @@ async fn connect_socket(
     };
     let mut request = base_url.into_client_request().map_err(|error| {
         super::logging::code_detail(
-            "cloud.connectFailed",
+            ErrorCode::CloudConnectFailed,
             error.to_string(),
             Some(&config.api_key),
         )
@@ -518,14 +519,14 @@ async fn connect_socket(
     ] {
         let header = value
             .parse()
-            .map_err(|_| crate::code("cloud.connectFailed"))?;
+            .map_err(|_| crate::code(ErrorCode::CloudConnectFailed))?;
         request.headers_mut().insert(name, header);
     }
     let (socket, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|error| {
             super::logging::code_detail(
-                "cloud.connectFailed",
+                ErrorCode::CloudConnectFailed,
                 sanitize(&error.to_string(), &config.api_key),
                 Some(&config.api_key),
             )
@@ -539,12 +540,12 @@ async fn connect_socket(
 /// `45000151` 音频格式不对 / `55000031` 服务繁忙。
 fn map_error_code(code: u32, message: &str, api_key: &str) -> String {
     match code {
-        45000002 => crate::code("cloud.noResult"),
-        45000081 => crate::code("cloud.timeout"),
+        45000002 => crate::code(ErrorCode::CloudNoResult),
+        45000081 => crate::code(ErrorCode::CloudTimeout),
         // **凭据交给关口脱敏**，不要在调用点先 sanitize 再传 `None` ——
         // 那样「关口是唯一出口」的契约就靠调用点自觉了。
         _ => super::logging::code_detail(
-            "cloud.protocolError",
+            ErrorCode::CloudProtocolError,
             format!("{code}: {message}"),
             Some(api_key),
         ),
@@ -567,12 +568,12 @@ fn send_control(
             Err(tokio_mpsc::error::TrySendError::Full(returned)) => {
                 command = returned;
                 if std::time::Instant::now() >= deadline {
-                    return Err(crate::code("cloud.sendFailed"));
+                    return Err(crate::code(ErrorCode::CloudSendFailed));
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
-                return Err(crate::code("cloud.disconnected"));
+                return Err(crate::code(ErrorCode::CloudDisconnected));
             }
         }
     }

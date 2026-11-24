@@ -1,11 +1,12 @@
 //! `models` 模块的单元测试（从 `models.rs` 拆出）。
 
 use super::*;
+use crate::error_code::ErrorCode;
 
 /// 「下载被取消」只有一个哨兵串，不跟字典 key 混。
 #[test]
 fn cancelled_sentinel_is_only_the_download_cancelled_marker() {
-    assert!(is_cancelled(DOWNLOAD_CANCELLED));
+    assert!(is_cancelled(&ErrorCode::DownloadCancelled.to_string()));
     assert!(!is_cancelled("setup.cancelled"));
     assert!(!is_cancelled("error.downloadInterrupted"));
 }
@@ -47,7 +48,11 @@ fn cancelled_download_returns_the_dictionary_key() {
         ))
         .expect_err("已取消的下载应该失败");
     assert_eq!(error, "setup.cancelled", "界面只该看到字典 key");
-    assert_ne!(error, DOWNLOAD_CANCELLED, "内部哨兵不能漏到界面");
+    assert_ne!(
+        error,
+        ErrorCode::DownloadCancelled.to_string(),
+        "内部哨兵不能漏到界面"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 

@@ -18,6 +18,7 @@ use std::time::Duration;
 use crate::asr;
 use crate::asr::{AsrSession, OfflineEvent, StreamEvent, StreamingSession, Transcript};
 use crate::engine::{PunctuationEngine, StreamingEngine};
+use crate::error_code::ErrorCode;
 use sherpa_onnx::LinearResampler;
 
 use crate::audio;
@@ -140,16 +141,17 @@ pub enum SlotError {
     AlreadyRecording,
 }
 
-/// 停止时等待识别线程收尾失败：调用方据此换成对应模式的超时文案。
-pub const STOP_FAILED: &str = "record.stopFailed";
-
 /// 这个错误是不是「停止录音时识别线程没交回结果」。
 ///
 /// 比的是**错误码**部分（':' 之前），不是整个字符串 ——
-/// `code_detail(STOP_FAILED, …)` 出来的是 `record.stopFailed:细节`，
-/// 整串比较会失配，超时文案就换不上了。
+/// `code_detail(ErrorCode::RecordStopFailed, …)` 出来的是
+/// `record.stopFailed:细节`，整串比较会失配，超时文案就换不上了。
+///
+/// 反查走 [`ErrorCode::from_key`] —— 与 `Display` 共用同一张 key 表，
+/// 不会漂。**带细节 / 不带细节都要认得出**。
 pub fn is_stop_failed(error: &str) -> bool {
-    error.split(':').next() == Some(STOP_FAILED)
+    let key = error.split(':').next().unwrap_or(error);
+    ErrorCode::from_key(key) == Some(ErrorCode::RecordStopFailed)
 }
 
 /// 界面能接受的最低音频时长（秒）。
@@ -161,13 +163,13 @@ pub const MIN_TRANSCRIPT_SECONDS: f32 = 0.2;
 /// 否则一边显示「至少说 0.2 秒」、另一边显示「至少说 {seconds} 秒」。
 pub fn ensure_transcript_usable(text: &str, duration_seconds: f32) -> Result<(), String> {
     if duration_seconds < MIN_TRANSCRIPT_SECONDS {
-        return Err(crate::code_detail(
-            "record.tooShort",
+        return Err(crate::error_code::code_detail(
+            ErrorCode::RecordTooShort,
             MIN_TRANSCRIPT_SECONDS,
         ));
     }
     if text.trim().is_empty() {
-        return Err(crate::code("record.empty"));
+        return Err(crate::code(ErrorCode::RecordEmpty));
     }
     Ok(())
 }
@@ -181,7 +183,7 @@ fn wait_transcript(
     rx.recv_timeout(Duration::from_secs(timeout_secs))
         .map_err(|_| {
             discard.store(true, Ordering::SeqCst);
-            crate::code(STOP_FAILED)
+            crate::error_code::code(ErrorCode::RecordStopFailed)
         })
 }
 
@@ -650,7 +652,7 @@ fn gate(caps: asr::cloud::Capabilities, vad_available: bool) -> Result<bool, Str
             if vad_available {
                 Ok(true)
             } else {
-                Err(crate::code("cloud.vadMissing"))
+                Err(crate::code(ErrorCode::CloudVadMissing))
             }
         }
         asr::cloud::EndpointKind::ServerEndpoint => Ok(false),

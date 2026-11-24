@@ -13,7 +13,7 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::{code, code_detail};
+use crate::error_code::{code, code_detail, ErrorCode};
 
 /// 未消费音频的上限（秒）。ASR 线程跟不上时丢掉最旧的，并在结果里标记缺口。
 pub const MAX_PENDING_SECONDS: u32 = 60;
@@ -523,7 +523,7 @@ pub fn start_with(
                 );
             }
         })
-        .map_err(|e| code_detail("error.recordThreadFailed", e))?;
+        .map_err(|e| code_detail(ErrorCode::ErrorRecordThreadFailed, e))?;
 
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok((rate, queue))) => Ok(Recorder {
@@ -540,7 +540,7 @@ pub fn start_with(
         Err(_) => {
             let _ = tx.send(Cmd::Cancel);
             let _ = join.join();
-            Err(code("record.micTimeout"))
+            Err(code(ErrorCode::RecordMicTimeout))
         }
     }
 }
@@ -574,7 +574,7 @@ fn open_capture(
 /// 单独抽出来是为了能测「打不开」的映射：真机上没法稳定制造 play 失败，
 /// 但这条路径必须有人守（打不开还当成功，界面就变成「有录音、没内容」）。
 fn map_play_result(result: Result<(), cpal::PlayStreamError>) -> Result<(), String> {
-    result.map_err(|e| code_detail("record.micOpenFailed", &e))
+    result.map_err(|e| code_detail(ErrorCode::RecordMicOpenFailed, &e))
 }
 
 fn build_stream(
@@ -588,7 +588,7 @@ fn build_stream(
     let device = find_device(&host, wanted)?;
     let supported = device
         .default_input_config()
-        .map_err(|e| code_detail("record.micConfigFailed", e))?;
+        .map_err(|e| code_detail(ErrorCode::RecordMicConfigFailed, e))?;
     let sample_rate = supported.sample_rate().0;
     let channels = supported.channels() as usize;
     let format = supported.sample_format();
@@ -634,12 +634,12 @@ fn build_stream(
         ),
         other => {
             return Err(code_detail(
-                "record.micFormatUnsupported",
+                ErrorCode::RecordMicFormatUnsupported,
                 format!("{other:?}"),
             ))
         }
     }
-    .map_err(|e| code_detail("record.micOpenFailed", format!("{format:?}: {e}")))?;
+    .map_err(|e| code_detail(ErrorCode::RecordMicOpenFailed, format!("{format:?}: {e}")))?;
 
     Ok((stream, sample_rate, queue))
 }
@@ -657,10 +657,10 @@ fn find_device(host: &cpal::Host, wanted: Option<&str>) -> Result<cpal::Device, 
             .and_then(|mut devices| {
                 devices.find(|device| device.name().map(|n| n == name).unwrap_or(false))
             })
-            .ok_or_else(|| code_detail("record.deviceNotFound", name)),
+            .ok_or_else(|| code_detail(ErrorCode::RecordDeviceNotFound, name)),
         None => host
             .default_input_device()
-            .ok_or_else(|| code("record.noInputDevice")),
+            .ok_or_else(|| code(ErrorCode::RecordNoInputDevice)),
     }
 }
 
@@ -671,7 +671,7 @@ fn stream_error_handler(
     move |err: cpal::StreamError| {
         // 存进 error 槽的是错误码（前端查字典翻译），细节另存一份给事件载荷。
         if let Ok(mut guard) = slot.lock() {
-            *guard = Some(code_detail("record.micError", &err));
+            *guard = Some(code_detail(ErrorCode::RecordMicError, &err));
         }
         if let Some((app, session_id)) = &context {
             let _ = app.emit(
