@@ -8,11 +8,45 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 
-import { collectProblems, rawErrorLiterals, rustErrorCodes, rustSourceFiles } from './check-i18n.mjs'
+import {
+  collectProblems,
+  rawErrorLiterals,
+  rustErrorCodeEnumKeys,
+  rustErrorCodes,
+  rustSourceFiles,
+} from './check-i18n.mjs'
 
 test('crate:: 前缀的错误码也要扫到', () => {
   const codes = rustErrorCodes('return Err(crate::code_detail("record.tooShort", 0.2));')
   assert.deepEqual(codes, ['record.tooShort'])
+})
+
+test('错误码枚举的 key 表要扫到', () => {
+  // 错误码是类型了（`ErrorCode::RecordEmpty`），调用点没有字面量 ——
+  // 门禁扫的是枚举的「变体 → key」映射。
+  const source = `
+    impl ErrorCode {
+        pub fn key(self) -> &'static str {
+            match self {
+                ErrorCode::RecordEmpty => "record.empty",
+                ErrorCode::RecordMicError => "record.micError",
+            }
+        }
+    }
+  `
+  assert.deepEqual(rustErrorCodeEnumKeys(source), ['record.empty', 'record.micError'])
+})
+
+test('枚举里拼错的 key 门禁要抓住', () => {
+  // 枚举的 key 拼错 → 字典里查不到 → 用户看到一串 "record.emptyTYPO"。
+  // 这里测**扫描层**（门禁的判定在 collectProblems 里，靠这个函数喂进去）。
+  const source = 'impl ErrorCode { fn key(self) { match self { ErrorCode::RecordEmpty => "record.emptyTYPO", } } }'
+  const keys = rustErrorCodeEnumKeys(source)
+  assert.deepEqual(keys, ['record.emptyTYPO'])
+  // 门禁对这些 key 逐个查字典 —— 查不到就报。
+  const baseKeys = ['record.empty']
+  const missing = keys.filter((key) => !baseKeys.includes(key))
+  assert.deepEqual(missing, ['record.emptyTYPO'], '拼错的 key 应当被判定为「字典里没有」')
 })
 
 test('别把不是错误码的调用算进来', () => {
