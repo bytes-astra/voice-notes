@@ -79,7 +79,13 @@ RC-K25 已经做过一轮对齐（空 key = 不改 / 删活动项落点 / 未知
 
 ## 第二档：结构简化（收益明确，但要动共享结构）
 
-### BL-3 · 四个录音槽合并成一个 ⬜
+### BL-3 · 四个录音槽合并成一个 ⬜（**已立项**：OpenSpec change `2026-11-24-recording-slot-unify`，2026-11-24）
+
+> **已立 change，未动代码。** 这条动并发结构（`AppState` 的槽、`register_slots`、`stop_recording` 的三分支），
+> BACKLOG 自己写着「需要一整段不被打断的时间」—— 留给下一轮整段做。
+> **立项时发现一处与 BACKLOG 原文的差异**：合并后应是**两个**槽（`recorder` + `session`）而不是一个 ——
+> 采集器的生命周期（开麦 / 关麦）与识别会话（线程收尾）不同，`finish_recording` 拿的是两个参数。
+> 待拍板项写在 change 的 tasks 0.1。
 
 **现状**：`engine.rs` 的 `AppState` 有四个录音相关槽 ——
 `recorder`（采集器）、`stream`（流式会话）、`offline_session`（整段会话）、`cloud_session`（云端会话），
@@ -100,7 +106,13 @@ RC-K25 已经做过一轮对齐（空 key = 不改 / 删活动项落点 / 未知
 **验证**：改完重跑 RC-J1 的五条守卫（`record/tests.rs`）+ `cargo test --lib` 300 条 +
 `npm run check:ui` 239 项。
 
-### BL-4 · 错误码从字符串改成类型 ⬜
+### BL-4 · 错误码从字符串改成类型 ⬜（**已立项**：OpenSpec change `2026-11-24-error-code-type`，2026-11-24）
+
+> **已立 change，未动代码。** 规模比预想的大：**168 处调用点 / 75 个唯一 key**，
+> 而且**门禁要跟着改** —— `check:i18n` 的后端错误码扫描靠字面量（`code("…")`），
+> 改成枚举后扫不到，**门禁会静默失效**（拼错的 key 就没人拦了）。
+> 新扫描方式见 change 的 design D4：改成扫**枚举定义**，反而更强。
+> 待拍板项（枚举形状 / 比较逻辑的做法）写在 change 的 tasks 0.1–0.2。
 
 **现状**：`crate::code("record.micError")` / `code_detail("record.micError", e)` 返回
 `"record.micError"` / `"record.micError:细节"`，**靠 `:` 分隔文本**再 `split(':')` 判断类型
