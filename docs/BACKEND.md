@@ -44,7 +44,14 @@
 
 **逐句都要记日志**：整段录音记 `识别出一句：起 → 止，N 字`；流式（`record.rs` 的 `run_streaming_core`）记 `流式识别出一句` / `流式收尾识别出一句`，文件转写（`lib.rs` 的 `transcribe_file`）记 `文件识别出一句` —— 只记边界和字数、不记内容，配合总时长就能算出哪一段没被覆盖。**缺口占位符不算句子**（那是「丢了音频」的标记，不是识别结果）。
 
-**日志一直开着，不需要用户配置**：`log.rs`（`log::info` / `warn` / `error`）写到系统标准日志目录 —— macOS `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，Windows `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log`；超 1 MB 轮转一次保留 `.1`，同时镜像 stderr。没有开关、没有设置页 —— 用户反馈问题直接把这个文件发过来。前端那边用 `client_log` 命令写进同一个文件（`src/tauri.js` 的 `logEvent()`），这样一份文件就是完整的一份记录。
+**日志一直开着，不需要用户配置**：`log.rs`（`log::info` / `warn` / `error`）写到系统标准日志目录 —— macOS `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log`，Windows `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log`；**超 1 MB 或跨天**轮转一次，历史留成带时间戳的文件名（`voice-notes.log.2026-11-26-14-03-22`）并保留最近 **5 份**，同时镜像 stderr。没有开关、没有设置页 —— 用户反馈问题直接把这个文件发过来。前端那边用 `client_log` 命令写进同一个文件（`src/tauri.js` 的 `logEvent()`），这样一份文件就是完整的一份记录。
+
+- **文件名带时间戳是为了让「哪段时间出的问题」能直接引用**：用户说「11 月 24 日那次」，维护者直接拿对应的那份，不用在一堆 `.log.1` 里猜。
+- **跨天也轮转**（不只超 1 MB）：否则一天没写满 1 MB 时日志全挤在一个文件里，没有可单独拿出来的「时间段」。
+- **判定抽成纯函数** `should_rotate(size, modified, now)` —— 跨天靠**当前日志文件最后一次写入的时间**判定（应用重启后依然成立）；拿不到那个时间就只看超限，不误轮转。
+- **清理在轮转之后立刻做**，删超出份数的最旧文件；旧格式的 `voice-notes.log.1` 解析不出时间戳 → 排序时当作最旧 → 升级后自然被淘汰。
+- **撞名不覆盖**：同一秒轮转两次时给历史文件加 `-1` / `-2` 计数器，既有文件的内容不会被覆盖。
+
 
 ## 音频采集
 

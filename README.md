@@ -196,9 +196,10 @@ npm run shots          # 重出 README 截图（改了界面后跑）
 | macOS | `~/Library/Logs/com.github.bytes-astra.voicenotes/voice-notes.log` |
 | Windows | `%LOCALAPPDATA%\com.github.bytes-astra.voicenotes\logs\voice-notes.log` |
 
-- 超过 1 MB 会轮转一次，旧文件留成 `voice-notes.log.1`。
+- 超过 1 MB 或跨天会轮转一次，旧文件留成带时间戳的名字（`voice-notes.log.2026-11-26-14-03-22`），最多留 5 份。
 - 里面记的是**技术细节**（错误码、系统错误文本、耗时、丢了几秒音频），界面上的提示只给一句话，原因都在日志里。
 - 反馈问题时把这个文件发过来就行 —— 前端的异常和关键操作也在同一个文件里。在 Finder 里按 `⌘⇧G` 输入 `~/Library/Logs` 就能找到。
+- 如果问题发生在更早的时间，把同目录下带时间戳的历史日志一起发过来 —— 文件名就是它覆盖的那段时间。
 
 ### 如何自定义与贡献
 
