@@ -72,10 +72,11 @@ npm run build          # 打包（→ src-tauri/target/release/bundle/）
 
 | 命令 | 守什么 | 什么时候必跑 |
 | --- | --- | --- |
-| `npm run check` | 全部门禁：i18n → 依赖图 → 拼句规则 → 契约 → 打包配置 → async 阻塞 → clippy（`-D warnings`）→ `cargo test --lib` | 提交前 |
+| `npm run check` | 全部门禁：i18n → 依赖图 → 拼句规则 → 前端纯函数 → 契约 → 打包配置 → async 阻塞 → clippy（`-D warnings`）→ `cargo test --lib` | 提交前 |
 | `npm run check:i18n` | 字典对齐 + 后端错误码 + 裸字符串错误 + 经典脚本 | 改了文案 |
 | `npm run check:deps` | 前端 import 图的单向性 | 改了前端依赖 |
 | `npm run check:join` | 前后端拼句规则一致 | 改了 `joinText()` / `join_segments()` |
+| `npm run check:frontend` | 前端纯函数的行为边界 | 改了 `fmtDuration` / `fmtBytes` / `joinText` / `localizeText` / `fmtError` / `buildFileName` |
 | `npm run check:contract` | 前后端命令名与载荷字段一致 | 改了命令名 / 参数名 / `Status` |
 | `npm run check:bundle` | ad-hoc 签名、麦克风 entitlement、macOS 专属代码的 cfg | 改了打包或原生层配置 |
 | `npm run check:async` | async 路径上的阻塞锁与阻塞构造器 | 改了引擎加载 / 会话构造 / 新增 async 命令 |

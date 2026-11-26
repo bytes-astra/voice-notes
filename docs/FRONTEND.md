@@ -15,6 +15,30 @@
 - **外壳是「侧边栏 + 主区」**：`.app[data-view]` 控制 `[data-view-panel]` 显隐，`switchView()` 统一处理导航高亮/标题，录音中不允许切走。新增页面 = 一个 `[data-view-panel]` + 一个 `.nav-item`。
 - **默认窗口尺寸要容得下整张转写卡片**：窗口默认宽高写在 `src-tauri/tauri.conf.json`，它是唯一的尺寸来源 —— `scripts/ui/check.mjs` 和 `scripts/ui/shots.mjs` 都从那里读 viewport（界面检查和 README 截图永远等于用户启动后看到的样子）。改窄了或改矮了，转写结果卡片会被裁掉、`check:ui` 里「默认窗口尺寸下没有纵向滚动条」那条断言会红。
 
+## 纯函数该往哪加断言
+
+前端有两层测试，**分工不重叠**：
+
+| 层 | 跑在哪 | 守什么 | 怎么跑 |
+| --- | --- | --- | --- |
+| **纯函数单测** | Node（`scripts/frontend/`） | **纯函数的行为边界** —— 进位、跨字符、全角半角、错误码切分 | `npm run check:frontend` |
+| **界面检查** | 真实 WebKit + 假 `__TAURI__`（`scripts/ui/check.mjs`） | **交互结果** —— 点下去界面上是什么 | `npm run check:ui` |
+
+**纯函数**（不碰 DOM、不碰后端）该在单元测试层加断言：格式化、拼句、缺口占位符、错误码翻译、
+文件名生成。碰 DOM 的（`toast` / `renderStatus` / `renderHistory`）归界面检查层。
+
+**为什么边界只在单元测试层能测**：`fmtDuration` 的「秒 60 → 分」进位、`buildFileName` 的
+「不劈开 emoji」，在界面上要摆一整套状态才碰得到一条 —— 而这类函数恰恰是最容易在重构中被改坏的。
+
+**沙箱**（`scripts/frontend/sandbox.mjs`）让 `src/` 的浏览器模块能在 Node 里跑：补上
+`window` / `document` / `navigator` / `localStorage`，并按浏览器的顺序加载**真的字典**
+（`src/locales/*.js` 再 `src/i18n.js`，用 `new Function` —— 它们是浏览器脚本不是 ES module）。
+**字典必须是真的**：`gapText` 的「中文全角不加空格、英文半角加空格」依赖文案内容，
+假字典测不出这条规则。
+
+**测试文件不放 `src/` 下**：`src/` 是 Tauri 的 `frontendDist`（会被打进 app bundle），
+且 `check:deps` 规则四要求 `src/` 下每个 `.js` 都登记在层表里。
+
 ## i18n 与文案
 
 文案统一放字典，机制单独成文件：`src/locales/*.js` 放文案，`src/i18n.js` 只放机制（`t()` / `apply()` / `setLocale()` / `resolveLocale()`）。**`i18n.js` 里不放任何文案。**

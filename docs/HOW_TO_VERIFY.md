@@ -188,6 +188,21 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   CJK 码位区间（带端点开闭）、缺口占位符的完整形状（`[[gap:<数字>]]`）、三条拼接规则的表达式。
   只比对子串会漏掉最自然的漂移形状（`..=` 改 `..`、`||` 改 `&&`、少写半个条件、占位符少个 `]`）——
   这几种改法都会被脚本抓住（退出码 1）。
+- `npm run check:frontend` 跑**前端纯函数的单元测试**（`scripts/frontend/`，`node --test`）：
+  把 `src/` 里的纯函数**直接 import 进来**跑真实断言 —— 格式化（`fmtDuration` / `fmtClock` /
+  `fmtBytes`）、拼句（`joinText`）、缺口占位符（`isGapMarker` / `gapText` / `localizeText` /
+  `gapMarkerTexts`）、错误码（`errorCode` / `fmtError`）、文件名（`buildFileName`）。
+  **与 `check:join` 互补、都留着**：`check:join` 比的是前后端两份实现的**结构**（两边同时改错成
+  一样它也不红），这层测的是**行为对不对**（输出等于手写的期望值）。期望值一律手写字面量，
+  不从被测函数推导（推导出来的期望恒真）。
+  **沙箱**（`scripts/frontend/sandbox.mjs`）给 Node 补上 `window` / `document` / `navigator` /
+  `localStorage`，并按浏览器的顺序加载**真的字典**（`src/locales/*.js` 再 `src/i18n.js`，用
+  `new Function` —— 它们是浏览器脚本不是 ES module，`import()` 会失败；跟 `check-i18n.mjs`
+  同一个手法）。字典是真的才能测出「中文全角不加空格、英文半角加空格」这类依赖文案内容的规则。
+  沙箱**自己也有守卫**（`scripts/frontend/sandbox.test.mjs`）：字典非空、`t` 查得到 key、
+  **切语言对已 import 的模块生效**、两次 import 拿到不同实例 —— 沙箱坏了测试会静默地测错东西。
+  测试文件**不在 `src/` 下**：`src/` 是 Tauri 的 `frontendDist`（会被打进 app bundle），
+  且 `check:deps` 规则四要求 `src/` 下每个 `.js` 都登记。
 - `npm run check:bundle` 查打包与原生层配置（`scripts/check-bundle.mjs`）：macOS 必须 ad-hoc 签名
   （`bundle.macOS.signingIdentity = "-"`）、必须挂麦克风 entitlement
   （`com.apple.security.device.audio-input`）、`Info.plist` 必须有 `NSMicrophoneUsageDescription`、
