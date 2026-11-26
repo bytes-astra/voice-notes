@@ -34,6 +34,9 @@ jobs:
       - name: 前后端拼句规则一致
         run: npm run check:join
 
+      - name: 前端纯函数单测
+        run: npm run check:frontend
+
       - name: 前后端命令名与载荷字段一致
         run: npm run check:contract
 
