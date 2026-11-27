@@ -65,9 +65,17 @@
 
 ## 错误码
 
-后端错误只返回字典 key：用 `crate::code("record.empty")` / `crate::code_detail("record.micError", e)`（lib.rs 里定义），得到 `"record.empty"` / `"record.micError:<细节>"`。前端 `core.js` 的 `fmtError()` 查字典翻译。
+后端错误只返回字典 key：用 `crate::error_code::code(ErrorCode::RecordEmpty)` /
+`crate::error_code::code_detail(ErrorCode::RecordMicError, e)`（`error_code.rs` 里定义），
+得到 `"record.empty"` / `"record.micError:<细节>"`。前端 `core.js` 的 `fmtError()` 查字典翻译。
 
-**新增错误码必须同时加进 `src/locales/zh-CN.js` 和 `src/locales/en.js`**，`npm run check:i18n` 会校验后端引用的码在字典里。
+**错误码是类型，不是字符串** —— `code()` / `code_detail()` 只收 `ErrorCode` 枚举，
+拼错 key **编译不过**。新增错误码 = 在 `error_code.rs` 的枚举里加一个变体、
+在 `ErrorCode::key()` 的 match 里写上它的 key。
+
+**新增错误码必须同时加进 `src/locales/zh-CN.js` 和 `src/locales/en.js`**，
+`npm run check:i18n` 会校验**枚举里的每个 key** 都在字典里（内部哨兵
+`download.cancelled` 显式豁免 —— 它不进字典，界面上看到的是 `setup.cancelled`）。
 
 ## 控件
 

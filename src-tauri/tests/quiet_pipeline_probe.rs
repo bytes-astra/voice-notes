@@ -6,10 +6,10 @@
 //! 非语音分支只 `buffer_.Pop(...)` → 音频静默消失。
 //!
 //! 单测只测 `audio::Agc` 自己，**守不住「AGC 还接在 `record.rs` 里」** ——
-//! 有人把它删掉，单测照样绿。这个探针走**真实的 `run_offline` 管线**，两条路对照：
+//! 有人把它删掉，单测照样绿。这个探针走**真实的 `run_local_offline` 管线**，两条路对照：
 //!
 //!   * 不经过 AGC（直接喂 `OfflineSession`）→ 低电平下几乎没字
-//!   * 经过生产管线（`run_offline`）→ 低电平下字回来了
+//!   * 经过生产管线（`run_local_offline`）→ 低电平下字回来了
 //!
 //! 运行：
 //!   VOICE_NOTES_MODEL_DIR=... cargo test --test quiet_pipeline_probe -- --nocapture
@@ -24,16 +24,24 @@ mod common;
 use common::{model_paths, trim_silence};
 
 /// 直接喂会话（**不经过 AGC**）：返回字数。
-fn chars_without_agc(engine: &Arc<Engine>, vad: &sherpa_onnx::VadModelConfig, audio: &[f32]) -> usize {
+fn chars_without_agc(
+    engine: &Arc<Engine>,
+    vad: &sherpa_onnx::VadModelConfig,
+    audio: &[f32],
+) -> usize {
     let mut session = OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
     for chunk in audio.chunks(512) {
         session.push(chunk);
     }
     session.finish();
-    session.segments().iter().map(|s| s.text.chars().count()).sum()
+    session
+        .segments()
+        .iter()
+        .map(|s| s.text.chars().count())
+        .sum()
 }
 
-/// 走生产管线（`record::run_offline`）：返回字数。
+/// 走生产管线（`record::run_local_offline`）：返回字数。
 fn chars_through_pipeline(
     engine: &Arc<Engine>,
     vad: &sherpa_onnx::VadModelConfig,
@@ -43,9 +51,9 @@ fn chars_through_pipeline(
     queue.push(audio);
     let stop = Arc::new(AtomicBool::new(true));
     let discard = Arc::new(AtomicBool::new(false));
-    let session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone())
-        .expect("建整段会话");
-    let transcript = voice_notes_lib::record::run_offline(
+    let session =
+        voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
+    let transcript = voice_notes_lib::record::run_local_offline(
         session,
         queue,
         16_000,
@@ -104,7 +112,10 @@ fn probe_quiet_recording_still_gets_transcribed() {
     }
     let noise = white_noise(signal.len(), 0x9E3779B97F4A7C15);
 
-    println!("{:<18} {:>9} {:>11} {:>11}", "信号", "增益", "不经AGC", "经生产管线");
+    println!(
+        "{:<18} {:>9} {:>11} {:>11}",
+        "信号", "增益", "不经AGC", "经生产管线"
+    );
     for (label, snr) in [("干净人声", f32::INFINITY), ("人声+噪声 10dB", 10.0)] {
         let base = if snr.is_finite() {
             mix(&signal, &noise, snr)

@@ -1,6 +1,7 @@
 //! `engine` 模块的单元测试（从 `engine.rs` 拆出）。
 
 use super::*;
+use crate::error_code::ErrorCode;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -40,7 +41,7 @@ fn fake_offline_engine(
             Ok((key.clone(), key))
         },
         |key: OfflineEngineKey| Ok(FakeEngine { key }),
-        "error.engineState",
+        ErrorCode::ErrorEngineState,
     )
 }
 
@@ -60,7 +61,7 @@ fn fake_streaming_engine(
             Ok((key.clone(), key))
         },
         |key: StreamingEngineKey| Ok(FakeStreaming { key }),
-        "error.streamEngineState",
+        ErrorCode::ErrorStreamEngineState,
     )
 }
 
@@ -316,8 +317,7 @@ fn both_modes_share_vad_params() {
 
     // 唯一允许不同的是「一句话最长」阈值（两条路径用它的地方不同）。
     assert_ne!(
-        offline.silero_vad.max_speech_duration,
-        streaming.silero_vad.max_speech_duration,
+        offline.silero_vad.max_speech_duration, streaming.silero_vad.max_speech_duration,
         "两模式的 max_speech_duration 本来就该不同（见两个常量的注释）"
     );
 
@@ -338,8 +338,14 @@ fn both_modes_share_vad_params() {
         offline.silero_vad.window_size, streaming.silero_vad.window_size,
         "VAD window_size 分叉了"
     );
-    assert_eq!(offline.sample_rate, streaming.sample_rate, "VAD sample_rate 分叉了");
-    assert_eq!(offline.num_threads, streaming.num_threads, "VAD num_threads 分叉了");
+    assert_eq!(
+        offline.sample_rate, streaming.sample_rate,
+        "VAD sample_rate 分叉了"
+    );
+    assert_eq!(
+        offline.num_threads, streaming.num_threads,
+        "VAD num_threads 分叉了"
+    );
     assert_eq!(offline.provider, streaming.provider, "VAD provider 分叉了");
     assert_eq!(offline.debug, streaming.debug, "VAD debug 分叉了");
 }
@@ -419,19 +425,36 @@ fn cloud_status_exposes_bool_not_key() {
         cloud_model: "mock-model".into(),
     };
     let json = serde_json::to_string(&status).unwrap();
-    assert!(json.contains("\"cloudConfigured\":true"), "序列化该有布尔值：{json}");
-    assert!(!json.contains("cloudApiKey"), "Status 序列化不该有 key 字段：{json}");
-    assert!(!json.contains(DUMMY_KEY), "Status 序列化不该有 key 明文：{json}");
+    assert!(
+        json.contains("\"cloudConfigured\":true"),
+        "序列化该有布尔值：{json}"
+    );
+    assert!(
+        !json.contains("cloudApiKey"),
+        "Status 序列化不该有 key 字段：{json}"
+    );
+    assert!(
+        !json.contains(DUMMY_KEY),
+        "Status 序列化不该有 key 明文：{json}"
+    );
     // 地址与模型名不是凭据，可以回传（设置页要回填这两个框）。
-    assert!(json.contains("\"cloudBaseUrl\":\"https://example.invalid/v1\""), "地址该回传：{json}");
-    assert!(json.contains("\"cloudModel\":\"mock-model\""), "模型名该回传：{json}");
-    assert!(json.contains("\"cloudProvider\":\"realtime\""), "provider 标识该回传：{json}");
+    assert!(
+        json.contains("\"cloudBaseUrl\":\"https://example.invalid/v1\""),
+        "地址该回传：{json}"
+    );
+    assert!(
+        json.contains("\"cloudModel\":\"mock-model\""),
+        "模型名该回传：{json}"
+    );
+    assert!(
+        json.contains("\"cloudProvider\":\"realtime\""),
+        "provider 标识该回传：{json}"
+    );
     assert!(
         json.contains("\"cloudSupportsKeywords\":true"),
         "能力声明该回传：{json}"
     );
 }
-
 
 /// VAD 文件存在但无法创建 detector 时，云端启动必须失败，不能进入无门控分支。
 #[test]

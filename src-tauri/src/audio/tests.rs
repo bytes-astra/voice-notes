@@ -29,7 +29,11 @@ fn unnamed_devices_are_not_listed() {
     assert!(device_entry("   ".into(), None).is_none());
     let device = device_entry("Mic".into(), Some("Mic")).expect("有名字的设备要列出");
     assert!(device.is_default);
-    assert!(!device_entry("Mic".into(), Some("Other")).unwrap().is_default);
+    assert!(
+        !device_entry("Mic".into(), Some("Other"))
+            .unwrap()
+            .is_default
+    );
 }
 
 #[test]

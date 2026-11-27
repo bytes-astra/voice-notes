@@ -164,4 +164,3 @@ pub fn env_f64(name: &str, default: f64) -> f64 {
         .and_then(|v| v.trim().parse::<f64>().ok())
         .unwrap_or(default)
 }
-

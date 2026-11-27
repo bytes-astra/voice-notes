@@ -31,7 +31,9 @@ mod common;
 use common::edit_distance;
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(PathBuf::from)
+    std::env::var("VOICE_NOTES_MODEL_DIR")
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn stream_dir() -> Option<PathBuf> {
@@ -102,7 +104,9 @@ fn probe_corpus_offline() {
     let engine = Engine::new(&paths(&dir), "zh", true).expect("加载模型");
     let files = all_corpus();
     if files.is_empty() {
-        eprintln!("跳过：没有语料（先跑 scripts/fetch-quality-corpus.mjs 与 scripts/gen-tts-corpus.sh）");
+        eprintln!(
+            "跳过：没有语料（先跑 scripts/fetch-quality-corpus.mjs 与 scripts/gen-tts-corpus.sh）"
+        );
         return;
     }
     let mut stats: std::collections::BTreeMap<&str, (usize, usize, usize)> = Default::default();
@@ -211,7 +215,10 @@ fn probe_corpus_streaming() {
                 dist as f64 / refc.len().max(1) as f64 * 100.0
             );
         }
-        println!("[流式 {cat:>6}] {name:<18} {ms:>4}ms{cer} → {}", text.replace('\n', " "));
+        println!(
+            "[流式 {cat:>6}] {name:<18} {ms:>4}ms{cer} → {}",
+            text.replace('\n', " ")
+        );
     }
     println!("\n=== 流式（greedy）汇总 ===");
     for (cat, (files, dist, chars)) in &stats {
@@ -243,10 +250,7 @@ fn probe_offline_knobs() {
         for (name, file) in legacy() {
             let wave = sherpa_onnx::Wave::read(file.to_str().unwrap()).expect("读取音频");
             let out = engine.transcribe(wave.samples());
-            println!(
-                "[离线 {label:>8}] {name}: {}",
-                out.text.replace('\n', " ")
-            );
+            println!("[离线 {label:>8}] {name}: {}", out.text.replace('\n', " "));
         }
     }
 }
@@ -266,7 +270,11 @@ fn probe_streaming_hotwords() {
         return;
     }
     let hotwords = std::env::var("VOICE_NOTES_HOTWORDS").ok();
-    for (label, words) in [("greedy", None), ("beam", None), ("beam+热词", hotwords.as_deref())] {
+    for (label, words) in [
+        ("greedy", None),
+        ("beam", None),
+        ("beam+热词", hotwords.as_deref()),
+    ] {
         let mut config = OnlineRecognizerConfig::default();
         config.model_config.transducer = OnlineTransducerModelConfig {
             encoder: Some(dir.join("encoder.int8.onnx").display().to_string()),
@@ -276,9 +284,11 @@ fn probe_streaming_hotwords() {
         config.model_config.tokens = Some(dir.join("tokens.txt").display().to_string());
         config.model_config.num_threads = 2;
         config.model_config.provider = Some("cpu".into());
-        config.decoding_method = Some(
-            if label == "greedy" { "greedy_search".into() } else { "modified_beam_search".into() },
-        );
+        config.decoding_method = Some(if label == "greedy" {
+            "greedy_search".into()
+        } else {
+            "modified_beam_search".into()
+        });
         config.enable_endpoint = false;
         if let Some(words) = words {
             config.hotwords_buf = Some(words.as_bytes().to_vec());
@@ -306,7 +316,10 @@ fn probe_streaming_hotwords() {
         println!(
             "[流式 {label:>10}] {}: {}",
             target.file_name().unwrap().to_string_lossy(),
-            recognizer.get_result(&stream).map(|r| r.text).unwrap_or_default()
+            recognizer
+                .get_result(&stream)
+                .map(|r| r.text)
+                .unwrap_or_default()
         );
     }
 }
@@ -458,7 +471,11 @@ fn probe_vad_variants() {
                 spans.len(),
                 spans
                     .iter()
-                    .map(|(s, l)| format!("{:.1}-{:.1}", *s as f32 / 16_000.0, (*s + *l) as f32 / 16_000.0))
+                    .map(|(s, l)| format!(
+                        "{:.1}-{:.1}",
+                        *s as f32 / 16_000.0,
+                        (*s + *l) as f32 / 16_000.0
+                    ))
                     .collect::<Vec<_>>()
                     .join(",")
             ));
@@ -549,7 +566,10 @@ fn probe_offline_stream_options() {
             recognizer.decode(&stream);
             println!(
                 "[流选项 use_itn={itn}] {name}: {}",
-                stream.get_result().map(|r| r.text.replace('\n', " ")).unwrap_or_default()
+                stream
+                    .get_result()
+                    .map(|r| r.text.replace('\n', " "))
+                    .unwrap_or_default()
             );
         }
     }
@@ -604,14 +624,25 @@ fn probe_corpus_preroll() {
             let dist = edit_distance(&hyp, &refc);
             entry.1 += dist;
             entry.2 += refc.len();
-            cer = format!("  CER {}/{}={:.1}%", dist, refc.len(), dist as f64 / refc.len().max(1) as f64 * 100.0);
+            cer = format!(
+                "  CER {}/{}={:.1}%",
+                dist,
+                refc.len(),
+                dist as f64 / refc.len().max(1) as f64 * 100.0
+            );
         }
-        println!("[预滚 {cat:>6}] {name:<18} {cer} → {}", text.replace('\n', " "));
+        println!(
+            "[预滚 {cat:>6}] {name:<18} {cer} → {}",
+            text.replace('\n', " ")
+        );
     }
     println!("\n=== 补 0.5s 前导静音后汇总 ===");
     for (cat, (files, dist, chars)) in &stats {
         if *chars > 0 {
-            println!("{cat:>6}: {files:>2} 条, CER {dist}/{chars} = {:.2}%", *dist as f64 / *chars as f64 * 100.0);
+            println!(
+                "{cat:>6}: {files:>2} 条, CER {dist}/{chars} = {:.2}%",
+                *dist as f64 / *chars as f64 * 100.0
+            );
         } else {
             println!("{cat:>6}: {files:>2} 条（无参考文本）");
         }
@@ -652,7 +683,11 @@ fn probe_corpus_preroll_buffer() {
                 let len = seg.samples().len();
                 // 只对第一段回扩：后续段前面有静音，sherpa 自己的 padding 够用；
                 // 全部回扩会吃进上一段的话，造成重复。
-                let from = if decoded == 0 { start.saturating_sub(6400) } else { start };
+                let from = if decoded == 0 {
+                    start.saturating_sub(6400)
+                } else {
+                    start
+                };
                 decoded += 1;
                 let to = (start + len).min(samples.len());
                 if from < to {
@@ -665,7 +700,11 @@ fn probe_corpus_preroll_buffer() {
         while let Some(seg) = detector.front() {
             let start = seg.start() as usize;
             let len = seg.samples().len();
-            let from = if decoded == 0 { start.saturating_sub(6400) } else { start };
+            let from = if decoded == 0 {
+                start.saturating_sub(6400)
+            } else {
+                start
+            };
             decoded += 1;
             let to = (start + len).min(samples.len());
             if from < to {
@@ -683,14 +722,25 @@ fn probe_corpus_preroll_buffer() {
             let dist = edit_distance(&hyp, &refc);
             entry.1 += dist;
             entry.2 += refc.len();
-            cer = format!("  CER {}/{}={:.1}%", dist, refc.len(), dist as f64 / refc.len().max(1) as f64 * 100.0);
+            cer = format!(
+                "  CER {}/{}={:.1}%",
+                dist,
+                refc.len(),
+                dist as f64 / refc.len().max(1) as f64 * 100.0
+            );
         }
-        println!("[回扩 {cat:>6}] {name:<18} {cer} → {}", text.replace('\n', " "));
+        println!(
+            "[回扩 {cat:>6}] {name:<18} {cer} → {}",
+            text.replace('\n', " ")
+        );
     }
     println!("\n=== 段起点回扩 0.4s 后汇总 ===");
     for (cat, (files, dist, chars)) in &stats {
         if *chars > 0 {
-            println!("{cat:>6}: {files:>2} 条, CER {dist}/{chars} = {:.2}%", *dist as f64 / *chars as f64 * 100.0);
+            println!(
+                "{cat:>6}: {files:>2} 条, CER {dist}/{chars} = {:.2}%",
+                *dist as f64 / *chars as f64 * 100.0
+            );
         } else {
             println!("{cat:>6}: {files:>2} 条（无参考文本）");
         }
@@ -710,10 +760,12 @@ fn probe_offline_session_first_word() {
     let vad = engine.vad_config().expect("vad");
     for name in ["tts-01", "tts-05", "tts-09"] {
         let file = format!("tests/fixtures/quality/{name}.wav");
-        let Ok(Some(wave)) = std::fs::metadata(&file).map(|_| sherpa_onnx::Wave::read(&file)) else {
+        let Ok(Some(wave)) = std::fs::metadata(&file).map(|_| sherpa_onnx::Wave::read(&file))
+        else {
             continue;
         };
-        let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
+        let mut session = voice_notes_lib::asr::OfflineSession::new(engine.clone(), vad.clone())
+            .expect("建整段会话");
         let mut events = Vec::new();
         for chunk in wave.samples().chunks(3_200) {
             events.extend(session.push(chunk));
@@ -744,33 +796,46 @@ fn probe_streaming_engine_hotwords() {
         decoder: dir.join("decoder.onnx").display().to_string(),
         joiner: dir.join("joiner.int8.onnx").display().to_string(),
         tokens: dir.join("tokens.txt").display().to_string(),
-        vad: dir.join("silero_vad.onnx").is_file().then(|| dir.join("silero_vad.onnx").display().to_string()),
+        vad: dir
+            .join("silero_vad.onnx")
+            .is_file()
+            .then(|| dir.join("silero_vad.onnx").display().to_string()),
     };
-    for sample in ["tests/fixtures/quality/tts-17.wav", "tests/fixtures/zh-tail2.wav"] {
-    // 语料不入库（要跑 scripts/gen-tts-corpus.sh 生成）：缺了就跳过，
-    // 别 panic —— 同族的 probe_streaming_hotwords 就是这么做的。
-    if !Path::new(sample).is_file() {
-        eprintln!("跳过：找不到 {sample}");
-        continue;
-    }
-    let wave = sherpa_onnx::Wave::read(sample).expect("音频");
-    for (label, words) in [("无术语表", vec![]), ("术语表", vec!["再确认一下".to_string()])] {
-        let engine = StreamingEngine::new(&paths, &words).expect("加载流式引擎");
-        let stream = engine.new_stream();
-        for chunk in wave.samples().chunks(3_200) {
-            stream.accept_waveform(16_000, chunk);
+    for sample in [
+        "tests/fixtures/quality/tts-17.wav",
+        "tests/fixtures/zh-tail2.wav",
+    ] {
+        // 语料不入库（要跑 scripts/gen-tts-corpus.sh 生成）：缺了就跳过，
+        // 别 panic —— 同族的 probe_streaming_hotwords 就是这么做的。
+        if !Path::new(sample).is_file() {
+            eprintln!("跳过：找不到 {sample}");
+            continue;
+        }
+        let wave = sherpa_onnx::Wave::read(sample).expect("音频");
+        for (label, words) in [
+            ("无术语表", vec![]),
+            ("术语表", vec!["再确认一下".to_string()]),
+        ] {
+            let engine = StreamingEngine::new(&paths, &words).expect("加载流式引擎");
+            let stream = engine.new_stream();
+            for chunk in wave.samples().chunks(3_200) {
+                stream.accept_waveform(16_000, chunk);
+                while engine.recognizer.is_ready(&stream) {
+                    engine.recognizer.decode(&stream);
+                }
+            }
+            stream.input_finished();
             while engine.recognizer.is_ready(&stream) {
                 engine.recognizer.decode(&stream);
             }
+            println!(
+                "[流式引擎 {label}] {sample}: {}",
+                engine
+                    .recognizer
+                    .get_result(&stream)
+                    .map(|r| r.text)
+                    .unwrap_or_default()
+            );
         }
-        stream.input_finished();
-        while engine.recognizer.is_ready(&stream) {
-            engine.recognizer.decode(&stream);
-        }
-        println!(
-            "[流式引擎 {label}] {sample}: {}",
-            engine.recognizer.get_result(&stream).map(|r| r.text).unwrap_or_default()
-        );
-    }
     }
 }

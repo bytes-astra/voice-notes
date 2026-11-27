@@ -51,7 +51,11 @@ fn vad_speech_samples(
 }
 
 /// 跑完整会话：句子数、覆盖的秒数、字数。
-fn offline_session(engine: &std::sync::Arc<Engine>, vad: &sherpa_onnx::VadModelConfig, speech: &[f32]) -> (usize, f32, usize) {
+fn offline_session(
+    engine: &std::sync::Arc<Engine>,
+    vad: &sherpa_onnx::VadModelConfig,
+    speech: &[f32],
+) -> (usize, f32, usize) {
     let mut session = OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
     let mut segments: Vec<(f32, f32, String)> = Vec::new();
     for chunk in speech.chunks(512) {
@@ -96,7 +100,10 @@ fn probe_low_gain() {
     }
     let seconds = long.len() as f32 / 16000.0;
 
-    println!("\n{:<8} {:>10} {:>12} {:>10} {:>8} {:>8}", "增益", "峰值", "dBFS", "VAD语音", "句数", "字数");
+    println!(
+        "\n{:<8} {:>10} {:>12} {:>10} {:>8} {:>8}",
+        "增益", "峰值", "dBFS", "VAD语音", "句数", "字数"
+    );
     for gain in [1.0f32, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.003] {
         let scaled: Vec<f32> = long.iter().map(|s| s * gain).collect();
         let peak = scaled.iter().fold(0.0f32, |a, b| a.max(b.abs()));

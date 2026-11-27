@@ -9,7 +9,7 @@ use voice_notes_lib::asr::{Segment, StreamEvent, StreamingSession, Transcript};
 use voice_notes_lib::audio::SampleQueue;
 use voice_notes_lib::engine::StreamingEngine;
 use voice_notes_lib::models::StreamingPaths;
-use voice_notes_lib::record::run_streaming_core;
+use voice_notes_lib::record::run_local_streaming;
 
 const RATE: usize = 16_000;
 const REPEATS: usize = 3;
@@ -197,7 +197,7 @@ fn gated_stop_keeps_pending_in_the_previous_sentence() {
         completed
     });
     let mut segments = Vec::new();
-    let transcript = run_streaming_core(
+    let transcript = run_local_streaming(
         engine,
         None,
         queue,
@@ -250,7 +250,7 @@ fn one_capture_batch_matches_realtime_and_final_segments() {
     });
     let mut segments = Vec::new();
     let mut first_batch_segments = None;
-    let transcript = run_streaming_core(
+    let transcript = run_local_streaming(
         engine.clone(),
         None,
         queue,

@@ -353,19 +353,27 @@ test('把整段会话的构造挪回 async 路径会被抓住', () => {
   // 建 VAD 的那几十毫秒全占着执行器。
   //
   // 改的是**真实调用点**（不是另加一个合成函数）—— 代理测试容易测偏。
+  //
+  // 匹配用**正则**而不是逐字文本：`cargo fmt` 一改缩进 / 换行，
+  // 逐字匹配就匹配不上（测试悄悄退化成「什么都没改」→ 假绿）。
   const broken = sources.map((source) => {
     if (source.path.endsWith('lib.rs')) {
-      const original = `tauri::async_runtime::spawn_blocking(move || {
-            asr::OfflineSession::new(engine, vad)
-        })`
-      if (!source.text.includes(original)) return source
+      // `spawn_blocking(move || { asr::OfflineSession::new(engine, vad) })`
+      // 或 `spawn_blocking(move || asr::OfflineSession::new(engine, vad))`
+      // —— 大括号有没有、缩进多少都随 rustfmt 变，用宽松模式匹配两种形态。
+      const pattern =
+        /tauri::async_runtime::spawn_blocking\s*\(\s*move\s*\|\|\s*(?:\{[\s\S]{0,120}?)?asr::OfflineSession::new\(engine,\s*vad\)\s*(?:\})?\s*\)/
+      if (!pattern.test(source.text)) return source
       return {
         ...source,
-        text: source.text.replace(original, 'asr::OfflineSession::new(engine, vad)'),
+        text: source.text.replace(pattern, 'asr::OfflineSession::new(engine, vad)'),
       }
     }
     return source
   })
+  // 先确认替换真的发生了 —— 否则下面那句断言测的是「没改坏也抓不到」。
+  const replaced = broken.some((source, index) => source.text !== sources[index].text)
+  assert.ok(replaced, '没在 lib.rs 里找到那处 spawn_blocking —— 自测本身失效了')
   const { problems } = collectProblems(broken)
   assert.ok(
     problems.length > 0,

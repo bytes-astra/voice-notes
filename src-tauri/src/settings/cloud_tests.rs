@@ -141,7 +141,11 @@ fn deleting_the_active_profile_falls_back_to_the_next_one() {
         .iter()
         .map(|profile| profile.id.as_str())
         .collect();
-    assert_eq!(ids, vec![first.as_str(), third.as_str()], "该剩下第一、第三条");
+    assert_eq!(
+        ids,
+        vec![first.as_str(), third.as_str()],
+        "该剩下第一、第三条"
+    );
     assert_eq!(
         settings.cloud_active_profile, third,
         "删掉使用中的中间那条 → 落到下一条，不是第一条"
@@ -229,7 +233,10 @@ fn changing_only_the_label_keeps_the_credential() {
         None,
         "model-x".into(),
     );
-    assert_eq!(settings.cloud_profiles[0].api_key, "keep-me", "只改备注不该动凭据");
+    assert_eq!(
+        settings.cloud_profiles[0].api_key, "keep-me",
+        "只改备注不该动凭据"
+    );
 }
 
 /// 换 provider 且传了新凭据 → 用新凭据（不是清空）。
@@ -309,8 +316,6 @@ fn switching_provider_keeps_the_other_providers_profile() {
     assert_eq!(aliyun.api_key, "aliyun-key", "切走不能把别人的凭据清掉");
 }
 
-
-
 /// 从没配过云端 → **不**生成空连接。
 #[test]
 fn a_fresh_install_has_no_profiles() {
@@ -319,7 +324,6 @@ fn a_fresh_install_has_no_profiles() {
     assert!(fresh.cloud_active_profile.is_empty());
     assert!(fresh.active_cloud_profile().is_none());
 }
-
 
 /// 已有连接列表 → normalize 不该多出一条连接。
 #[test]

@@ -42,12 +42,12 @@ pub(crate) fn info(text: &str, secret: Option<&str>) {
 /// `secret` 同 `warn`；`None` 表示细节里没有 provider 文本（固定文案、
 /// 传输层错误、帧解析错误）。
 pub(crate) fn code_detail(
-    key: &str,
+    key: crate::error_code::ErrorCode,
     detail: impl std::fmt::Display,
     secret: Option<&str>,
 ) -> String {
     let detail = redact(&detail.to_string(), secret);
-    crate::code_detail(key, detail)
+    crate::error_code::code_detail(key, detail)
 }
 
 /// 把凭据从文本里抹掉（纯函数，可单测）。

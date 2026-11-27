@@ -12,22 +12,20 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
-use crate::{code, code_detail};
+use crate::error_code::{code, code_detail, ErrorCode};
 
 pub const MODEL_FILE: &str = "model.int8.onnx";
-
-/// 下载被取消的内部哨兵。**不是字典 key** —— 界面看到的永远是
-/// `setup.cancelled`（见 `download_asset` 的映射）。
-pub const DOWNLOAD_CANCELLED: &str = "download.cancelled";
 
 /// 这个错误是不是「下载被取消」。
 ///
 /// 比的是**错误码**部分（':' 之前），不是整个字符串 ——
-/// `code_detail(DOWNLOAD_CANCELLED, …)` 出来的是 `download.cancelled:细节`，
-/// 整串比较会失配，内部哨兵就会以「未知错误」漏到界面上。
-/// 与 `record.rs` 的 `is_stop_failed` 同一套写法。
+/// `code_detail(ErrorCode::DownloadCancelled, …)` 出来的是
+/// `download.cancelled:细节`，整串比较会失配，内部哨兵就会以「未知错误」
+/// 漏到界面上。
+/// 与 `record.rs` 的 `is_stop_failed` 同一套写法（都走 `ErrorCode::from_key`）。
 pub fn is_cancelled(error: &str) -> bool {
-    error.split(':').next() == Some(DOWNLOAD_CANCELLED)
+    let key = error.split(':').next().unwrap_or(error);
+    ErrorCode::from_key(key) == Some(ErrorCode::DownloadCancelled)
 }
 
 pub const TOKENS_FILE: &str = "tokens.txt";
@@ -144,10 +142,10 @@ pub fn punctuation_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| code_detail("error.appDataDirFailed", e))?
+        .map_err(|e| code_detail(ErrorCode::ErrorAppDataDirFailed, e))?
         .join("models")
         .join(PUNCT_DIR);
-    fs::create_dir_all(&dir).map_err(|e| code_detail("error.createPunctDir", e))?;
+    fs::create_dir_all(&dir).map_err(|e| code_detail(ErrorCode::ErrorCreatePunctDir, e))?;
     Ok(dir)
 }
 
@@ -230,10 +228,10 @@ pub fn streaming_install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| code_detail("error.appDataDirFailed", e))?
+        .map_err(|e| code_detail(ErrorCode::ErrorAppDataDirFailed, e))?
         .join("models")
         .join(STREAM_DIR);
-    fs::create_dir_all(&dir).map_err(|e| code_detail("error.createStreamingDir", e))?;
+    fs::create_dir_all(&dir).map_err(|e| code_detail(ErrorCode::ErrorCreateStreamingDir, e))?;
     Ok(dir)
 }
 
@@ -253,7 +251,7 @@ pub async fn download_streaming(
     if let Err(err) = download_asset(&PUNCT, punct_dir, cancel.clone(), sink).await {
         // 用户按了取消：不能把「取消」当成「标点降级」报成功。
         if cancel.load(Ordering::Relaxed) {
-            return Err(code("setup.cancelled"));
+            return Err(code(ErrorCode::SetupCancelled));
         }
         // 标点模型缺失只降级，不算整体失败：记进日志，界面上照常提示。
         crate::log::warn(format!("标点模型下载失败，降级为无标点：{err}"));
@@ -366,9 +364,9 @@ pub fn install_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| code_detail("error.appDataDirFailed", e))?
+        .map_err(|e| code_detail(ErrorCode::ErrorAppDataDirFailed, e))?
         .join("models");
-    fs::create_dir_all(&dir).map_err(|e| code_detail("error.createModelDir", e))?;
+    fs::create_dir_all(&dir).map_err(|e| code_detail(ErrorCode::ErrorCreateModelDir, e))?;
     Ok(dir)
 }
 
@@ -379,13 +377,13 @@ pub trait ProgressSink: Send + Sync {
 
 fn hash_file(path: &Path) -> Result<String, String> {
     let mut file = fs::File::open(path)
-        .map_err(|e| code_detail("error.readFileFailed", format!("{path:?}: {e}")))?;
+        .map_err(|e| code_detail(ErrorCode::ErrorReadFileFailed, format!("{path:?}: {e}")))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
         let n = file
             .read(&mut buf)
-            .map_err(|e| code_detail("error.readFileFailed", e))?;
+            .map_err(|e| code_detail(ErrorCode::ErrorReadFileFailed, e))?;
         if n == 0 {
             break;
         }
@@ -404,7 +402,10 @@ async fn fetch_one(
 ) -> Result<(), String> {
     let part = dest.with_extension("part");
     // 旧版本/损坏的缓存不可能用于断点续传，先删掉再从头下载。
-    if fs::metadata(&part).map(|m| m.len() > asset.bytes).unwrap_or(false) {
+    if fs::metadata(&part)
+        .map(|m| m.len() > asset.bytes)
+        .unwrap_or(false)
+    {
         let _ = fs::remove_file(&part);
     }
     let offset = fs::metadata(&part)
@@ -422,7 +423,7 @@ async fn fetch_one(
             .header(reqwest::header::USER_AGENT, "voice-notes/0.1")
             .send()
             .await
-            .map_err(|e| code_detail("error.connectFailed", e))?;
+            .map_err(|e| code_detail(ErrorCode::ErrorConnectFailed, e))?;
 
         let status = resp.status();
         if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
@@ -440,15 +441,16 @@ async fn fetch_one(
                 .write(true)
                 .truncate(!partial)
                 .open(&part)
-                .map_err(|e| code_detail("error.writeCacheFailed", e))?;
+                .map_err(|e| code_detail(ErrorCode::ErrorWriteCacheFailed, e))?;
             let mut stream = resp.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 if cancel.load(Ordering::Relaxed) {
-                    return Err(DOWNLOAD_CANCELLED.into());
+                    return Err(ErrorCode::DownloadCancelled.to_string());
                 }
-                let chunk = chunk.map_err(|e| code_detail("error.downloadInterrupted", e))?;
+                let chunk =
+                    chunk.map_err(|e| code_detail(ErrorCode::ErrorDownloadInterrupted, e))?;
                 file.write_all(&chunk)
-                    .map_err(|e| code_detail("error.writeFailed", e))?;
+                    .map_err(|e| code_detail(ErrorCode::ErrorWriteFailed, e))?;
                 done += chunk.len() as u64;
                 if last_emit.elapsed() > Duration::from_millis(120) {
                     last_emit = Instant::now();
@@ -472,7 +474,7 @@ async fn fetch_one(
         // 不能保留一份明知不完整的缓存：否则切换镜像也会反复失败在同一处。
         let _ = fs::remove_file(&part);
         return Err(code_detail(
-            "error.sizeMismatch",
+            ErrorCode::ErrorSizeMismatch,
             format!("{size} / {}", asset.bytes),
         ));
     }
@@ -489,15 +491,15 @@ async fn fetch_one(
     let part_for_hash = part.clone();
     let digest = tauri::async_runtime::spawn_blocking(move || hash_file(&part_for_hash))
         .await
-        .map_err(|e| code_detail("error.verifyFailed", e))??;
+        .map_err(|e| code_detail(ErrorCode::ErrorVerifyFailed, e))??;
     if digest != asset.sha256 {
         let _ = fs::remove_file(&part);
-        return Err(code("error.shaMismatch"));
+        return Err(code(ErrorCode::ErrorShaMismatch));
     }
     if dest.exists() {
         let _ = fs::remove_file(dest);
     }
-    fs::rename(&part, dest).map_err(|e| code_detail("error.writeFileFailed", e))?;
+    fs::rename(&part, dest).map_err(|e| code_detail(ErrorCode::ErrorWriteFileFailed, e))?;
     sink.report(Progress {
         resource: asset.name,
         done: size,
@@ -559,7 +561,7 @@ pub async fn download_asset(
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(20))
         .build()
-        .map_err(|e| code_detail("error.connectFailed", e))?;
+        .map_err(|e| code_detail(ErrorCode::ErrorConnectFailed, e))?;
     let dest = dest_dir.join(asset.name);
     if fs::metadata(&dest)
         .map(|m| m.len() == asset.bytes)
@@ -588,7 +590,7 @@ pub async fn download_asset(
     // 镜像优先：国内直连 huggingface.co 经常连不上，镜像失败再回官方源
     for base in [MIRROR, HF] {
         if cancel.load(Ordering::Relaxed) {
-            return Err(code("setup.cancelled"));
+            return Err(code(ErrorCode::SetupCancelled));
         }
         match download_from_base(&client, base, asset, &dest, &cancel, sink).await {
             DownloadOutcome::Done => {
@@ -598,14 +600,17 @@ pub async fn download_asset(
                 ));
                 return Ok(());
             }
-            DownloadOutcome::Cancelled => return Err(code("setup.cancelled")),
+            DownloadOutcome::Cancelled => return Err(code(ErrorCode::SetupCancelled)),
             DownloadOutcome::Failed(err) => errors.push(format!("{base}: {err}")),
         }
     }
     let message = errors.join("; ");
     // 进度事件里的 message 也是给界面看的：只能是字典 key。
     // 细节（镜像地址 / HTTP 状态）进日志，不往界面上贴。
-    let failure = code_detail("error.downloadFailed", format!("{}: {message}", asset.name));
+    let failure = code_detail(
+        ErrorCode::ErrorDownloadFailed,
+        format!("{}: {message}", asset.name),
+    );
     sink.report(Progress {
         resource: asset.name,
         done: 0,

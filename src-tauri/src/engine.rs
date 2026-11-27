@@ -19,30 +19,30 @@ use sherpa_onnx::{
 use tauri::{AppHandle, Emitter};
 
 use crate::asr::{
-    clean, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript,
-    PRE_ROLL_SAMPLES, SAMPLE_RATE, VAD_WINDOW,
+    clean, should_pre_roll, MergedSegment, Segment, SegmentMerger, Transcript, PRE_ROLL_SAMPLES,
+    SAMPLE_RATE, VAD_WINDOW,
 };
-use crate::audio::Recorder;
+use crate::error_code::{code, code_detail, ErrorCode};
 use crate::log::{self, on_off};
 use crate::models;
 use crate::models::ModelPaths;
-use crate::record::RecordingRun;
 use crate::settings::{self, Settings};
-use crate::{code, code_detail};
 pub struct AppState {
     /// 设置的锁外面包一层 `Arc`：加载引擎的阻塞线程要在**持有引擎锁**的前提下
     /// 读设置（见 `install_engine`），得能把它带进那个线程。
     pub settings: Arc<Mutex<Settings>>,
-    pub recorder: Mutex<Option<Recorder>>,
+    /// 正在进行的录音（采集器 + 识别会话的停止信号 + 模式）。
+    ///
+    /// **一个槽**：采集器与它的识别会话必须同行（只持有其一，识别线程永远
+    /// 收不到 stop → 线程泄漏、麦克风不关、语言/ITN 永久锁死）。
+    /// 装进一个值里，这个配对由类型保证 —— 早先是四个槽（采集器 + 三个会话
+    /// 槽），三个会话槽类型完全相同，写错编译不报错、也没测试盯。
+    pub session: Mutex<Option<crate::record::Session>>,
     pub recording_starting: AtomicBool,
     pub next_recording_id: std::sync::atomic::AtomicU64,
     pub engine: Arc<Mutex<Option<Arc<Engine>>>>,
     pub streaming_engine: Arc<Mutex<Option<Arc<StreamingEngine>>>>,
     pub punct_engine: Arc<Mutex<Option<Arc<PunctuationEngine>>>>,
-    pub stream: Mutex<Option<RecordingRun>>,
-    pub offline_session: Mutex<Option<RecordingRun>>,
-    /// 云端模式的会话槽：云端录音也要登记，停止 / 取消才停得下来。
-    pub cloud_session: Mutex<Option<RecordingRun>>,
     pub cancel_download: Arc<AtomicBool>,
     pub downloading: Arc<AtomicBool>,
     /// 流式模型下载有自己的一套标志：整段在下载时不该把流式也挡住
@@ -83,15 +83,12 @@ impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
             settings: Arc::new(Mutex::new(settings)),
-            recorder: Mutex::new(None),
+            session: Mutex::new(None),
             recording_starting: AtomicBool::new(false),
             next_recording_id: std::sync::atomic::AtomicU64::new(1),
             engine: Arc::new(Mutex::new(None)),
             streaming_engine: Arc::new(Mutex::new(None)),
             punct_engine: Arc::new(Mutex::new(None)),
-            stream: Mutex::new(None),
-            offline_session: Mutex::new(None),
-            cloud_session: Mutex::new(None),
             cancel_download: Arc::new(AtomicBool::new(false)),
             downloading: Arc::new(AtomicBool::new(false)),
             cancel_download_streaming: Arc::new(AtomicBool::new(false)),
@@ -375,7 +372,7 @@ pub fn install_engine<T, K, P>(
     key_of: impl Fn(&T) -> K,
     prepare: impl Fn(&Settings) -> Result<(K, P), String>,
     build: impl FnOnce(P) -> Result<T, String>,
-    lock_error: &str,
+    lock_error: ErrorCode,
 ) -> Result<Arc<T>, String>
 where
     K: PartialEq,
@@ -418,7 +415,7 @@ pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<Arc<Engine
             |engine: &Engine| engine.key.clone(),
             |s: &Settings| {
                 let paths = models::resolve(&build_app, s.model_dir.as_deref())
-                    .ok_or_else(|| code("model.needOffline"))?;
+                    .ok_or_else(|| code(ErrorCode::ModelNeedOffline))?;
                 let key = OfflineEngineKey {
                     model_dir: paths.dir.clone(),
                     language: s.language.clone(),
@@ -436,11 +433,11 @@ pub async fn load_engine(app: &AppHandle, state: &AppState) -> Result<Arc<Engine
                 ));
                 Ok(loaded)
             },
-            "error.engineState",
+            ErrorCode::ErrorEngineState,
         )
     })
     .await
-    .map_err(|e| code_detail("model.loadFailed", e))?;
+    .map_err(|e| code_detail(ErrorCode::ModelLoadFailed, e))?;
 
     let _ = handle.emit("engine:state", engine_state_for(&outcome));
     outcome
@@ -501,8 +498,8 @@ pub async fn ensure_streaming_engine(
     let settings = state.settings.clone();
     let build_app = app.clone();
     // 检查和加载放在同一把锁里：预热和点录音并发时只会加载一份 161 MB 模型。
-    let outcome =
-        match tauri::async_runtime::spawn_blocking(move || -> Result<Arc<StreamingEngine>, String> {
+    let outcome = match tauri::async_runtime::spawn_blocking(
+        move || -> Result<Arc<StreamingEngine>, String> {
             install_engine(
                 &slot,
                 &settings,
@@ -515,7 +512,7 @@ pub async fn ensure_streaming_engine(
                 },
                 |key: StreamingEngineKey| {
                     let paths = models::resolve_streaming(&build_app)
-                        .ok_or_else(|| code("model.needStreaming"))?;
+                        .ok_or_else(|| code(ErrorCode::ModelNeedStreaming))?;
                     let engine = StreamingEngine::new(&paths, &key.hotwords)?;
                     log::info(format!(
                         "流式引擎加载完成：热词 {} 条，模型 {}",
@@ -524,14 +521,15 @@ pub async fn ensure_streaming_engine(
                     ));
                     Ok(engine)
                 },
-                "error.streamEngineState",
+                ErrorCode::ErrorStreamEngineState,
             )
-        })
-        .await
-        {
-            Ok(inner) => inner,
-            Err(e) => Err(code_detail("model.streamLoadFailed", e)),
-        };
+        },
+    )
+    .await
+    {
+        Ok(inner) => inner,
+        Err(e) => Err(code_detail(ErrorCode::ModelStreamLoadFailed, e)),
+    };
 
     // 成功发 ready，失败发 error —— 和整段侧 load_engine 一个范式。
     // 少了 error 事件，前端 state.engine 会永远停在 loading（徽标卡「加载中」）。
@@ -546,12 +544,15 @@ pub async fn ensure_punctuation(
     if let Some(engine) = cached_engine(&state.punct_engine) {
         return Ok(engine);
     }
-    let model = models::resolve_punctuation(app).ok_or_else(|| code("model.punctNotReady"))?;
+    let model =
+        models::resolve_punctuation(app).ok_or_else(|| code(ErrorCode::ModelPunctNotReady))?;
     // 同上：检查和加载在同一把锁里，避免并发加载两份 294 MB 标点模型。
     let engine_slot = state.punct_engine.clone();
     let engine =
         tauri::async_runtime::spawn_blocking(move || -> Result<Arc<PunctuationEngine>, String> {
-            let mut guard = engine_slot.lock().map_err(|_| code("error.punctEngineState"))?;
+            let mut guard = engine_slot
+                .lock()
+                .map_err(|_| code(ErrorCode::ErrorPunctEngineState))?;
             if let Some(engine) = guard.as_ref() {
                 return Ok(engine.clone());
             }
@@ -561,7 +562,7 @@ pub async fn ensure_punctuation(
             Ok(engine)
         })
         .await
-        .map_err(|e| code_detail("model.punctLoadFailed", e))??;
+        .map_err(|e| code_detail(ErrorCode::ModelPunctLoadFailed, e))??;
     Ok(engine)
 }
 
@@ -629,7 +630,7 @@ pub fn cloud_vad_config(model: String) -> VadModelConfig {
 pub fn validate_cloud_vad(config: &VadModelConfig) -> Result<(), String> {
     sherpa_onnx::VoiceActivityDetector::create(config, 60.0)
         .map(|_| ())
-        .ok_or_else(|| crate::code("cloud.vadInvalid"))
+        .ok_or_else(|| crate::code(ErrorCode::CloudVadInvalid))
 }
 
 pub struct Engine {
@@ -654,7 +655,7 @@ impl Engine {
 
         // 细节是模型路径（技术信息，不是展示文案）：字典里 model.loadFailed 要一个 {error}。
         let recognizer = OfflineRecognizer::create(&config)
-            .ok_or_else(|| code_detail("model.loadFailed", &paths.model))?;
+            .ok_or_else(|| code_detail(ErrorCode::ModelLoadFailed, &paths.model))?;
 
         let vad = paths
             .vad
@@ -907,7 +908,7 @@ impl StreamingEngine {
         config.rule3_min_utterance_length = 60.0;
 
         let recognizer = OnlineRecognizer::create(&config)
-            .ok_or_else(|| code_detail("model.streamLoadFailed", &paths.encoder))?;
+            .ok_or_else(|| code_detail(ErrorCode::ModelStreamLoadFailed, &paths.encoder))?;
         let vad = paths
             .vad
             .as_ref()
@@ -947,7 +948,7 @@ impl PunctuationEngine {
             },
         };
         let punct = OfflinePunctuation::create(&config)
-            .ok_or_else(|| code_detail("model.punctLoadFailed", model))?;
+            .ok_or_else(|| code_detail(ErrorCode::ModelPunctLoadFailed, model))?;
         Ok(Self { punct })
     }
 
@@ -996,7 +997,9 @@ pub(crate) fn streaming_engine_for_test() -> Option<Arc<StreamingEngine>> {
             .find(|path| path.is_file())
             .map(|path| path.display().to_string()),
     };
-    Some(Arc::new(StreamingEngine::new(&paths, &[]).expect("加载流式模型")))
+    Some(Arc::new(
+        StreamingEngine::new(&paths, &[]).expect("加载流式模型"),
+    ))
 }
 
 // ──────────────────── 识别规则（pre-roll）────────────────────

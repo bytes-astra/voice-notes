@@ -13,16 +13,47 @@ import { realpathSync } from 'node:fs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-// 后端错误码的调用形态：code("…") / code_detail("…")。
+// 后端错误码：**枚举的 key 表**（`error_code.rs` 的 `ErrorCode::key()`）。
+//
+// 扫的是**枚举定义**，不是调用点 —— 错误码是类型（`ErrorCode::RecordEmpty`），
+// 调用点里没有字面量了。
 //
 // 前置的 (?<![\w$]) 排除「前面是标识符字符」的情况（encode( / my_code( 不是错误码），
-// 但**不能**排除冒号 —— `crate::code_detail("record.tooShort", …)` 这种写法很常见，
+// 但**不能**排除冒号 —— `crate::error_code::code_detail(...)` 这种写法很常见，
 // 排掉冒号的话这些错误码就静默漏网了。
 const RUST_CODE_RE = /(?<![\w$])code(?:_detail)?\(\s*"([^"]+)"/g
+
+// 枚举里「变体 → key」的映射：`ErrorCode::RecordEmpty => "record.empty",`。
+const RUST_ERROR_CODE_ENUM_RE =
+  /ErrorCode::[A-Za-z0-9_]+\s*=>\s*"([a-zA-Z][a-zA-Z0-9.]*)"/g
+
+/**
+ * **不进字典**的错误码（显式白名单）。
+ *
+ * `download.cancelled` 是**内部哨兵**：用户看到的永远是 `setup.cancelled`
+ * （models.rs 的 `download_asset` 把它翻译成字典 key）。哨兵本身不该被
+ * 翻译 —— 它只活在后端内部比较（`is_cancelled`）。
+ *
+ * 白名单是**显式**的：新增内部哨兵要在这里登记，忘了登记门禁就会红
+ * —— 那正是我们要的（哨兵漏到界面上是缺陷）。
+ */
+const INTERNAL_ERROR_CODES = new Set(['download.cancelled'])
 
 /** 扫出一份 Rust 源码里用到的错误码。 */
 export function rustErrorCodes(source) {
   return [...source.matchAll(RUST_CODE_RE)].map((match) => match[1])
+}
+
+/**
+ * 扫出**错误码枚举**里定义的 key。
+ *
+ * 这是「后端用的错误码必须在字典里」这条检查的新来源：错误码是类型了，
+ * 调用点没有字面量可扫 —— 扫枚举的 key 表才对。
+ *
+ * 枚举的 key 表在 `ErrorCode::key()` 的 match 里（唯一真值源）。
+ */
+export function rustErrorCodeEnumKeys(source) {
+  return [...source.matchAll(RUST_ERROR_CODE_ENUM_RE)].map((match) => match[1])
 }
 
 // 裸字符串错误：返回给前端的错误字面量，但没走 code()/code_detail()。
@@ -224,9 +255,20 @@ export function collectProblems(root) {
 
   // 后端错误码必须在字典里：后端只返回 key（code() / code_detail()），前端照着翻译。
   // 漏翻的话用户看到的就是一串 "record.micError" 而不是人话。
+  //
+  // **扫的是错误码枚举的 key 表**（`error_code.rs`）—— 错误码是类型了
+  // （`ErrorCode::RecordEmpty`），调用点里没有字面量可扫。
+  // 顺带扫调用点：**有人绕过枚举直接传字符串**（`code("record.empty")`），
+  // 那条路编译不过（`code()` 只收 `ErrorCode`），但门禁顺手查一遍更保险。
   const rsDir = join(root, 'src-tauri/src')
   for (const file of rustSourceFiles(rsDir)) {
     const code = readFileSync(file, 'utf8')
+    for (const key of rustErrorCodeEnumKeys(code)) {
+      if (INTERNAL_ERROR_CODES.has(key)) continue
+      if (!baseKeys.includes(key)) {
+        problems.push(`${relative(root, file)} 的错误码枚举里有字典里没有的 key：${key}`)
+      }
+    }
     for (const key of rustErrorCodes(code)) {
       if (!baseKeys.includes(key)) {
         problems.push(`${relative(root, file)} 用了不存在的错误码：${key}`)

@@ -15,7 +15,9 @@ fn fixture(name: &str) -> Option<std::path::PathBuf> {
 /// 干净的文件不该有警告（否则每次转写都会弹一条没用的提示）。
 #[test]
 fn clean_file_has_no_warning() {
-    let Some(path) = fixture("zh.wav") else { return };
+    let Some(path) = fixture("zh.wav") else {
+        return;
+    };
     let mut total = 0usize;
     let result = decode_to_16k(&path, |chunk| {
         total += chunk.len();
@@ -32,7 +34,9 @@ fn clean_file_has_no_warning() {
 /// 一个采样都没解出来 → 报错，不能当成「文件是空的」糊弄过去。
 #[test]
 fn empty_result_is_an_error() {
-    let Some(path) = fixture("broken.mp4") else { return };
+    let Some(path) = fixture("broken.mp4") else {
+        return;
+    };
     let Err(err) = decode_to_16k(&path, |_| Ok(())) else {
         panic!("解不出内容应该报错");
     };
@@ -42,7 +46,9 @@ fn empty_result_is_an_error() {
 /// 文件被截断 → 解出一部分 + 警告，不能静默截断。
 #[test]
 fn truncated_file_warns_but_returns_partial() {
-    let Some(path) = fixture("zh.wav") else { return };
+    let Some(path) = fixture("zh.wav") else {
+        return;
+    };
     let Ok(bytes) = std::fs::read(&path) else {
         eprintln!("跳过：读不到 fixture");
         return;
@@ -62,8 +68,5 @@ fn truncated_file_warns_but_returns_partial() {
         panic!("截断文件应该解出一部分");
     };
     assert!(info.samples > 0, "应该解出一些内容");
-    assert!(
-        info.warning.is_some(),
-        "截断文件必须带警告，不能静默截断"
-    );
+    assert!(info.warning.is_some(), "截断文件必须带警告，不能静默截断");
 }

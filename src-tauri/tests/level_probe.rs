@@ -21,7 +21,9 @@ mod common;
 use common::edit_distance;
 
 fn model_dir() -> Option<PathBuf> {
-    std::env::var("VOICE_NOTES_MODEL_DIR").ok().map(PathBuf::from)
+    std::env::var("VOICE_NOTES_MODEL_DIR")
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn paths(dir: &Path) -> ModelPaths {

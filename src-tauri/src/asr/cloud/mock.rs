@@ -4,8 +4,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::asr::cloud::{Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome};
+use crate::asr::cloud::{
+    Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome,
+};
 use crate::code;
+use crate::error_code::ErrorCode;
 
 /// 假 provider 的内部状态：测试拿着它就能检查发了什么、注入事件。
 #[derive(Default)]
@@ -79,10 +82,7 @@ impl CloudProvider for MockProvider {
         }
     }
 
-    fn connect(
-        &mut self,
-        on_event: Box<dyn Fn(CloudEvent) + Send + Sync>,
-    ) -> Result<(), String> {
+    fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String> {
         self.state.lock().unwrap().sink = Some(on_event);
         Ok(())
     }
@@ -102,7 +102,7 @@ impl CloudProvider for MockProvider {
             }
         }
         if state.fail {
-            return Err(code("cloud.sendFailed"));
+            return Err(code(ErrorCode::CloudSendFailed));
         }
         state.sent.extend_from_slice(pcm);
         // 模拟上传队列满：这一段没送出去。
@@ -114,13 +114,16 @@ impl CloudProvider for MockProvider {
             None => std::mem::take(&mut state.dropped_reply),
         };
         state.sends += 1;
-        Ok(SendOutcome { dropped, delivered: !state.not_delivered })
+        Ok(SendOutcome {
+            dropped,
+            delivered: !state.not_delivered,
+        })
     }
 
     fn commit(&mut self) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
         if state.fail_commit {
-            return Err(code("cloud.sendFailed"));
+            return Err(code(ErrorCode::CloudSendFailed));
         }
         state.commits += 1;
         Ok(())
@@ -141,7 +144,6 @@ impl CloudProvider for MockProvider {
         }
         Ok(())
     }
-
 }
 
 /// 往假 provider 里塞一个事件。

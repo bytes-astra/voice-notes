@@ -11,11 +11,12 @@
 //!
 //! 本仓库接了**三家**：OpenAI Realtime、火山、阿里；其余是协议形态的调研实例。
 //!
-//! **火山与阿里不走归一器** —— 它们的映射器（`map_response` / `AliyunMapper`）
-//! 直接产出 `CloudEvent::Partial`；归一器目前**只被 Realtime 自建使用**。
+//! **火山与 Realtime 走归一器**，**阿里不走** —— 阿里的映射器
+//! （`AliyunMapper`）直接产出 `CloudEvent::Partial`：它的 `stash` 属于
+//! **下一句**的 `sentence_id`（交错语义），与火山的单桶形态结构上不同。
 //!
 //! **以句为界**：每个句子一个桶，句定稿（final / failed）时清掉它自己的桶。
-//! 没有句标识的协议（服务端断句族）走**单桶**：一条定稿清空整桶，且不支持跨句交错。
+//! 没有句标识的协议（火山的服务端断句族）走**单桶**：一条定稿清空整桶，且不支持跨句交错。
 
 use super::{PartialSemantics, SentenceId};
 
@@ -26,21 +27,21 @@ pub enum PartialUpdate {
     Delta(String),
     /// 确认前缀 + 草稿：整句当前预览（确认部分不会再变，草稿可能变）。
     ///
-    /// 归一器目前**只被 Realtime 自建使用**；火山与阿里虽然声明
-    /// `PartialSemantics::Preview`，但由各自的映射器直接产出 partial，
-    /// **不经过本归一器**（也不构造这个变体）。
-    ///
-    /// `#[allow(dead_code)]` 的**移除条件**：第一个在**非测试代码**中构造
-    /// `PartialUpdate::Preview` 的 provider 落地时（火山与阿里都不满足 ——
-    /// 它们声明了 `Preview` 却不构造这个变体）。
-    #[allow(dead_code)]
+    /// 火山在用这一档（它的协议形态是「确认前缀为空、整句都是草稿」——
+    /// 映射器把整句放进 `draft`、`confirmed` 留空）；阿里的 `sentence.text` +
+    /// `stash` 也是标准形态，但阿里的映射器**不经过本归一器**（stash 属于
+    /// 下一句的 `sentence_id`，与火山的单桶形态结构上不同）。
     Preview { confirmed: String, draft: String },
     /// 区间替换：把当前句第 `from..=to` 个片段替换成 `text`。
     ///
     /// `#[allow(dead_code)]` 的**移除条件**：第一个在**非测试代码**中构造
     /// `PartialUpdate::Replace` 的 provider 落地时。
     #[allow(dead_code)]
-    Replace { from: usize, to: usize, text: String },
+    Replace {
+        from: usize,
+        to: usize,
+        text: String,
+    },
 }
 
 /// 一个句子的累计状态：按识别顺序保存片段。

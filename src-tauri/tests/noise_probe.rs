@@ -58,7 +58,11 @@ fn mix(signal: &[f32], noise: &[f32], snr_db: f32) -> Vec<f32> {
 }
 
 /// 跑完整会话，返回（句数，最长句秒数，覆盖秒数，字数）。
-fn run(engine: &std::sync::Arc<Engine>, vad: &sherpa_onnx::VadModelConfig, audio: &[f32]) -> (usize, f32, f32, usize) {
+fn run(
+    engine: &std::sync::Arc<Engine>,
+    vad: &sherpa_onnx::VadModelConfig,
+    audio: &[f32],
+) -> (usize, f32, f32, usize) {
     let mut session = OfflineSession::new(engine.clone(), vad.clone()).expect("建整段会话");
     let mut segments: Vec<(f32, f32, String)> = Vec::new();
     for chunk in audio.chunks(512) {
@@ -73,7 +77,10 @@ fn run(engine: &std::sync::Arc<Engine>, vad: &sherpa_onnx::VadModelConfig, audio
     }
     let covered: f32 = segments.iter().map(|(_, end, _)| *end).sum::<f32>()
         - segments.iter().map(|(start, _, _)| *start).sum::<f32>();
-    let longest = segments.iter().map(|(s, e, _)| e - s).fold(0.0f32, f32::max);
+    let longest = segments
+        .iter()
+        .map(|(s, e, _)| e - s)
+        .fold(0.0f32, f32::max);
     let chars: usize = segments.iter().map(|(_, _, t)| t.chars().count()).sum();
     (segments.len(), longest, covered, chars)
 }
@@ -101,17 +108,16 @@ fn probe_noisy_background() {
     let seconds = signal.len() as f32 / 16000.0;
 
     println!("主体：{seconds:.1}s 连续语音（{} 段）", 8);
-    println!("\n{:<22} {:>6} {:>10} {:>10} {:>6}", "场景", "句数", "最长句", "覆盖", "字数");
+    println!(
+        "\n{:<22} {:>6} {:>10} {:>10} {:>6}",
+        "场景", "句数", "最长句", "覆盖", "字数"
+    );
 
     let report = |label: &str, audio: &[f32]| {
         let (segments, longest, covered, chars) = run(&engine, &vad, audio);
         println!(
             "{:<22} {:>6} {:>9.1}s {:>9.1}s {:>6}",
-            label,
-            segments,
-            longest,
-            covered,
-            chars
+            label, segments, longest, covered, chars
         );
     };
 
@@ -119,11 +125,17 @@ fn probe_noisy_background() {
 
     for snr in [30.0f32, 20.0, 10.0, 5.0, 0.0, -5.0] {
         let noise = white_noise(signal.len(), 0x9E3779B97F4A7C15);
-        report(&format!("白噪声 SNR {snr:.0}dB"), &mix(&signal, &noise, snr));
+        report(
+            &format!("白噪声 SNR {snr:.0}dB"),
+            &mix(&signal, &noise, snr),
+        );
     }
 
     for snr in [20.0f32, 10.0, 5.0, 0.0, -5.0] {
-        report(&format!("背景人声 SNR {snr:.0}dB"), &mix(&signal, &babble, snr));
+        report(
+            &format!("背景人声 SNR {snr:.0}dB"),
+            &mix(&signal, &babble, snr),
+        );
     }
 
     // ── 超长单句：>90 秒才会走「切 30 秒窗」那条路径 ──
@@ -138,14 +150,23 @@ fn probe_noisy_background() {
     }
     let long_seconds = long_signal.len() as f32 / 16000.0;
     println!("主体：{long_seconds:.1}s");
-    println!("\n{:<22} {:>6} {:>10} {:>10} {:>6}", "场景", "句数", "最长句", "覆盖", "字数");
+    println!(
+        "\n{:<22} {:>6} {:>10} {:>10} {:>6}",
+        "场景", "句数", "最长句", "覆盖", "字数"
+    );
     report("干净 260s", &long_signal);
     for snr in [0.0f32, -5.0, -10.0] {
         let noise = white_noise(long_signal.len(), 0x9E3779B97F4A7C15);
-        report(&format!("白噪声 SNR {snr:.0}dB"), &mix(&long_signal, &noise, snr));
+        report(
+            &format!("白噪声 SNR {snr:.0}dB"),
+            &mix(&long_signal, &noise, snr),
+        );
     }
     for snr in [0.0f32, -5.0, -10.0] {
-        report(&format!("背景人声 SNR {snr:.0}dB"), &mix(&long_signal, &babble, snr));
+        report(
+            &format!("背景人声 SNR {snr:.0}dB"),
+            &mix(&long_signal, &babble, snr),
+        );
     }
 
     // ── 有能量但不是语音：告警必须响 ──

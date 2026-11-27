@@ -13,6 +13,7 @@
 //!
 //! 音频：16 kHz / 16 bit / 单声道 PCM（与仓库内部轴一致 → 不重采样）。
 
+use crate::error_code::ErrorCode;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
@@ -23,6 +24,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::{
+    partial::{PartialAccumulator, PartialUpdate},
     sanitize, Capabilities, CloudEvent, CloudProvider, EndpointKind, PartialSemantics, SendOutcome,
 };
 
@@ -119,10 +121,7 @@ impl CloudProvider for VolcengineProvider {
         Self::CAPABILITIES
     }
 
-    fn connect(
-        &mut self,
-        on_event: Box<dyn Fn(CloudEvent) + Send + Sync>,
-    ) -> Result<(), String> {
+    fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String> {
         let (commands_tx, commands_rx) = tokio_mpsc::channel(64);
         let (ready_tx, ready_rx) = channel::<Result<(), String>>();
         let config = self.config.clone();
@@ -134,7 +133,7 @@ impl CloudProvider for VolcengineProvider {
         match ready_rx.recv_timeout(Duration::from_secs(15)) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(error),
-            Err(_) => Err(crate::code("cloud.connectFailed")),
+            Err(_) => Err(crate::code(ErrorCode::CloudConnectFailed)),
         }
     }
 
@@ -143,7 +142,7 @@ impl CloudProvider for VolcengineProvider {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
-            return Err(crate::code("cloud.disconnected"));
+            return Err(crate::code(ErrorCode::CloudDisconnected));
         };
         // 攒够 200ms 一包再发（官方建议的发包节奏）。
         self.packet
@@ -161,14 +160,17 @@ impl CloudProvider for VolcengineProvider {
                     dropped_samples += AUDIO_PACKET_BYTES / 2;
                 }
                 Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(crate::code("cloud.disconnected"));
+                    return Err(crate::code(ErrorCode::CloudDisconnected));
                 }
             }
         }
         // **只是攒进包里、一个包都没发出去 ≠ 投递了**：会话层靠这个信号
         // 判断「丢包段是否结束」—— 攒包时若当成投递，正在累积的丢包段会被
         // 提前闭合，连续丢包永远并不成一条。
-        Ok(SendOutcome { dropped: dropped_samples, delivered })
+        Ok(SendOutcome {
+            dropped: dropped_samples,
+            delivered,
+        })
     }
 
     fn commit(&mut self) -> Result<(), String> {
@@ -187,7 +189,7 @@ impl CloudProvider for VolcengineProvider {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
-            return Err(crate::code("cloud.disconnected"));
+            return Err(crate::code(ErrorCode::CloudDisconnected));
         };
         // 收尾前把不足一包的残包发出去：留在缓冲里就等于最后 0~199 ms
         // 永远不上传 → 句尾少字。控制帧不能丢（丢了等不到最后一句）→ 有界等待。
@@ -201,7 +203,7 @@ impl CloudProvider for VolcengineProvider {
             Ok(()) => self.take_background_error().map_or(Ok(()), Err),
             Err(_) => Err(self
                 .take_background_error()
-                .unwrap_or_else(|| crate::code("cloud.timeout"))),
+                .unwrap_or_else(|| crate::code(ErrorCode::CloudTimeout))),
         }
     }
 }
@@ -234,10 +236,7 @@ fn encode_corpus_context(words: &[String]) -> Option<String> {
     if words.is_empty() {
         return None;
     }
-    let hotwords: Vec<Value> = words
-        .iter()
-        .map(|word| json!({ "word": word }))
-        .collect();
+    let hotwords: Vec<Value> = words.iter().map(|word| json!({ "word": word })).collect();
     Some(json!({ "hotwords": hotwords }).to_string())
 }
 
@@ -263,13 +262,27 @@ fn encode_full_request(config: &VolcengineConfig) -> Vec<u8> {
     serde_json::to_vec(&request).unwrap_or_default()
 }
 
+/// 火山协议层的一个事件（**还没归一**）。
+///
+/// 映射器只做「协议 → 归一器更新」的翻译；「当前句累计串」由归一器算
+/// （`PartialAccumulator`）—— 与 Realtime 同款，不在映射器里重实现一遍归一。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VolcengineEvent {
+    /// 未定稿的句子 → 归一器的更新。
+    ///
+    /// 火山的协议形态是「确认前缀为空、整句都是草稿」—— 正是 `Preview` 档。
+    Partial(PartialUpdate),
+    /// 定稿的句子。
+    Final(String),
+}
+
 /// 把服务端的识别结果映射成事件。
 ///
 /// - `utterances[]` 里 `definite=true` 的句子 → 定稿（Final）；
-/// - 最后一条 `definite=false` 的句子 → 当前句的累计串（Partial）。
+/// - 最后一条 `definite=false` 的句子 → 当前句的草稿（交给归一器算累计串）。
 ///
 /// **`result.text` 不用**：它是全会话累计，当实时行会让整场文本滚动。
-fn map_response(payload: &[u8], emitted: &mut usize) -> Vec<CloudEvent> {
+fn map_response(payload: &[u8], emitted: &mut usize) -> Vec<VolcengineEvent> {
     let Ok(value) = serde_json::from_slice::<Value>(payload) else {
         return Vec::new();
     };
@@ -296,18 +309,49 @@ fn map_response(payload: &[u8], emitted: &mut usize) -> Vec<CloudEvent> {
             .to_string();
         if definite {
             *emitted = index + 1;
-            events.push(CloudEvent::Final {
-                item_id: None,
-                text,
-                start_ms: None,
-                end_ms: None,
-            });
+            events.push(VolcengineEvent::Final(text));
         } else {
             // 当前句的累计串（草稿）：确认前缀为空，整句都是草稿。
-            events.push(CloudEvent::Partial(text));
+            events.push(VolcengineEvent::Partial(PartialUpdate::Preview {
+                confirmed: String::new(),
+                draft: text,
+            }));
         }
     }
     events
+}
+
+/// 把协议事件归一成上层事件（**归一器在这里**）。
+///
+/// 火山没有句 id → 单桶：一条定稿清空整桶，下一句的草稿不会带上上一句的残留。
+///
+/// 纯函数（可单测）：`accumulator` 由调用方持有 —— 它的状态跨多次响应。
+fn normalize_events(
+    accumulator: &mut PartialAccumulator,
+    events: Vec<VolcengineEvent>,
+) -> Vec<CloudEvent> {
+    let mut out = Vec::new();
+    for event in events {
+        match event {
+            VolcengineEvent::Partial(update) => {
+                let text = accumulator.apply(None, update);
+                if !text.is_empty() {
+                    out.push(CloudEvent::Partial(text));
+                }
+            }
+            VolcengineEvent::Final(text) => {
+                // 定稿：清掉归一器的桶（单桶 → 清空整桶）。
+                accumulator.finish_sentence(None);
+                out.push(CloudEvent::Final {
+                    item_id: None,
+                    text,
+                    start_ms: None,
+                    end_ms: None,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// 后台任务：建连 → 发首次请求 → 收音频 → 收结果 → 收尾。
@@ -318,6 +362,10 @@ async fn run(
     ready: Sender<Result<(), String>>,
     errors: Sender<String>,
 ) {
+    // 中间结果归一器：火山没有句 id → 单桶（一条定稿清空整桶）。
+    // 归一器算「当前句累计串」，映射器只翻译协议 —— 与 Realtime 同款。
+    let mut accumulator =
+        PartialAccumulator::new(VolcengineProvider::CAPABILITIES.partial_semantics);
     let mut socket = match connect_socket(&config).await {
         Ok(socket) => socket,
         Err(error) => {
@@ -329,7 +377,11 @@ async fn run(
     // 首次全量请求：音频参数 + 断句参数 + 热词。
     let frame = frame::encode_full_request(&encode_full_request(&config));
     if let Err(error) = socket.send(Message::Binary(frame.into())).await {
-        let error = super::logging::code_detail("cloud.connectFailed", error.to_string(), Some(&config.api_key));
+        let error = super::logging::code_detail(
+            ErrorCode::CloudConnectFailed,
+            error.to_string(),
+            Some(&config.api_key),
+        );
         let _ = ready.send(Err(error.clone()));
         let _ = errors.send(error);
         return;
@@ -349,7 +401,7 @@ async fn run(
                         let frame = frame::encode_audio(&packet, false);
                         if let Err(error) = socket.send(Message::Binary(frame.into())).await {
                             let _ = errors.send(super::logging::code_detail(
-                                "cloud.sendFailed",
+                                ErrorCode::CloudSendFailed,
                                 error.to_string(),
                                 Some(&config.api_key),
                             ));
@@ -360,7 +412,7 @@ async fn run(
                         let frame = frame::encode_audio(&[], true);
                         if let Err(error) = socket.send(Message::Binary(frame.into())).await {
                             let _ = errors.send(super::logging::code_detail(
-                                "cloud.sendFailed",
+                                ErrorCode::CloudSendFailed,
                                 error.to_string(),
                                 Some(&config.api_key),
                             ));
@@ -374,21 +426,21 @@ async fn run(
             }
             message = socket.next() => {
                 let Some(message) = message else {
-                    let _ = errors.send(crate::code("cloud.disconnected"));
+                    let _ = errors.send(crate::code(ErrorCode::CloudDisconnected));
                     if let Some(done) = finishing.take() { let _ = done.send(()); }
                     break;
                 };
                 let raw = match message {
                     Ok(Message::Binary(raw)) => raw,
                     Ok(Message::Close(_)) => {
-                        let _ = errors.send(crate::code("cloud.disconnected"));
+                        let _ = errors.send(crate::code(ErrorCode::CloudDisconnected));
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
                     }
                     Ok(_) => continue,
                     Err(error) => {
                         let _ = errors.send(super::logging::code_detail(
-                            "cloud.disconnected",
+                            ErrorCode::CloudDisconnected,
                             error.to_string(),
                             Some(&config.api_key),
                         ));
@@ -398,7 +450,8 @@ async fn run(
                 };
                 match frame::decode_server_frame(&raw) {
                     Ok(ServerFrame::Response { sequence, flags, payload }) => {
-                        for event in map_response(&payload, &mut emitted) {
+                        let events = map_response(&payload, &mut emitted);
+                        for event in normalize_events(&mut accumulator, events) {
                             on_event(event);
                         }
                         // 最终响应：sequence 为负数，或 flags 带「末包」位
@@ -416,7 +469,7 @@ async fn run(
                     }
                     Err(error) => {
                         let _ = errors.send(super::logging::code_detail(
-                            "cloud.protocolError",
+                            ErrorCode::CloudProtocolError,
                             error,
                             Some(&config.api_key),
                         ));
@@ -444,13 +497,13 @@ async fn connect_socket(
     } else {
         config.base_url.trim()
     };
-    let mut request = base_url
-        .into_client_request()
-        .map_err(|error| super::logging::code_detail(
-            "cloud.connectFailed",
+    let mut request = base_url.into_client_request().map_err(|error| {
+        super::logging::code_detail(
+            ErrorCode::CloudConnectFailed,
             error.to_string(),
             Some(&config.api_key),
-        ))?;
+        )
+    })?;
     let resource_id = if config.resource_id.trim().is_empty() {
         DEFAULT_RESOURCE_ID
     } else {
@@ -466,14 +519,14 @@ async fn connect_socket(
     ] {
         let header = value
             .parse()
-            .map_err(|_| crate::code("cloud.connectFailed"))?;
+            .map_err(|_| crate::code(ErrorCode::CloudConnectFailed))?;
         request.headers_mut().insert(name, header);
     }
     let (socket, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|error| {
             super::logging::code_detail(
-                "cloud.connectFailed",
+                ErrorCode::CloudConnectFailed,
                 sanitize(&error.to_string(), &config.api_key),
                 Some(&config.api_key),
             )
@@ -487,12 +540,12 @@ async fn connect_socket(
 /// `45000151` 音频格式不对 / `55000031` 服务繁忙。
 fn map_error_code(code: u32, message: &str, api_key: &str) -> String {
     match code {
-        45000002 => crate::code("cloud.noResult"),
-        45000081 => crate::code("cloud.timeout"),
+        45000002 => crate::code(ErrorCode::CloudNoResult),
+        45000081 => crate::code(ErrorCode::CloudTimeout),
         // **凭据交给关口脱敏**，不要在调用点先 sanitize 再传 `None` ——
         // 那样「关口是唯一出口」的契约就靠调用点自觉了。
         _ => super::logging::code_detail(
-            "cloud.protocolError",
+            ErrorCode::CloudProtocolError,
             format!("{code}: {message}"),
             Some(api_key),
         ),
@@ -515,12 +568,12 @@ fn send_control(
             Err(tokio_mpsc::error::TrySendError::Full(returned)) => {
                 command = returned;
                 if std::time::Instant::now() >= deadline {
-                    return Err(crate::code("cloud.sendFailed"));
+                    return Err(crate::code(ErrorCode::CloudSendFailed));
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
-                return Err(crate::code("cloud.disconnected"));
+                return Err(crate::code(ErrorCode::CloudDisconnected));
             }
         }
     }

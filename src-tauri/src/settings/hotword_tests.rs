@@ -50,8 +50,7 @@ fn rejects_an_unusable_output_dir() {
     // 正常目录：能建出来才算数
     let good = std::env::temp_dir().join(format!("vn-out-ok-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&good);
-    let prepared =
-        prepare_output_dir(Some(good.display().to_string())).expect("应该能建出目录");
+    let prepared = prepare_output_dir(Some(good.display().to_string())).expect("应该能建出目录");
     assert_eq!(prepared, Some(good.display().to_string()));
 
     // 空目录 = 用默认目录

@@ -18,6 +18,7 @@
 //! 之后要继续收到 `task-finished`（发完就关会丢尾部结果）；`sentence_end=true`
 //! 只表示句子结束，任务结束以 `task-finished` 为准。
 
+use crate::error_code::ErrorCode;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
@@ -129,7 +130,10 @@ pub enum ServerEvent {
     TaskStarted,
     Sentence(Sentence),
     TaskFinished,
-    TaskFailed { code: String, message: String },
+    TaskFailed {
+        code: String,
+        message: String,
+    },
     /// 未知事件：向前兼容，不报错。
     Other,
 }
@@ -186,10 +190,7 @@ impl CloudProvider for AliyunProvider {
         Self::CAPABILITIES
     }
 
-    fn connect(
-        &mut self,
-        on_event: Box<dyn Fn(CloudEvent) + Send + Sync>,
-    ) -> Result<(), String> {
+    fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String> {
         let (commands_tx, commands_rx) = tokio_mpsc::channel(64);
         let (ready_tx, ready_rx) = channel::<Result<(), String>>();
         let config = self.config.clone();
@@ -210,7 +211,7 @@ impl CloudProvider for AliyunProvider {
             }
             Err(_) => {
                 self.commands = None;
-                Err(crate::code("cloud.connectFailed"))
+                Err(crate::code(ErrorCode::CloudConnectFailed))
             }
         }
     }
@@ -220,7 +221,7 @@ impl CloudProvider for AliyunProvider {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
-            return Err(crate::code("cloud.disconnected"));
+            return Err(crate::code(ErrorCode::CloudDisconnected));
         };
         // 攒够 100ms 一包再发（官方建议的发包节奏）。
         self.packet
@@ -238,7 +239,7 @@ impl CloudProvider for AliyunProvider {
                     dropped_samples += AUDIO_PACKET_BYTES / 2;
                 }
                 Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(crate::code("cloud.disconnected"));
+                    return Err(crate::code(ErrorCode::CloudDisconnected));
                 }
             }
         }
@@ -265,7 +266,7 @@ impl CloudProvider for AliyunProvider {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
-            return Err(crate::code("cloud.disconnected"));
+            return Err(crate::code(ErrorCode::CloudDisconnected));
         };
         // 收尾前把不足一包的残包发出去：留在缓冲里等于最后 0~99 ms 永不上传
         // → 句尾少字。控制帧不能丢 → 有界等待。
@@ -279,7 +280,7 @@ impl CloudProvider for AliyunProvider {
             Ok(()) => self.take_background_error().map_or(Ok(()), Err),
             Err(_) => Err(self
                 .take_background_error()
-                .unwrap_or_else(|| crate::code("cloud.timeout"))),
+                .unwrap_or_else(|| crate::code(ErrorCode::CloudTimeout))),
         }
     }
 }
@@ -297,12 +298,12 @@ fn send_control(
             Err(tokio_mpsc::error::TrySendError::Full(returned)) => {
                 command = returned;
                 if std::time::Instant::now() >= deadline {
-                    return Err(crate::code("cloud.sendFailed"));
+                    return Err(crate::code(ErrorCode::CloudSendFailed));
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
-                return Err(crate::code("cloud.disconnected"));
+                return Err(crate::code(ErrorCode::CloudDisconnected));
             }
         }
     }
@@ -433,8 +434,9 @@ fn hotword_text_fits(word: &str) -> bool {
 
 /// 解码一条服务端文本帧。
 pub fn decode_server_event(raw: &str) -> Result<ServerEvent, String> {
-    let value: Value = serde_json::from_str(raw)
-        .map_err(|error| super::logging::code_detail("cloud.protocolError", error.to_string(), None))?;
+    let value: Value = serde_json::from_str(raw).map_err(|error| {
+        super::logging::code_detail(ErrorCode::CloudProtocolError, error.to_string(), None)
+    })?;
     let header = value.get("header").cloned().unwrap_or(Value::Null);
     let event = header.get("event").and_then(Value::as_str).unwrap_or("");
     Ok(match event {
@@ -487,7 +489,9 @@ fn parse_sentence(value: &Value) -> Sentence {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        draft_id: stash.and_then(|stash| stash.get("sentence_id")).and_then(Value::as_i64),
+        draft_id: stash
+            .and_then(|stash| stash.get("sentence_id"))
+            .and_then(Value::as_i64),
         heartbeat: value
             .get("heartbeat")
             .and_then(Value::as_bool)
@@ -680,8 +684,14 @@ impl AliyunMapper {
         // ⑦ 实时行 = 已确认文本 + 草稿。
         let live = format!(
             "{}{}",
-            self.open.as_ref().map(|(_, text)| text.as_str()).unwrap_or(""),
-            self.draft.as_ref().map(|(_, text)| text.as_str()).unwrap_or("")
+            self.open
+                .as_ref()
+                .map(|(_, text)| text.as_str())
+                .unwrap_or(""),
+            self.draft
+                .as_ref()
+                .map(|(_, text)| text.as_str())
+                .unwrap_or("")
         );
         if !live.trim().is_empty() {
             events.push(CloudEvent::Partial(live));
@@ -737,7 +747,11 @@ async fn run(
         .send(Message::Text(encode_run_task(&config, &task_id).into()))
         .await
     {
-        let error = super::logging::code_detail("cloud.sendFailed", error.to_string(), Some(&config.api_key));
+        let error = super::logging::code_detail(
+            ErrorCode::CloudSendFailed,
+            error.to_string(),
+            Some(&config.api_key),
+        );
         let _ = ready.send(Err(error.clone()));
         let _ = errors.send(error);
         return;
@@ -767,7 +781,7 @@ async fn run(
                         }
                         if let Err(error) = socket.send(Message::Binary(packet.into())).await {
                             let _ = errors.send(super::logging::code_detail(
-                                "cloud.sendFailed",
+                                ErrorCode::CloudSendFailed,
                                 error.to_string(),
                                 Some(&config.api_key),
                             ));
@@ -778,7 +792,7 @@ async fn run(
                         let payload = encode_finish_task(&task_id);
                         if let Err(error) = socket.send(Message::Text(payload.into())).await {
                             let _ = errors.send(super::logging::code_detail(
-                                "cloud.sendFailed",
+                                ErrorCode::CloudSendFailed,
                                 error.to_string(),
                                 Some(&config.api_key),
                             ));
@@ -792,7 +806,7 @@ async fn run(
             }
             message = socket.next() => {
                 let Some(message) = message else {
-                    let _ = errors.send(crate::code("cloud.disconnected"));
+                    let _ = errors.send(crate::code(ErrorCode::CloudDisconnected));
                     if let Some(done) = finishing.take() { let _ = done.send(()); }
                     break;
                 };
@@ -801,7 +815,7 @@ async fn run(
                     Ok(Message::Close(_)) => {
                         // 没收到 task-finished 就关了 → 异常结束。
                         if finishing.is_some() {
-                            let _ = errors.send(crate::code("cloud.disconnected"));
+                            let _ = errors.send(crate::code(ErrorCode::CloudDisconnected));
                         }
                         if let Some(done) = finishing.take() { let _ = done.send(()); }
                         break;
@@ -810,7 +824,7 @@ async fn run(
                     Ok(_) => continue,
                     Err(error) => {
                         let _ = errors.send(super::logging::code_detail(
-                            "cloud.disconnected",
+                            ErrorCode::CloudDisconnected,
                             error.to_string(),
                             Some(&config.api_key),
                         ));
@@ -837,7 +851,7 @@ async fn run(
                     }
                     Ok(ServerEvent::TaskFailed { code, message }) => {
                         let detail = format!("{code}: {}", sanitize(&message, &config.api_key));
-                        let error = super::logging::code_detail("cloud.protocolError", detail, Some(&config.api_key));
+                        let error = super::logging::code_detail(ErrorCode::CloudProtocolError, detail, Some(&config.api_key));
                         if !started {
                             startup_error = Some(error.clone());
                         }
@@ -860,7 +874,7 @@ async fn run(
     // 连上了但没等到 task-started（连接断了、或先收到了 task-failed）：
     // 别让 connect() 白等 15 秒，也要把真因带回去。
     if !started {
-        let error = startup_error.unwrap_or_else(|| crate::code("cloud.connectFailed"));
+        let error = startup_error.unwrap_or_else(|| crate::code(ErrorCode::CloudConnectFailed));
         let _ = ready.send(Err(error));
     }
     if let Some(done) = finishing.take() {
@@ -882,8 +896,14 @@ fn log_usage(raw: &str) {
         return;
     }
     let duration = usage.get("duration").and_then(Value::as_i64).unwrap_or(0);
-    let input = usage.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
-    let output = usage.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
+    let input = usage
+        .get("input_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     super::logging::info(
         &format!("阿里云端：任务完成 时长 {duration}s，输入 {input} token，输出 {output} token"),
         None,
@@ -897,17 +917,16 @@ async fn connect_socket(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     String,
 > {
-    let mut request = config
-        .base_url()
-        .into_client_request()
-        .map_err(|error| super::logging::code_detail(
-            "cloud.connectFailed",
+    let mut request = config.base_url().into_client_request().map_err(|error| {
+        super::logging::code_detail(
+            ErrorCode::CloudConnectFailed,
             error.to_string(),
             Some(&config.api_key),
-        ))?;
+        )
+    })?;
     let header = format!("Bearer {}", config.api_key)
         .parse()
-        .map_err(|_| crate::code("cloud.connectFailed"))?;
+        .map_err(|_| crate::code(ErrorCode::CloudConnectFailed))?;
     request.headers_mut().insert("Authorization", header);
     let (socket, _) = tokio_tungstenite::connect_async(request)
         .await
@@ -917,11 +936,11 @@ async fn connect_socket(
             if let tokio_tungstenite::tungstenite::Error::Http(response) = &error {
                 let status = response.status().as_u16();
                 if status == 401 || status == 403 {
-                    return crate::code("cloud.authFailed");
+                    return crate::code(ErrorCode::CloudAuthFailed);
                 }
             }
             super::logging::code_detail(
-                "cloud.connectFailed",
+                ErrorCode::CloudConnectFailed,
                 sanitize(&error.to_string(), &config.api_key),
                 Some(&config.api_key),
             )

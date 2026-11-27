@@ -17,6 +17,7 @@
 | CI、首次编译、版本发布、打包与签名 | [`docs/RELEASE.md`](docs/RELEASE.md) |
 | 质量探针、基线、界面检查怎么跑 | [`docs/HOW_TO_VERIFY.md`](docs/HOW_TO_VERIFY.md) |
 | 复审的固定作业面（每轮从「⚠️ 守卫薄弱 / ❌ 未审」的条目开始，**别另起 Focus 清单**） | [`docs/REVIEW-CHECKLIST.md`](docs/REVIEW-CHECKLIST.md) |
+| 工程改进待办（门禁缺口、结构简化、中期升级；与上面的不变量清单分工不同） | [`docs/BACKLOG.md`](docs/BACKLOG.md) |
 | 「能录音、没字」怎么查 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) |
 | 用户可见的功能与安装说明 | [`README.md`](README.md) |
 
@@ -34,7 +35,7 @@
 
 ## 🚫 硬约束（违反就是错）
 
-- **后端只返回字典 key**，不返回中文展示文案：`crate::code("record.empty")` / `crate::code_detail("record.micError", e)`；新增错误码必须同时进 `src/locales/zh-CN.js` 与 `src/locales/en.js`。
+- **后端只返回字典 key**，不返回中文展示文案：`crate::error_code::code(ErrorCode::RecordEmpty)` / `crate::error_code::code_detail(ErrorCode::RecordMicError, e)`；错误码是**枚举**（`error_code.rs`）不是字符串 —— 拼错 key 编译不过；新增错误码必须同时进 `src/locales/zh-CN.js` 与 `src/locales/en.js`。
 - **界面文案 = 一句中性的话 + 用户看得懂的参数**；技术细节只进日志（`code_detail()` / `logEvent('ERROR', …)`），字典里不放 `{error}` 占位符。
 - **事件名只出现在 `src/events.js`**（`audio:level` / `audio:error` / `model:progress` / `engine:state` / `stream:partial` / `stream:segment` / `streaming:state`），改名字要同步前端。
 - **命令参数名用 camelCase**（`audioBase64` / `fileName`）。
@@ -72,7 +73,7 @@ npm run build          # 打包（→ src-tauri/target/release/bundle/）
 
 | 命令 | 守什么 | 什么时候必跑 |
 | --- | --- | --- |
-| `npm run check` | 全部门禁：i18n → 依赖图 → 拼句规则 → 前端纯函数 → 契约 → 打包配置 → async 阻塞 → clippy（`-D warnings`）→ `cargo test --lib` | 提交前 |
+| `npm run check` | 全部门禁：i18n → 依赖图 → 拼句规则 → 前端纯函数 → 契约 → 打包配置 → async 阻塞 → **格式（`cargo fmt --check`）** → clippy（`-D warnings`）→ `cargo test --lib` | 提交前 |
 | `npm run check:i18n` | 字典对齐 + 后端错误码 + 裸字符串错误 + 经典脚本 | 改了文案 |
 | `npm run check:deps` | 前端 import 图的单向性 | 改了前端依赖 |
 | `npm run check:join` | 前后端拼句规则一致 | 改了 `joinText()` / `join_segments()` |
@@ -80,6 +81,7 @@ npm run build          # 打包（→ src-tauri/target/release/bundle/）
 | `npm run check:contract` | 前后端命令名与载荷字段一致 | 改了命令名 / 参数名 / `Status` |
 | `npm run check:bundle` | ad-hoc 签名、麦克风 entitlement、macOS 专属代码的 cfg | 改了打包或原生层配置 |
 | `npm run check:async` | async 路径上的阻塞锁与阻塞构造器 | 改了引擎加载 / 会话构造 / 新增 async 命令 |
+| `npm run check:fmt` | Rust 源码格式（`cargo fmt --check`） | 改了 `src-tauri/` 下的 Rust 代码 |
 | `npm run check:ui` | 界面检查（真实 WebKit + 假 `__TAURI__`） | 改了前端 |
 | `npm run shots` | 重出 README 截图 | 改了界面 |
 

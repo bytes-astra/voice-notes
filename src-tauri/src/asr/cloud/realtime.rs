@@ -18,6 +18,7 @@
 //! 提交顺序**上抛（`CommitTracker`），回执先发（会话层靠它把句子区间绑到
 //! `item_id` 上）—— 上抛顺序再怎么乱，句子区间都不会配错。
 
+use crate::error_code::ErrorCode;
 use std::collections::VecDeque;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
@@ -122,10 +123,7 @@ impl CloudProvider for RealtimeProvider {
         Self::CAPABILITIES
     }
 
-    fn connect(
-        &mut self,
-        on_event: Box<dyn Fn(CloudEvent) + Send + Sync>,
-    ) -> Result<(), String> {
+    fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String> {
         let (commands_tx, commands_rx) = tokio_mpsc::channel(UPLOAD_QUEUE_CAPACITY);
         let (ready_tx, ready_rx) = channel::<Result<(), String>>();
         let config = RealtimeConfig {
@@ -144,7 +142,7 @@ impl CloudProvider for RealtimeProvider {
         match ready_rx.recv_timeout(CONNECT_TIMEOUT) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(error),
-            Err(_) => Err(crate::code("cloud.connectFailed")),
+            Err(_) => Err(crate::code(ErrorCode::CloudConnectFailed)),
         }
     }
 
@@ -153,7 +151,7 @@ impl CloudProvider for RealtimeProvider {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
-            return Err(crate::code("cloud.disconnected"));
+            return Err(crate::code(ErrorCode::CloudDisconnected));
         };
         let bytes: Vec<u8> = pcm.iter().flat_map(|sample| sample.to_le_bytes()).collect();
         match commands.try_send(Command::Audio(BASE64.encode(bytes))) {
@@ -162,9 +160,14 @@ impl CloudProvider for RealtimeProvider {
             Err(tokio_mpsc::error::TrySendError::Full(_)) => {
                 // 队列满：这一段整段没送出去。调用方据此在结果里留缺口。
                 let samples = pcm.len() * 16000 / TARGET_SAMPLE_RATE as usize;
-                Ok(SendOutcome { dropped: samples, delivered: false })
+                Ok(SendOutcome {
+                    dropped: samples,
+                    delivered: false,
+                })
             }
-            Err(tokio_mpsc::error::TrySendError::Closed(_)) => Err(crate::code("cloud.disconnected")),
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                Err(crate::code(ErrorCode::CloudDisconnected))
+            }
         }
     }
 
@@ -173,7 +176,7 @@ impl CloudProvider for RealtimeProvider {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
-            return Err(crate::code("cloud.disconnected"));
+            return Err(crate::code(ErrorCode::CloudDisconnected));
         };
         // 控制帧不能因为队列满就丢：丢了这次 commit，服务端就不会为这一句
         // 出 final，会话侧的区间与 pending 记账跟着整体错位。
@@ -185,7 +188,7 @@ impl CloudProvider for RealtimeProvider {
             return Err(error);
         }
         let Some(commands) = self.commands.as_ref() else {
-            return Err(crate::code("cloud.disconnected"));
+            return Err(crate::code(ErrorCode::CloudDisconnected));
         };
         let (done_tx, done_rx) = channel();
         // 同 `commit`：收尾命令丢了就等于最后一句永远等不到结果。
@@ -194,7 +197,7 @@ impl CloudProvider for RealtimeProvider {
             Ok(()) => self.take_background_error().map_or(Ok(()), Err),
             Err(_) => Err(self
                 .take_background_error()
-                .unwrap_or_else(|| crate::code("cloud.timeout"))),
+                .unwrap_or_else(|| crate::code(ErrorCode::CloudTimeout))),
         }
     }
 
@@ -222,12 +225,12 @@ fn send_control(
             Err(tokio_mpsc::error::TrySendError::Full(returned)) => {
                 command = returned;
                 if std::time::Instant::now() >= deadline {
-                    return Err(crate::code("cloud.sendFailed"));
+                    return Err(crate::code(ErrorCode::CloudSendFailed));
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
-                return Err(crate::code("cloud.disconnected"));
+                return Err(crate::code(ErrorCode::CloudDisconnected));
             }
         }
     }
@@ -254,7 +257,11 @@ async fn run(
         .send(Message::Text(encode_session_update(&config).into()))
         .await
     {
-        let error = super::logging::code_detail("cloud.connectFailed", error.to_string(), Some(&config.api_key));
+        let error = super::logging::code_detail(
+            ErrorCode::CloudConnectFailed,
+            error.to_string(),
+            Some(&config.api_key),
+        );
         let _ = ready.send(Err(error.clone()));
         let _ = errors.send(error);
         return;
@@ -284,7 +291,7 @@ async fn run(
                 }
             } => {
                 // 收尾等太久：别把界面一直卡着。
-                let _ = errors.send(crate::code("cloud.timeout"));
+                let _ = errors.send(crate::code(ErrorCode::CloudTimeout));
                 if let Some(done) = finishing.take() {
                     let _ = done.send(());
                 }
@@ -299,7 +306,7 @@ async fn run(
                         }
                         if let Err(error) = socket.send(Message::Text(encode_append(&audio).into())).await {
                             let _ = errors.send(super::logging::code_detail(
-                                "cloud.sendFailed",
+                                ErrorCode::CloudSendFailed,
                                 error.to_string(),
                                 Some(&config.api_key),
                             ));
@@ -309,7 +316,7 @@ async fn run(
                     Command::Commit => {
                         if let Err(error) = socket.send(Message::Text(encode_commit().into())).await {
                             let _ = errors.send(super::logging::code_detail(
-                                "cloud.sendFailed",
+                                ErrorCode::CloudSendFailed,
                                 error.to_string(),
                                 Some(&config.api_key),
                             ));
@@ -334,7 +341,7 @@ async fn run(
                         if need_commit {
                             if let Err(error) = socket.send(Message::Text(encode_commit().into())).await {
                                 let _ = errors.send(super::logging::code_detail(
-                                    "cloud.sendFailed",
+                                    ErrorCode::CloudSendFailed,
                                     error.to_string(),
                                     Some(&config.api_key),
                                 ));
@@ -354,7 +361,7 @@ async fn run(
             }
             message = socket.next() => {
                 let Some(message) = message else {
-                    let _ = errors.send(crate::code("cloud.disconnected"));
+                    let _ = errors.send(crate::code(ErrorCode::CloudDisconnected));
                     if let Some(done) = finishing.take() {
                         let _ = done.send(());
                     }
@@ -365,7 +372,7 @@ async fn run(
                     // 二进制帧我们不发，也不该收：忽略。
                     Ok(Message::Binary(_)) | Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
                     Ok(Message::Close(_)) => {
-                        let _ = errors.send(crate::code("cloud.disconnected"));
+                        let _ = errors.send(crate::code(ErrorCode::CloudDisconnected));
                         if let Some(done) = finishing.take() {
                             let _ = done.send(());
                         }
@@ -374,7 +381,7 @@ async fn run(
                     Ok(_) => continue,
                     Err(error) => {
                         let _ = errors.send(super::logging::code_detail(
-                            "cloud.disconnected",
+                            ErrorCode::CloudDisconnected,
                             error.to_string(),
                             Some(&config.api_key),
                         ));
@@ -464,8 +471,10 @@ async fn run(
                         let message = sanitize(&message, &config.api_key);
                         let lower = message.to_ascii_lowercase();
                         let code = if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid api key") {
-                            "cloud.authFailed"
-                        } else { "cloud.protocolError" };
+                            ErrorCode::CloudAuthFailed
+                        } else {
+                            ErrorCode::CloudProtocolError
+                        };
                         let error = super::logging::code_detail(code, message, Some(&config.api_key));
                         // 报错要把提交槽解开：否则槽永远悬着 → flush 不再往前推进
                         // → 这一句之后的所有 final 都被扣住（转写里静默少了后文），
@@ -490,28 +499,33 @@ async fn run(
 /// 连上 Realtime。
 async fn connect_socket(
     config: &RealtimeConfig,
-) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    String,
+> {
     let mut request = config
         .base_url
         .as_str()
         .into_client_request()
-        .map_err(|error| super::logging::code_detail(
-            "cloud.connectFailed",
-            error.to_string(),
-            Some(&config.api_key),
-        ))?;
+        .map_err(|error| {
+            super::logging::code_detail(
+                ErrorCode::CloudConnectFailed,
+                error.to_string(),
+                Some(&config.api_key),
+            )
+        })?;
     // 凭据只进请求头：URL 与日志里都不许出现。
     let auth = format!("Bearer {}", config.api_key);
     let header = auth
         .parse()
-        .map_err(|_| crate::code("cloud.connectFailed"))?;
+        .map_err(|_| crate::code(ErrorCode::CloudConnectFailed))?;
     request.headers_mut().insert("Authorization", header);
     let (socket, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|error| {
             // 错误详情里不能有 key（有些库会把请求头带进错误里）。
             super::logging::code_detail(
-                "cloud.connectFailed",
+                ErrorCode::CloudConnectFailed,
                 sanitize(&error.to_string(), &config.api_key),
                 Some(&config.api_key),
             )
@@ -539,7 +553,7 @@ pub(crate) fn clean_cloud_keywords(words: &[String]) -> (Vec<String>, usize) {
 /// 默认 Realtime 转写模型只支持客户端提交；其它兼容模型必须显式走这个契约。
 pub(crate) fn validate_realtime_model(model: &str) -> Result<(), String> {
     if model.trim().is_empty() {
-        return Err(crate::code("cloud.unsupportedModel"));
+        return Err(crate::code(ErrorCode::CloudUnsupportedModel));
     }
     Ok(())
 }
@@ -777,7 +791,9 @@ impl CommitTracker {
     ///
     /// 返回按提交顺序可以上抛的事件（回执优先）。
     fn committed(&mut self, item_id: Option<String>) -> Vec<CloudEvent> {
-        let Some(item_id) = item_id else { return Vec::new() };
+        let Some(item_id) = item_id else {
+            return Vec::new();
+        };
         if self
             .slots
             .iter()

@@ -14,6 +14,7 @@ use sherpa_onnx::{VadModelConfig, VoiceActivityDetector};
 
 use crate::audio::{ends_with_gap_marker, is_gap_marker};
 use crate::engine::{Engine, PunctuationEngine, StreamingEngine};
+use crate::error_code::ErrorCode;
 use crate::log;
 
 pub const SAMPLE_RATE: i32 = 16_000;
@@ -130,11 +131,7 @@ const NO_SEGMENT_PEAK_FLOOR: f32 = 0.01;
 /// **这时的「没有句子」是正常的** —— 连续说话时 VAD 要等到句尾才切段，
 /// 音频没丢，只是还在攒。真正要报的是「有能量、VAD 却没在攒」：那种情况下
 /// 音频被判成非语音，被 sherpa 直接丢掉了。
-fn no_segment_warning(
-    silence_seconds: f32,
-    peak: f32,
-    vad_holding_speech: bool,
-) -> Option<String> {
+fn no_segment_warning(silence_seconds: f32, peak: f32, vad_holding_speech: bool) -> Option<String> {
     if vad_holding_speech {
         return None;
     }
@@ -522,7 +519,7 @@ pub struct OfflineSession {
 /// （sherpa 会打印 Overflow 警告）。
 fn create_vad_detector(vad: &VadModelConfig) -> Result<VoiceActivityDetector, String> {
     VoiceActivityDetector::create(vad, 60.0)
-        .ok_or_else(|| crate::code_detail("model.loadFailed", "silero_vad.onnx"))
+        .ok_or_else(|| crate::code_detail(ErrorCode::ModelLoadFailed, "silero_vad.onnx"))
 }
 
 /// 整段会话产出的事件。

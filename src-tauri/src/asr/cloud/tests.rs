@@ -54,8 +54,14 @@ fn final_maps_to_segment() {
         other => panic!("该来一条句子，实际是 {other:?}"),
     };
     assert_eq!(segment.text, "你好");
-    assert!((segment.start - 0.0).abs() < 1e-6, "起点该是本地轴：{segment:?}");
-    assert!((segment.end - 1.0).abs() < 1e-6, "终点该是本地轴：{segment:?}");
+    assert!(
+        (segment.start - 0.0).abs() < 1e-6,
+        "起点该是本地轴：{segment:?}"
+    );
+    assert!(
+        (segment.end - 1.0).abs() < 1e-6,
+        "终点该是本地轴：{segment:?}"
+    );
 }
 
 /// provider 给的时间戳只是增强：不许覆盖本地轴。
@@ -81,8 +87,14 @@ fn provider_timestamps_do_not_override_local_timeline() {
         Some(StreamEvent::Segment(segment)) => segment.clone(),
         other => panic!("该来一条句子，实际是 {other:?}"),
     };
-    assert!((segment.start - 0.0).abs() < 1e-6, "起点不许被 provider 覆盖：{segment:?}");
-    assert!((segment.end - 1.0).abs() < 1e-6, "终点不许被 provider 覆盖：{segment:?}");
+    assert!(
+        (segment.start - 0.0).abs() < 1e-6,
+        "起点不许被 provider 覆盖：{segment:?}"
+    );
+    assert!(
+        (segment.end - 1.0).abs() < 1e-6,
+        "终点不许被 provider 覆盖：{segment:?}"
+    );
 }
 
 /// 服务端自己断句的 provider：客户端不提交。
@@ -110,7 +122,10 @@ fn upsamples_before_upload_when_provider_wants_24k() {
         sent > 16000,
         "1 秒的 16 kHz 音频升到 24 kHz 后不该还是 16000 个样本：{sent}"
     );
-    assert!((session.elapsed_seconds() - 1.0).abs() < 1e-6, "本地轴不受上传采样率影响");
+    assert!(
+        (session.elapsed_seconds() - 1.0).abs() < 1e-6,
+        "本地轴不受上传采样率影响"
+    );
 }
 
 /// 空 final 也要把区间配掉：否则下一句会配到上一句的区间上（时间戳整段错位）。
@@ -203,7 +218,13 @@ fn delta_accumulates_into_partial() {
     emit(&state, CloudEvent::Partial("你好".into()));
     emit(&state, CloudEvent::Partial("你好，世界".into()));
     let events = session.poll();
-    let partials: Vec<String> = events.iter().filter_map(|e| match e { StreamEvent::Partial(t) => Some(t.clone()), _ => None }).collect();
+    let partials: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Partial(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(partials, vec!["你好".to_string(), "你好，世界".to_string()]);
 }
 
@@ -219,12 +240,40 @@ fn failed_item_does_not_block_later_finals() {
     session.advance_samples(16000);
     session.push(&[0.2; 16000]);
     session.force_end();
-    emit(&state, CloudEvent::Final { item_id: None, text: String::new(), start_ms: None, end_ms: None });
-    emit(&state, CloudEvent::Final { item_id: None, text: "第二句".into(), start_ms: None, end_ms: None });
+    emit(
+        &state,
+        CloudEvent::Final {
+            item_id: None,
+            text: String::new(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
+    emit(
+        &state,
+        CloudEvent::Final {
+            item_id: None,
+            text: "第二句".into(),
+            start_ms: None,
+            end_ms: None,
+        },
+    );
     let events = session.poll();
-    let texts: Vec<String> = events.iter().filter_map(|e| match e { StreamEvent::Segment(s) => Some(s.text.clone()), _ => None }).collect();
+    let texts: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Segment(s) => Some(s.text.clone()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(texts, vec!["第二句".to_string()]);
-    let segment = events.iter().find_map(|e| match e { StreamEvent::Segment(s) => Some(s), _ => None }).unwrap();
+    let segment = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::Segment(s) => Some(s),
+            _ => None,
+        })
+        .unwrap();
     assert!((segment.start - 1.0).abs() < 1e-6);
 }
 
@@ -293,8 +342,6 @@ fn first_segment(events: Vec<StreamEvent>) -> Segment {
         .expect("该来一条句子")
 }
 
-
-
 /// 能力表：客户端提交族声明「需要本地 VAD」，且能力组合合法。
 #[test]
 fn provider_requires_local_vad() {
@@ -302,7 +349,10 @@ fn provider_requires_local_vad() {
     assert_eq!(caps.endpoint_kind, EndpointKind::ClientCommit);
     assert!(caps.needs_local_vad, "客户端提交族要本地 VAD 断句");
     assert!(valid_capabilities(&caps), "能力组合应合法");
-    assert!(provider_capabilities("不存在的服务").is_none(), "未知 id 没有能力项");
+    assert!(
+        provider_capabilities("不存在的服务").is_none(),
+        "未知 id 没有能力项"
+    );
 }
 
 /// 能力组合非法时拒绝建 provider（避免「缺 VAD 被读成服务端断句」）。
@@ -315,9 +365,11 @@ fn invalid_capability_combination_is_rejected() {
         supports_keywords: true,
         target_sample_rate: 16000,
     };
-    assert!(!valid_capabilities(&bad), "客户端提交族不声明需要 VAD 是非法组合");
+    assert!(
+        !valid_capabilities(&bad),
+        "客户端提交族不声明需要 VAD 是非法组合"
+    );
 }
-
 
 /// final 乱序到达时：句子时间不能串位，文本顺序也要按本地时间轴。
 ///
@@ -335,8 +387,18 @@ fn out_of_order_final_keeps_its_span() {
     session.push(&[0.2; 16000]);
     session.force_end();
     // 回执按提交顺序到，区间依次绑到 a / b。
-    emit(&state, CloudEvent::CommitAck { item_id: Some("a".into()) });
-    emit(&state, CloudEvent::CommitAck { item_id: Some("b".into()) });
+    emit(
+        &state,
+        CloudEvent::CommitAck {
+            item_id: Some("a".into()),
+        },
+    );
+    emit(
+        &state,
+        CloudEvent::CommitAck {
+            item_id: Some("b".into()),
+        },
+    );
     // 结果乱序到：b 先到。
     emit(
         &state,
@@ -388,7 +450,12 @@ fn failed_item_without_ack_keeps_spans_aligned() {
     session.push(&[0.2; 16000]);
     session.force_end();
     // 第一轮失败：provider 先补回执（会话层靠它把区间绑上去），再上空 final。
-    emit(&state, CloudEvent::CommitAck { item_id: Some("a".into()) });
+    emit(
+        &state,
+        CloudEvent::CommitAck {
+            item_id: Some("a".into()),
+        },
+    );
     emit(
         &state,
         CloudEvent::Final {
@@ -398,7 +465,12 @@ fn failed_item_without_ack_keeps_spans_aligned() {
             end_ms: None,
         },
     );
-    emit(&state, CloudEvent::CommitAck { item_id: Some("b".into()) });
+    emit(
+        &state,
+        CloudEvent::CommitAck {
+            item_id: Some("b".into()),
+        },
+    );
     emit(
         &state,
         CloudEvent::Final {
@@ -430,14 +502,19 @@ fn upload_drop_records_gap_position() {
     session.advance_samples(16000);
     session.push(&[0.2; 16000]);
     // 丢包段要等「下一次成功发送」或收尾才闭合 —— 闭合前取不到。
-    assert!(session.take_upload_gaps().is_empty(), "还没闭合就不该有缺口");
+    assert!(
+        session.take_upload_gaps().is_empty(),
+        "还没闭合就不该有缺口"
+    );
     session.finish();
     let gaps = session.take_upload_gaps();
     assert_eq!(gaps.len(), 1, "丢包要有缺口：{gaps:?}");
     assert_eq!(gaps[0].1, 16_000, "丢掉的采样数要对");
-    assert_eq!(gaps[0].0, 0, "缺口起点是这段音频的起点（16 kHz 采样数）：{gaps:?}");
+    assert_eq!(
+        gaps[0].0, 0,
+        "缺口起点是这段音频的起点（16 kHz 采样数）：{gaps:?}"
+    );
 }
-
 
 /// 提交失败之后又喂了音频，收尾那条 final 的区间要覆盖到最后 ——
 /// 服务端把两段音频合成一条结果，区间也必须合成一段。
@@ -507,7 +584,10 @@ fn capability_table_matches_instances() {
 fn unknown_provider_cannot_be_created() {
     assert!(provider_capabilities("不存在的服务").is_none());
     let settings = settings_with_profile("不存在的服务", "");
-    assert!(create_provider(&settings).is_err(), "未知 provider 不该建出来");
+    assert!(
+        create_provider(&settings).is_err(),
+        "未知 provider 不该建出来"
+    );
 }
 
 /// 能力声明不支持术语表时，一个词都不带（系统不得向它发送术语表）。
@@ -542,7 +622,10 @@ fn consecutive_drops_merge_into_one_gap() {
     session.push(&[0.2; 12_800]);
     // **编排每轮都会取一次缺口** —— 累积状态必须跨这次取走存活，
     // 否则连续丢包永远并不成一条。
-    assert!(session.take_upload_gaps().is_empty(), "还没闭合就不该有缺口");
+    assert!(
+        session.take_upload_gaps().is_empty(),
+        "还没闭合就不该有缺口"
+    );
     state.lock().unwrap().dropped_reply = 12_800;
     session.advance_samples(12_800);
     session.push(&[0.2; 12_800]);
@@ -925,7 +1008,7 @@ fn log_choke_point_redacts_the_credential() {
 ///
 /// - `crate::log` —— 盖住 `crate::log::warn/info/error/write`，也盖住
 ///   `use crate::log;` 与 `use crate::log as l;`（import 那一行就含这个片段）。
-/// - `crate::code_detail` —— 它内部就是 `log::error` → 写日志文件，但**不脱敏**。
+/// - crate 的 `error_code::code_detail` —— 它内部就是 `log::error` → 写日志文件，但**不脱敏**。
 ///   云端模块一律用 `logging::code_detail`（先脱敏再委托）。
 ///
 /// 关口自己的路径（`logging::warn` / `logging::code_detail`）不匹配 ✓。
@@ -962,7 +1045,7 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
         //    它内部是 `log::error` → 写日志文件，却不脱敏。
         assert!(
             !calls_code_detail_directly(&code),
-            "{}: 错误详情必须走 asr/cloud/logging.rs 的 code_detail（先脱敏再委托），不许直接调 crate::code_detail",
+            "{}: 错误详情必须走 asr/cloud/logging.rs 的 code_detail（先脱敏再委托），不许直接调 crate 的 code_detail",
             file.display()
         );
         // ③ 成组导入 / glob 导入：`use crate::{log, code_detail};` 里**没有**
@@ -976,15 +1059,19 @@ fn cloud_logs_go_through_the_redacting_choke_point() {
     }
 }
 
-/// 直接调了 `crate::code_detail` 吗（而不是关口的 `logging::code_detail`）。
+/// 直接调了 crate 的 `code_detail` 吗（而不是关口的 `logging::code_detail`）。
 ///
-/// **按调用点的路径前缀判断** —— `crate::code_detail` / `super::super::code_detail`
-/// 都是绕过；`super::logging::code_detail` 是关口自己。
+/// **按调用点的路径前缀判断** —— `crate::error_code::code_detail` /
+/// `super::super::error_code::code_detail` 都是绕过；
+/// `super::logging::code_detail` 是关口自己。
 // （字面量里不写 `code_detail(`：i18n 扫描器会把它当错误码。）
 fn calls_code_detail_directly(code: &str) -> bool {
     let mut rest = code;
     while let Some(index) = rest.find("code_detail") {
-        if !rest[..index].ends_with("logging::") {
+        // 关口自己（`…logging::code_detail`）不算绕过。
+        let is_choke_point = rest[..index].ends_with("logging::");
+        // crate 的错误码模块（`crate::error_code::code_detail`）也不脱敏 → 绕过。
+        if !is_choke_point {
             return true;
         }
         rest = &rest[index + "code_detail".len()..];
@@ -1113,7 +1200,10 @@ fn cloud_source_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
         if path.is_dir() {
             // 测试目录不进产物 —— 不扫。
             if name == "tests" {

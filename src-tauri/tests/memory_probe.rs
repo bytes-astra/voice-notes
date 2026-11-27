@@ -59,7 +59,10 @@ fn current_rss() -> i64 {
         .output()
         .expect("跑 ps 失败");
     // ps 给的是 KB。
-    let kb: i64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0);
+    let kb: i64 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
     kb * 1024
 }
 
@@ -99,8 +102,9 @@ fn probe_memory_does_not_grow_with_duration() {
     if offline_dir.is_some() {
         let paths = common::model_paths().expect("整段模型");
         let engine = Arc::new(Engine::new(&paths, "zh", true).expect("加载整段模型"));
-        let mut session = OfflineSession::new(engine.clone(), engine.vad_config().expect("VAD 模型"))
-            .expect("建整段会话");
+        let mut session =
+            OfflineSession::new(engine.clone(), engine.vad_config().expect("VAD 模型"))
+                .expect("建整段会话");
         let samples = speech_of(TOTAL_SECONDS);
         let mut checkpoint = 0i64;
         for (index, chunk) in samples.chunks(512).enumerate() {

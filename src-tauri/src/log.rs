@@ -108,7 +108,9 @@ fn should_rotate(size: u64, modified: Option<SystemTime>, now: DateTime<Local>) 
     if size >= MAX_BYTES {
         return true;
     }
-    let Some(modified) = modified else { return false };
+    let Some(modified) = modified else {
+        return false;
+    };
     let modified: DateTime<Local> = modified.into();
     modified.date_naive() != now.date_naive()
 }
@@ -184,10 +186,7 @@ fn unique_rotated_path(dir: &Path, now: DateTime<Local>) -> PathBuf {
         return base;
     }
     for n in 1..=100 {
-        let candidate = dir.join(format!(
-            "{ROTATED_PREFIX}{}-{n}",
-            now.format(ROTATED_STAMP)
-        ));
+        let candidate = dir.join(format!("{ROTATED_PREFIX}{}-{n}", now.format(ROTATED_STAMP)));
         if !candidate.exists() {
             return candidate;
         }
@@ -202,7 +201,9 @@ fn unique_rotated_path(dir: &Path, now: DateTime<Local>) -> PathBuf {
 
 /// 本地时间戳（用户看日志时不用自己换算时区）。
 fn timestamp() -> String {
-    chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+    chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string()
 }
 
 /// 布尔开关在日志里写「开 / 关」。

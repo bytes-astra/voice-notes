@@ -75,10 +75,7 @@ fn probe_resample_quality() {
 
         println!("\n════ {fixture} ════");
         println!("  原始（16 kHz 直喂）：{}", direct.text);
-        println!(
-            "  重采样一圈（48k→16k）：{}",
-            resampled.text
-        );
+        println!("  重采样一圈（48k→16k）：{}", resampled.text);
         println!(
             "  重采样后长度 {}/{} 采样（{:.2}s vs {:.2}s）",
             round_trip.len(),

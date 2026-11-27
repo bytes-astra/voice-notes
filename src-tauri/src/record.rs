@@ -18,6 +18,7 @@ use std::time::Duration;
 use crate::asr;
 use crate::asr::{AsrSession, OfflineEvent, StreamEvent, StreamingSession, Transcript};
 use crate::engine::{PunctuationEngine, StreamingEngine};
+use crate::error_code::ErrorCode;
 use sherpa_onnx::LinearResampler;
 
 use crate::audio;
@@ -34,55 +35,123 @@ pub struct FinishedRecording {
     pub capture_error: Option<String>,
 }
 
+/// 一次录音跑的是哪种模式。
+///
+/// **只是标签**：超时秒数、失败文案、云端那套「断连保句」策略都由调用方
+/// （app 层）按它分派 —— 这一层不认识界面文案。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionMode {
+    /// 本地整段（SenseVoice）—— 音频不出本机。
+    LocalOffline,
+    /// 本地流式（Zipformer）—— 音频不出本机。
+    LocalStreaming,
+    /// 云端流式 —— 音频会传出去。
+    CloudStreaming,
+}
+
+/// 一次正在进行的录音：采集器 + 识别会话的停止信号 + 模式。
+///
+/// **采集器与它的 `RecordingRun` 必须同行** —— 只持有其一，识别线程就永远
+/// 收不到 stop（线程泄漏、永久占着识别模型）、麦克风不关、语言/ITN 永久锁死。
+/// 装进**一个值**里，这个配对就由类型保证，而不是靠每个 `start_*` 各自记得
+/// 写两个槽（三个会话槽类型完全相同，写错编译不报错）。
+///
+/// 认领的顺序（`Recorder::stop` 不取走队列里的采样 —— 尾巴由识别线程自己
+/// `take_new()` 取）：**先停采集，再让线程收尾**。这个顺序只允许出现在
+/// [`finish_recording`] 一处 —— `Session::finish` 调它，不自己重写。
+pub struct Session {
+    /// 采集器（麦克风流）。`None` = 已经被收尾流程取走。
+    recorder: Option<audio::Recorder>,
+    /// 识别线程的停止信号 + 结果通道。`None` = 已经被收尾流程取走。
+    run: Option<RecordingRun>,
+    mode: SessionMode,
+}
+
+impl Session {
+    pub fn new(recorder: audio::Recorder, run: RecordingRun, mode: SessionMode) -> Self {
+        Self {
+            recorder: Some(recorder),
+            run: Some(run),
+            mode,
+        }
+    }
+
+    /// 这一轮是哪种模式（app 层按它选超时与文案）。
+    pub fn mode(&self) -> SessionMode {
+        self.mode
+    }
+
+    /// 收尾：停采集 + 等识别线程交回结果。
+    ///
+    /// **顺序在 [`finish_recording`] 里**（先停采集、再停线程）—— 这里的
+    /// 调用方拆不出「先停哪个」。
+    pub fn finish(mut self, timeout_secs: u64) -> Result<FinishedRecording, String> {
+        let recorder = self.recorder.take().expect("收尾前采集器还在");
+        let run = self.run.take().expect("收尾前会话还在");
+        finish_recording(recorder, run, timeout_secs)
+    }
+
+    /// 取消：置停止标志 + 关麦（不产出文本）。
+    pub fn cancel(mut self) {
+        if let Some(run) = self.run.take() {
+            run.discard.store(true, Ordering::SeqCst);
+            run.stop.store(true, Ordering::SeqCst);
+        }
+        if let Some(recorder) = self.recorder.take() {
+            recorder.cancel();
+        }
+    }
+}
+
+impl Drop for Session {
+    /// 兜底：**掉一个 `Session` 必须让识别线程退出**。
+    ///
+    /// `Recorder` 自己的 `Drop` 只发 `Cmd::Cancel` 关麦、**不置 `stop`**；
+    /// 而 ASR 线程只看 `stop` / `discard`（不看 `rx` 是否关闭）→
+    /// 不兜底就会「麦克风关了、线程空转到天荒地老」。
+    fn drop(&mut self) {
+        if let Some(run) = self.run.take() {
+            run.discard.store(true, Ordering::SeqCst);
+            run.stop.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// 登记一次录音：**一次写**，不留中间态。
+///
+/// 槽里已经有录音 → 报占用（上一轮没清干净，顶掉它的话上一轮的识别线程
+/// 就永远收不到 stop）。
+///
+/// 装不进槽（锁被 poison）→ 报错，**槽里什么都没有**。
+pub fn register_session<S>(session_slot: &Mutex<Option<S>>, session: S) -> Result<(), SlotError> {
+    let mut guard = session_slot.lock().map_err(|_| SlotError::SessionLocked)?;
+    if guard.is_some() {
+        return Err(SlotError::AlreadyRecording);
+    }
+    *guard = Some(session);
+    Ok(())
+}
+
 /// 两个槽登记失败的原因。
 #[derive(Debug)]
 pub enum SlotError {
-    /// 采集器槽的锁被 poison
-    RecorderLocked,
     /// 会话槽的锁被 poison
     SessionLocked,
     /// 已经有录音在跑
     AlreadyRecording,
 }
 
-/// 采集器和会话两个槽**一起**登记：要么都写成功，要么都不写。
-///
-/// 这两个槽必须同时成立：只写采集器不写会话，识别线程就永远收不到 stop
-/// —— 线程泄漏（永久占着 239 MB / 161 MB 引擎）、麦克风不关、
-/// 语言/ITN 永久锁死，下一次 start 直接撞「已经在录音」。
-///
-/// 先拿齐两把锁再写：任一把锁被 poison 时，两个槽都还没被改动，
-/// 不会留下「有采集器没会话」的中间态。
-///
-/// 锁序固定为「采集器 → 会话」（`stop_recording` 也按这个顺序拿）。
-pub fn register_slots<R, S>(
-    recorder_slot: &Mutex<Option<R>>,
-    session_slot: &Mutex<Option<S>>,
-    recorder: R,
-    session: S,
-) -> Result<(), SlotError> {
-    let mut recorder_guard = recorder_slot.lock().map_err(|_| SlotError::RecorderLocked)?;
-    let mut session_guard = session_slot.lock().map_err(|_| SlotError::SessionLocked)?;
-    // 两个槽都要空：会话槽还占着说明上一轮没清干净，
-    // 顶掉它，上一轮的识别线程就永远收不到 stop。
-    if recorder_guard.is_some() || session_guard.is_some() {
-        return Err(SlotError::AlreadyRecording);
-    }
-    *recorder_guard = Some(recorder);
-    *session_guard = Some(session);
-    Ok(())
-}
-
-/// 停止时等待识别线程收尾失败：调用方据此换成对应模式的超时文案。
-pub const STOP_FAILED: &str = "record.stopFailed";
-
 /// 这个错误是不是「停止录音时识别线程没交回结果」。
 ///
 /// 比的是**错误码**部分（':' 之前），不是整个字符串 ——
-/// `code_detail(STOP_FAILED, …)` 出来的是 `record.stopFailed:细节`，
-/// 整串比较会失配，超时文案就换不上了。
+/// `code_detail(ErrorCode::RecordStopFailed, …)` 出来的是
+/// `record.stopFailed:细节`，整串比较会失配，超时文案就换不上了。
+///
+/// 反查走 [`ErrorCode::from_key`] —— 与 `Display` 共用同一张 key 表，
+/// 不会漂。**带细节 / 不带细节都要认得出**。
 pub fn is_stop_failed(error: &str) -> bool {
-    error.split(':').next() == Some(STOP_FAILED)
+    let key = error.split(':').next().unwrap_or(error);
+    ErrorCode::from_key(key) == Some(ErrorCode::RecordStopFailed)
 }
 
 /// 界面能接受的最低音频时长（秒）。
@@ -94,10 +163,13 @@ pub const MIN_TRANSCRIPT_SECONDS: f32 = 0.2;
 /// 否则一边显示「至少说 0.2 秒」、另一边显示「至少说 {seconds} 秒」。
 pub fn ensure_transcript_usable(text: &str, duration_seconds: f32) -> Result<(), String> {
     if duration_seconds < MIN_TRANSCRIPT_SECONDS {
-        return Err(crate::code_detail("record.tooShort", MIN_TRANSCRIPT_SECONDS));
+        return Err(crate::error_code::code_detail(
+            ErrorCode::RecordTooShort,
+            MIN_TRANSCRIPT_SECONDS,
+        ));
     }
     if text.trim().is_empty() {
-        return Err(crate::code("record.empty"));
+        return Err(crate::code(ErrorCode::RecordEmpty));
     }
     Ok(())
 }
@@ -111,7 +183,7 @@ fn wait_transcript(
     rx.recv_timeout(Duration::from_secs(timeout_secs))
         .map_err(|_| {
             discard.store(true, Ordering::SeqCst);
-            crate::code(STOP_FAILED)
+            crate::error_code::code(ErrorCode::RecordStopFailed)
         })
 }
 
@@ -257,7 +329,7 @@ fn log_stream_events(tag: &str, events: &[StreamEvent]) {
     }
 }
 
-/// 整段模式：边录音边按句识别。
+/// **本地**整段模式：边录音边按句识别（音频不出本机）。
 ///
 /// 采集线程把新采样放进队列，这里取走、重采样到 16k、喂给 VAD 切句，
 /// 切出一句就立刻送 SenseVoice 识别并把结果推给界面。
@@ -265,7 +337,7 @@ fn log_stream_events(tag: &str, events: &[StreamEvent]) {
 ///
 /// 会话由调用方建好传进来：VAD 建不起来要在**开始录音时**就报错，
 /// 不能等到录完了才让用户撞上「停止超时」。
-pub fn run_offline<F>(
+pub fn run_local_offline<F>(
     session: asr::OfflineSession,
     queue: audio::SampleQueue,
     rate: u32,
@@ -411,8 +483,11 @@ fn vad_is_speech(detector: &sherpa_onnx::VoiceActivityDetector, samples: &[f32])
     detected
 }
 
-/// 边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
-pub fn run_streaming_core<F>(
+/// **本地**流式模式：边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
+///
+/// 与 `run_local_offline` 一样是**本地**推理（音频不出本机）——
+/// 两条本地路径的区别是「整段切句」还是「边说边出字」。
+pub fn run_local_streaming<F>(
     engine: Arc<StreamingEngine>,
     punctuator: Option<Arc<PunctuationEngine>>,
     queue: audio::SampleQueue,
@@ -577,16 +652,18 @@ fn gate(caps: asr::cloud::Capabilities, vad_available: bool) -> Result<bool, Str
             if vad_available {
                 Ok(true)
             } else {
-                Err(crate::code("cloud.vadMissing"))
+                Err(crate::code(ErrorCode::CloudVadMissing))
             }
         }
         asr::cloud::EndpointKind::ServerEndpoint => Ok(false),
     }
 }
 
-/// 云端模式：边录音边把音频送到云端服务，provider 那边出字。
+/// **云端**模式：边录音边把音频送到云端服务，provider 那边出字。
 ///
-/// 与 `run_streaming_core` 同构：VAD 门控 / 预录 / 电平 / 缺口 / 时间轴
+/// 三个入口里**只有它会把音频传出去**（另两个是本地推理）。
+///
+/// 与 `run_local_streaming` 同构：VAD 门控 / 预录 / 电平 / 缺口 / 时间轴
 /// 走同一套规则，识别那一步换成 `CloudStreamingSession`。
 ///
 /// **为什么不是同一个函数**：本地流式的会话是 `StreamingSession`，
@@ -594,7 +671,7 @@ fn gate(caps: asr::cloud::Capabilities, vad_available: bool) -> Result<bool, Str
 /// 合成一个泛型函数会把本地路径也拖进改动范围 —— 本地路径零行为改动
 /// 是硬要求（`streaming_smoke` 守着），所以这里各写各的，
 /// 共用的部分（VAD 参数、电平、缺口）是同一条规则的两个入口。
-pub fn run_cloud_streaming_core<F>(
+pub fn run_cloud_streaming<F>(
     session: asr::cloud::CloudStreamingSession,
     vad_config: Option<sherpa_onnx::VadModelConfig>,
     queue: audio::SampleQueue,
@@ -659,7 +736,11 @@ where
             let marker = audio::gap_marker(dropped as u32, asr::SAMPLE_RATE as u32);
             // 起点是 16 kHz 采样数 → 转成秒（与句子区间同一把尺子）。
             let at = start as f32 / asr::SAMPLE_RATE as f32;
-            let segment = asr::Segment { text: marker, start: at, end: at };
+            let segment = asr::Segment {
+                text: marker,
+                start: at,
+                end: at,
+            };
             gaps.push(segment.clone());
             if !discard.load(Ordering::Relaxed) {
                 emit(vec![StreamEvent::Segment(segment)]);
@@ -791,7 +872,11 @@ where
     for (start, dropped) in session.take_upload_gaps() {
         let marker = audio::gap_marker(dropped as u32, asr::SAMPLE_RATE as u32);
         let at = start as f32 / asr::SAMPLE_RATE as f32;
-        let segment = asr::Segment { text: marker, start: at, end: at };
+        let segment = asr::Segment {
+            text: marker,
+            start: at,
+            end: at,
+        };
         gaps.push(segment.clone());
         emit(vec![StreamEvent::Segment(segment)]);
     }

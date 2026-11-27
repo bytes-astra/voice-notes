@@ -46,7 +46,11 @@ fn writes_lines_and_rotates() {
     write_line(&dir, "2026-01-01 00:00:02.000 [INFO] 轮转之后");
 
     let rotated = rotated_names(&dir);
-    assert_eq!(rotated.len(), 1, "轮转后应该正好有一个历史文件：{rotated:?}");
+    assert_eq!(
+        rotated.len(),
+        1,
+        "轮转后应该正好有一个历史文件：{rotated:?}"
+    );
     assert!(
         rotated[0].starts_with("voice-notes.log.20"),
         "历史文件名应该带时间戳：{}",
@@ -54,7 +58,10 @@ fn writes_lines_and_rotates() {
     );
 
     let current = fs::read_to_string(&file).expect("读当前日志");
-    assert!(current.contains("轮转之后"), "轮转后新行没写进去：{current}");
+    assert!(
+        current.contains("轮转之后"),
+        "轮转后新行没写进去：{current}"
+    );
     assert!(!current.contains('x'), "轮转后当前文件还是旧内容");
 
     // 旧内容进了历史文件。
@@ -116,10 +123,7 @@ fn does_not_rotate_within_the_same_day() {
 #[test]
 fn missing_mtime_only_triggers_on_size() {
     let now = Local::now();
-    assert!(
-        !should_rotate(10, None, now),
-        "拿不到 mtime 不该误轮转"
-    );
+    assert!(!should_rotate(10, None, now), "拿不到 mtime 不该误轮转");
     assert!(
         should_rotate(MAX_BYTES, None, now),
         "拿不到 mtime 时超限仍要轮转"
@@ -148,13 +152,11 @@ fn the_legacy_file_sorts_as_the_oldest() {
         "旧格式不该解析出时间戳"
     );
     assert!(
-        rotated_key("voice-notes.log.2026-01-01-00-00-00")
-            .is_some(),
+        rotated_key("voice-notes.log.2026-01-01-00-00-00").is_some(),
         "新格式应该能解析出时间戳"
     );
     assert!(
-        rotated_key("voice-notes.log.2026-01-01-00-00-00-1")
-            .is_some(),
+        rotated_key("voice-notes.log.2026-01-01-00-00-00-1").is_some(),
         "带计数器的名字也应该能解析出时间戳"
     );
     assert!(
@@ -182,7 +184,11 @@ fn keeps_only_the_five_newest_archives() {
     write_line(&dir, "2026-01-08 00:00:00.000 [INFO] 轮转之后");
 
     let names = rotated_names(&dir);
-    assert_eq!(names.len(), KEEP_ROTATED, "历史文件应剩 {KEEP_ROTATED} 份：{names:?}");
+    assert_eq!(
+        names.len(),
+        KEEP_ROTATED,
+        "历史文件应剩 {KEEP_ROTATED} 份：{names:?}"
+    );
     assert!(
         !names.iter().any(|n| n.contains("2026-01-01")),
         "最旧的一份应该被删掉：{names:?}"
@@ -214,7 +220,11 @@ fn the_legacy_file_is_pruned_first() {
     write_line(&dir, "2026-01-08 00:00:00.000 [INFO] 轮转之后");
 
     let names = rotated_names(&dir);
-    assert_eq!(names.len(), KEEP_ROTATED, "历史文件应剩 {KEEP_ROTATED} 份：{names:?}");
+    assert_eq!(
+        names.len(),
+        KEEP_ROTATED,
+        "历史文件应剩 {KEEP_ROTATED} 份：{names:?}"
+    );
     assert!(
         !names.iter().any(|n| n == "voice-notes.log.1"),
         "旧格式应该被淘汰：{names:?}"
@@ -258,7 +268,10 @@ fn rotates_when_the_file_is_from_yesterday() {
     // 写一个昨天的时间戳进去（靠文件 mtime 判定，所以要改 mtime）。
     fs::write(&file, "2026-01-01 00:00:00.000 [INFO] 昨天写的").expect("写文件");
     let yesterday = Local::now() - chrono::Duration::days(1);
-    let handle = fs::OpenOptions::new().append(true).open(&file).expect("打开日志");
+    let handle = fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .expect("打开日志");
     handle
         .set_modified(SystemTime::from(yesterday))
         .expect("改 mtime");
@@ -269,10 +282,16 @@ fn rotates_when_the_file_is_from_yesterday() {
     let names = rotated_names(&dir);
     assert_eq!(names.len(), 1, "跨天应该轮转出一个历史文件：{names:?}");
     let archived = fs::read_to_string(dir.join(&names[0])).expect("读历史日志");
-    assert!(archived.contains("昨天写的"), "旧内容没进历史文件：{archived}");
+    assert!(
+        archived.contains("昨天写的"),
+        "旧内容没进历史文件：{archived}"
+    );
     let current = fs::read_to_string(&file).expect("读当前日志");
     assert!(current.contains("今天写的"), "新行没写进去：{current}");
-    assert!(!current.contains("昨天写的"), "当前文件不该有旧内容：{current}");
+    assert!(
+        !current.contains("昨天写的"),
+        "当前文件不该有旧内容：{current}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
