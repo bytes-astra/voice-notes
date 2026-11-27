@@ -194,24 +194,36 @@ RC-K25 已经做过一轮对齐（空 key = 不改 / 删活动项落点 / 未知
 
 ## 第三档：中期升级
 
-### BL-6 · 云端模式补质量基线 ⬜
+### BL-6 · 云端模式补质量基线 ✅（2026-11-28）
 
-**现状**：README「已知限制」明写：云端模式**没有质量门禁，也没有实测 CER 基线** —— 本地模式才有。
-本地侧有 `src-tauri/tests/quality_gate.rs`（整段 CER ≤ 25%、流式 ≤ 55%、RTF ≤ 1.0）、
-语料脚本（`fetch-quality-corpus.mjs` / `gen-tts-corpus.sh`）、HOW_TO_VERIFY 里的实测 CER 表；
-云端侧**质量这一维完全空白**（协议层有 100+ 单测，但那是「帧解得对不对」，不是「认得准不准」）。
+**原来缺什么**：本地有 `src-tauri/tests/quality_gate.rs`，云端**质量这一维完全空白** ——
+协议层单测守的是「帧解得对不对」，不是「认得准不准」；`CLOUD.md` 的「终点偏长」表
+（火山 1.28 s、阿里 1.71 s）也只是文档，改协议时没人会红。
 
-**为什么现在做**：服务端断句族已知「终点偏长」（火山补静音后差 **1.28 s**、阿里 **1.71 s**，
-真机 3 轮 12 组数字逐位一致，见 [`CLOUD.md`](CLOUD.md)）。这些数字现在只是文档里的一张表，
-**没变成断言** —— 下次改协议时没人会红。
+**改了什么 / 在哪**：新增 `src-tauri/src/asr/cloud/quality.rs` + `quality/tests.rs`
+（`#[cfg(test)]`，`cargo test --lib` 内跑，不扩大公开 API）。走生产路径
+`CloudStreamingSession`（建连 → 20 ms 分批喂 → `force_end` → `finish` → 收迟到 final）：
+1. TTS 20 条聚合 CER，**一家一个上限**（火山 ≤ 65%、阿里 ≤ 20%，各按实测 +10pp 取整；
+   `VOICE_NOTES_MAX_CLOUD_CER` 可覆盖）；设了本地流式模型时再加一条「不得比本地基线 + 20pp 更差」。
+2. 真人 fixture `tests/fixtures/zh.wav` 的 CER ≤ 25% —— TTS 是域外语料，这条才是门禁的「牙齿」。
+3. **终点偏移上界**：第一条 TTS + 1.5 s 静音，最后一句的本地轴终点与音频末点差 ≤ 3 s。
+4. 没 key / 没语料**跳过并打印原因**，不是失败；key 只从
+   `VOICE_NOTES_VOLCENGINE_KEY` / `VOICE_NOTES_ALIYUN_KEY` 读。
 
-**改法**：给 `quality_gate.rs` 加云端变体（或另起 `cloud_quality_gate.rs`）：同一批 TTS 语料
-喂三家，对比 CER 与本地基线的差值，设一个宽松阈值。**真 key 不入库、不进日志**，
-凭据走环境变量（`VOICE_NOTES_VOLCENGINE_KEY` / `VOICE_NOTES_ALIYUN_KEY`），
-没设就跳过 —— 与 `live_smoke` 同一套口径。
+**怎么验的**（2026-11-28，本机 Apple Silicon，真 key，跑两轮）：
+火山 TTS 聚合 **54.20% / 54.20%**、阿里 **6.30% / 7.14%**；两家真人 fixture 都是 **0%**；
+终点差两家都是 **0.00 s**；本地流式基线 43.28%。负向验证：`VOICE_NOTES_MAX_CLOUD_CER=50`
+→ 用例红（火山 55.04% > 50%），改回后绿。跑法与实测表见
+[`HOW_TO_VERIFY.md`](HOW_TO_VERIFY.md)「云端质量门禁」。
 
-**注意**：服务端识别结果**有随机性**（同一段音频两次运行文本可能不同），
-CER 断言要给足余量，或者比「相对本地基线的差值」而不是绝对值。
+**哪些没验 / 边界**：
+- **不进 CI**（真 key、联网、约 90 s、服务端计费）—— 与 `quality_gate.rs` 同一取舍。
+- **复现不了 `CLOUD.md` 表里的 1.28 s / 1.71 s**：那两个数字要读 provider 时间戳，生产路径
+  刻意不读（`Final` 的 `start_ms` / `end_ms` 两家都是 `None`）。门禁只钉住本地轴终点这一侧。
+- **火山在 `say` 合成音上只有 ~54%**：同一条音频本地整段模型 0%、阿里 ~6% —— 是豆包流式模型
+  对 Flo TTS 域外，不是驱动 bug。因此火山的阈值很松，只抓整体崩坏。
+- **README「已知限制」里「云端没有质量门禁」这句仍是旧的** —— 本轮允许改动的文件范围不含
+  `README.md`，留给下一轮同步。
 
 ### BL-7 · 评估提升 Rust MSRV ⬜
 
