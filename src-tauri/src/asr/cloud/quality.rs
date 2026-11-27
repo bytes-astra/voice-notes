@@ -39,8 +39,19 @@ use super::CloudStreamingSession;
 /// 语料目录（相对 crate 根，与 `tests/common/mod.rs` 的 `QUALITY_DIR` 同一口径）。
 pub const QUALITY_DIR: &str = "tests/fixtures/quality";
 
-/// 20 ms @ 16 kHz —— 编排层就是这个节奏（`record.rs` 的采集循环）。
+/// 门禁默认每批喂 20 ms @ 16 kHz。
+///
+/// **生产路径不是这个数**：`record.rs` 的云端循环每 60 ms 从采集队列取一次，
+/// 所以每批约 60 ms（960 采样）。门禁用 20 ms 是为了让 `poll` 更密；
+/// **它不决定线上帧长** —— provider 自己会重新攒包（火山 200 ms、阿里 100 ms，
+/// 见各自的 `AUDIO_PACKET_BYTES`）。实测把 320 改成 3200 结果几乎不变。
+/// `VOICE_NOTES_CLOUD_CHUNK` 可覆盖（诊断用）。
 pub const CHUNK: usize = 320;
+
+/// 本批喂入的采样数（`VOICE_NOTES_CLOUD_CHUNK` 可覆盖）。
+fn chunk_size() -> usize {
+    env_f64("VOICE_NOTES_CLOUD_CHUNK", CHUNK as f64).max(1.0) as usize
+}
 
 /// 收尾后等迟到的 final：最长 5 s，静默 1 s 就停。
 const LATE_FINAL_MAX: Duration = Duration::from_secs(5);
@@ -194,7 +205,7 @@ pub fn run_session(
 ) -> Result<Transcript, String> {
     let mut session = CloudStreamingSession::new(provider);
     session.connect()?;
-    for part in samples.chunks(CHUNK) {
+    for part in samples.chunks(chunk_size()) {
         session.advance_samples(part.len());
         // 事件本身不重要：会话内部已经把定稿句子记进 `segments`，
         // `transcript()` 会按本地轴排好序返回。这里只要把通道抽干。

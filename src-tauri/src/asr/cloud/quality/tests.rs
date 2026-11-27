@@ -7,7 +7,7 @@
 //! export VOICE_NOTES_ALIYUN_KEY=$(…)
 //! cd src-tauri
 //! cargo test --lib cloud_quality -- --nocapture --test-threads=1
-//! cargo test --lib cloud_sentence_end -- --nocapture --test-threads=1
+//! cargo test --lib last_sentence_end -- --nocapture --test-threads=1
 //! ```
 //!
 //! 没设 key / 没语料时**跳过**（打印「跳过：…」），不是失败 —— 那是「没验」，
@@ -144,13 +144,26 @@ fn cloud_quality_does_not_regress() {
     );
 }
 
-/// 最后一句的本地轴终点必须贴着音频末点（上界 3 s）。
+/// 最后一句的**本地轴终点**不能被截断 / 漂走（上界 3 s）。
 ///
-/// 复现 `docs/CLOUD.md` 那张表的测试条件：第一条 TTS 语料 + 1.5 s 尾静音。
-/// 服务端断句族会把尾巴静音整段算进最后一句 → 本地轴终点 = 音频末点；
-/// 这里钉住「偏移不许涨过 3 s」。
+/// 测试条件对齐 `docs/CLOUD.md` 那张表：第一条 TTS 语料 + 1.5 s 尾静音。
+/// 服务端断句族把尾巴静音整段算进最后一句 → 本地轴终点 = 音频末点
+/// （实测两家都是 0.00 s）。
+///
+/// **这条守的是「本地 16 kHz 时钟」这一侧，不是 provider 侧的终点偏长。**
+/// `CLOUD.md` 表里的 1.28 s / 1.71 s 是「服务端给的 `end` vs 本地轴终点」；
+/// 生产路径刻意不读 provider 时间戳（`CloudEvent::Final` 的 `start_ms` /
+/// `end_ms` 两家都填 `None`），所以本断言**发现不了那件事** —— 要断言它，
+/// 得先把 provider 时间戳接出来（见 change `2026-11-28-cloud-quality-baseline`
+/// 的 design D4）。
+///
+/// **mutation 自证**（2026-11-28 实测，已恢复）：把 `force_end()` 里的
+/// `commit_at(self.fed_end, …)` 改成 `commit_at(self.fed_end - 4 * 16_000, …)`
+/// → 本用例红（最后一句 0.00~0.57 s、音频末点 4.57 s、差 -4.00 s）。
+/// 也就是说它抓的是「终点跟踪丢了 ≥ 3 s」这类整体性错误；
+/// **小于 3 s 的截断它抓不住**（3 s 是约定的上界，不是精度）。
 #[test]
-fn cloud_sentence_end_stays_within_audio_end() {
+fn last_sentence_end_tracks_the_local_audio_clock() {
     let entries = corpus();
     if entries.is_empty() {
         println!("跳过：没有带参考文本的 TTS 语料（先跑 scripts/gen-tts-corpus.sh）");
