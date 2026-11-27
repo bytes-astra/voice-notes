@@ -272,8 +272,25 @@ enum VolcengineEvent {
     ///
     /// 火山的协议形态是「确认前缀为空、整句都是草稿」—— 正是 `Preview` 档。
     Partial(PartialUpdate),
-    /// 定稿的句子。
-    Final(String),
+    /// 定稿的句子，带服务端句级时间戳（毫秒）。
+    ///
+    /// 时间戳**只作测量与诊断**（见 `CloudEvent::Final` 的说明）：
+    /// 会话层不读它们，句子时间仍由本地 16 kHz 时钟决定。
+    Final {
+        text: String,
+        start_ms: Option<u64>,
+        end_ms: Option<u64>,
+    },
+}
+
+/// 读一个毫秒时间字段：整数直接取，浮点（服务端可能给 `5812.0`）四舍五入。
+///
+/// 缺失 / 非数字 → `None` —— **不拿 0 顶替**：0 也可能是真实的起点。
+fn ms_field(value: &Value, key: &str) -> Option<u64> {
+    let number = value.get(key)?;
+    number
+        .as_u64()
+        .or_else(|| number.as_f64().map(|millis| millis.max(0.0).round() as u64))
 }
 
 /// 把服务端的识别结果映射成事件。
@@ -309,7 +326,12 @@ fn map_response(payload: &[u8], emitted: &mut usize) -> Vec<VolcengineEvent> {
             .to_string();
         if definite {
             *emitted = index + 1;
-            events.push(VolcengineEvent::Final(text));
+            events.push(VolcengineEvent::Final {
+                text,
+                // 服务端句级时间戳（毫秒）—— 只供测量/诊断。
+                start_ms: ms_field(utterance, "start_time"),
+                end_ms: ms_field(utterance, "end_time"),
+            });
         } else {
             // 当前句的累计串（草稿）：确认前缀为空，整句都是草稿。
             events.push(VolcengineEvent::Partial(PartialUpdate::Preview {
@@ -339,14 +361,18 @@ fn normalize_events(
                     out.push(CloudEvent::Partial(text));
                 }
             }
-            VolcengineEvent::Final(text) => {
+            VolcengineEvent::Final {
+                text,
+                start_ms,
+                end_ms,
+            } => {
                 // 定稿：清掉归一器的桶（单桶 → 清空整桶）。
                 accumulator.finish_sentence(None);
                 out.push(CloudEvent::Final {
                     item_id: None,
                     text,
-                    start_ms: None,
-                    end_ms: None,
+                    start_ms,
+                    end_ms,
                 });
             }
         }

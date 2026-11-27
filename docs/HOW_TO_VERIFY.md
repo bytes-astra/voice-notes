@@ -292,7 +292,7 @@ npm run check     # 门禁：i18n → 前端依赖图 → 拼句规则 → 前�
   - **计费按 token**（输入 6 元 / 百万、输出 4.5 元 / 百万，北京与新加坡同价），不是按秒。
   - 官方文档有三处口径不一致，实施时以本节为准：`max_sentence_silence` 默认值（本模型客户端事件页 **800** / 旧的 Paraformer SDK 页 800）→ **显式设 800**；`language_hints` 不传时的语义（一处写自动识别、一处写默认 `["zh","en"]`）→ **按「不传 = 自动识别」**；`sentence_id` 是否必填 → **必填**（缺了按兼容路径处理并记 WARN）。
 
-**云端相关测试基线**：`cargo test --lib` = **323**（其中 `asr::cloud` = 136，含 4 条云端质量门禁用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
+**云端相关测试基线**：`cargo test --lib` = **327**（其中 `asr::cloud` = 139，含 6 条云端质量门禁用例）。基线数字以本节为准；改动时**禁止靠删测试达成全绿**（允许合并重复用例，但必须新增等价断言且总数不减）。
 
 ## ☁️🧪 云端质量门禁：认得准不准
 
@@ -306,13 +306,15 @@ bash scripts/gen-tts-corpus.sh          # 没语料时先生成（不入库）
 cd src-tauri
 cargo test --lib cloud_quality -- --nocapture --test-threads=1
 cargo test --lib last_sentence_end -- --nocapture --test-threads=1
+cargo test --lib server_endpoint_offset -- --nocapture --test-threads=1
 ```
 
 - **没设某家的 key → 跳过那一家**（打印「跳过：未设置 …」）；两家都没设 → 整个用例跳过。**跳过 ≠ 通过**。
 - 语料缺失同样跳过；`tts-` 语料必须带同名 `.txt`（算 CER 用）。
 - 阈值：火山 TTS 聚合 ≤ **65%**、阿里 ≤ **20%**（各按 2026-11-28 实测 +10pp 取整；`VOICE_NOTES_MAX_CLOUD_CER` 可统一覆盖）；真人 fixture `tests/fixtures/zh.wav` ≤ **25%**。
 - 相对断言：设了 `VOICE_NOTES_STREAMING_MODEL_DIR` 时，云端 TTS 聚合不得比**本地流式基线 + 20pp** 更差。
-- 终点断言（`last_sentence_end_tracks_the_local_audio_clock`）：第一条 TTS 语料 + 1.5 s 静音，最后一句的**本地轴**终点与音频末点之差 ≤ **3 s**。**它守的是本地 16 kHz 时钟**（终点没被截断/漂走），**不能发现 provider 侧的服务端终点偏长**（1.28 / 1.71 s，见下方 NOTE）。mutation 自证：把 `force_end()` 的 `commit_at(self.fed_end, …)` 改成 `fed_end - 4 * 16_000` → 用例红（差 -4.00 s）；< 3 s 的截断它抓不住。
+- 终点断言（`last_sentence_end_tracks_the_local_audio_clock`）：第一条 TTS 语料 + 1.5 s 静音，最后一句的**本地轴**终点与音频末点之差 ≤ **3 s**。**它守的是本地 16 kHz 时钟**（终点没被截断/漂走）。mutation 自证：把 `force_end()` 的 `commit_at(self.fed_end, …)` 改成 `fed_end - 4 * 16_000` → 用例红（差 -4.00 s）；< 3 s 的截断它抓不住。
+- 服务端终点偏差（`server_endpoint_offset_stays_bounded`）：`zh.wav` + 1.5 s 静音，`offset = 本地轴终点 − 服务端 end`，`|offset| ≤ **3 s**`。**这条守的是 provider 侧**（服务端时间戳与本地轴差多少），详见下一节。mutation 自证：上界 3 → 1 s → 两家都红（+1.28 / +1.71）。
 - **喂入粒度**：门禁默认 20 ms/批（`VOICE_NOTES_CLOUD_CHUNK` 可改），生产 `record.rs` 的云端循环是 **60 ms/批**；**线上帧长与两者都无关** —— provider 自己重新攒包：火山 200 ms（`AUDIO_PACKET_BYTES = 6400`）、阿里 100 ms（`= 3200`）。实测把 20 ms 改成 200 ms，两家聚合 CER 几乎不变（见下）。
 
 **实测（2026-11-28，本机 Apple Silicon，TTS 20 条 + 真人 1 条，真 key，跑两轮看方差）**：
@@ -335,8 +337,20 @@ cargo test --lib last_sentence_end -- --nocapture --test-threads=1
 
 **这个门禁不进 CI**（要真 key、要联网、跑一次约 90 s 且服务端计费）—— 与 `quality_gate.rs` 同一取舍。改云端协议 / 重采样 / 收尾顺序时手动跑一次。
 
+### 服务端终点偏差怎么测（`server_endpoint_offset_stays_bounded`）
+
+[`CLOUD.md`](CLOUD.md) 那张表的**两半**现在都有守卫：本地轴那一半由 `last_sentence_end_tracks_the_local_audio_clock` 守，服务端那一半由这条守（BL-13 / change `2026-11-28-provider-timestamps`）。
+
+- **数据从哪来**：两家 provider 把响应里的句级时间戳填进 `CloudEvent::Final` 的 `start_ms` / `end_ms`（火山 `utterances[].start_time` / `end_time`、阿里 `sentence.begin_time` / `end_time`，**毫秒**）。生产路径**不读**它们 —— 句子时间仍只由本地 16 kHz 时钟决定。
+- **怎么读出来**：`quality::TimestampTap` 是只读捕获包装（只在 `#[cfg(test)]` 编译）：把 `CloudProvider` 的调用原样转发，只在 `connect` 时抄一份 `Final` 的时间戳；`CloudStreamingSession` 收到的还是同一串事件。测试**不改生产路径**。
+- **条件**：`tests/fixtures/zh.wav`（5.592 s）+ 1.5 s 尾静音（音频末点 7.092 s），与 `CLOUD.md` 的表一致；`offset = 本地轴终点 − 服务端 end`（正数 = 本地轴偏长）。
+- **判定**：`|offset| ≤ 3 s`（与 `ENDPOINT_SLACK_SECONDS` 同口径）。**双向**都判 —— provider 时间戳单位错（秒当毫秒）会以另一个方向越界。
+- **跳过 / 失败**：没设某家 key → 打印「跳过」；两家都没设 → 整体跳过。**provider 的定稿里没有 `end_ms` 算失败**（路线 A 的契约：两家都要填），不是跳过。
+- **源码守卫**：`session_never_reads_provider_timestamps` 扫描 `src/asr/cloud.rs` 的 `impl CloudStreamingSession` 块（去掉注释 / 字符串），不许出现 `start_ms` / `end_ms`。mutation：在会话层绑定 `end_ms` → 红。
+- **实测（2026-11-28，真 key）**：火山 `本地轴 7.09 s / 服务端 5.81 s`，差 **+1.28 s**；阿里 `本地轴 7.09 s / 服务端 5.38 s`，差 **+1.71 s** —— 与 `CLOUD.md` 的 1.28 / 1.71 s 逐位一致，同时证实字段单位是毫秒。
+
 > [!NOTE]
-> 云端质量门禁**复现不了** [`CLOUD.md`](CLOUD.md) 表里的 1.28 s / 1.71 s：那两个数字是「服务端给的 `end` vs 本地轴终点」，而生产路径刻意不读 provider 时间戳（`CloudEvent::Final` 的 `start_ms` / `end_ms` 两家都填 `None`）。`last_sentence_end_tracks_the_local_audio_clock` 钉的**只是本地轴这一侧**（终点贴着音频末点，实测 0.00 s；mutation 可红），别把它当「服务端终点偏长」的守卫。要断言服务端那一侧，得先把 provider 时间戳接出来，见 change `2026-11-28-cloud-quality-baseline` 的 design D4。
+> 这条守的是「偏差不许涨过 3 s」，不是精度断言（服务端有随机性）。若它突然变红，先看打印出的服务端 `end` 是否是毫秒量级（~5000）—— 若变成个位数，说明服务端改了字段单位或字段名（provider 解析会得到 `None` → 也会红，并提示「没有服务端 end 时间戳」）。
 
 ## 🖥️ 界面检查
 

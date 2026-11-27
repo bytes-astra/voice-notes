@@ -5,10 +5,9 @@
 > （审的是「有没有缺陷漏网」），这份是**「现状不够好」**的改进清单（审的是「能不能更好」）。
 > 两份不要合并 —— 前者的条目是「必须守住」，后者的条目是「可以变好」，混在一起会稀释优先级。
 >
-> **当前状态**：**12 条里 10 条已归档**；BL-1（接 CI）与 BL-11（Linux 摸底）按 Hugh 的决定不做；
-> 2026-11-28 新登记 **BL-13**（把 provider 服务端时间戳接出来 —— BL-6 暴露的缺口）。
-> 已归档 10 条：BL-2 格式门禁、BL-3 录音槽合并、BL-4 错误码类型化、BL-5 云端归一器、BL-12 经典脚本技术债（均 2026-11-24）、
-> BL-8 前端纯函数单测、BL-10 日志轮转份数（均 2026-11-26）、BL-9 样式拆分、BL-7 MSRV 1.90、BL-6 云端质量基线（均 2026-11-28）。
+> **当前状态**：**13 条里 11 条已归档**；BL-1（接 CI）与 BL-11（Linux 摸底）按 Hugh 的决定不做。
+> 已归档 11 条：BL-2 格式门禁、BL-3 录音槽合并、BL-4 错误码类型化、BL-5 云端归一器、BL-12 经典脚本技术债（均 2026-11-24）、
+> BL-8 前端纯函数单测、BL-10 日志轮转份数（均 2026-11-26）、BL-9 样式拆分、BL-7 MSRV 1.90、BL-6 云端质量基线、BL-13 provider 时间戳（均 2026-11-28）。
 > **第二档已清空**（BL-3 / BL-4 / BL-5 全部完成）。
 > 登记于 2026-11-23，来自一次全库分析（未改任何生产代码）。
 
@@ -366,7 +365,7 @@ README 的 Linux 一节是「CI 不出 Linux 包，需要自己构建」。**Lin
 **这条的价值是**「记下判断依据，免得下次有人重新提一遍」。**2026-11-24 归档为「已核实不成立」**
 —— 它不是待办，是一条**已经做完的决定**（决定 = 维持现状 + 写下依据）。
 
-### BL-13 · 把 provider 的服务端时间戳接出来 ⬜ 2026-11-28 登记
+### BL-13 · 把 provider 的服务端时间戳接出来 ✅ 2026-11-28
 
 **怎么发现的**：BL-6 立项时要求「把 `CLOUD.md` 那张终点偏长表（火山 1.28 s、阿里 1.71 s）
 变成断言」。做完才发现**做不到** —— 那 1.28 / 1.71 s 是「服务端给的 `end` vs 本地轴终点」，
@@ -394,6 +393,23 @@ README 的 Linux 一节是「CI 不出 Linux 包，需要自己构建」。**Lin
 
 **注意**：绝不能因此改动「句子时间以本地 16 kHz 时钟为准」这条不变量 —— provider 时间戳
 只作**比对用**，不进 `Segment` 的时间。
+
+**结果（2026-11-28，OpenSpec change `2026-11-28-provider-timestamps`）**：
+
+- **选 A，路线 C 不可行**：两家的原始帧在 provider 自己的网络线程里解码后即丢弃，没有留存钩子；
+  加测试钩子等于改 provider，复制一套协议客户端会漂移。设计见 change 的 design D1。
+- **改了什么 / 在哪**：
+  - `src-tauri/src/asr/cloud/volcengine.rs`：`map_response` 读 `utterances[].start_time/end_time`，随 `VolcengineEvent::Final` 填进 `CloudEvent::Final`。
+  - `src-tauri/src/asr/cloud/aliyun.rs`：`Sentence` 加 `begin_ms/end_ms`（`sentence.begin_time/end_time`），`sentence_end` 定稿时填进 `Final`。
+  - `src-tauri/src/asr/cloud.rs`：只改 `Final` 的字段 doc（写死「只用于测量与诊断，不参与句子时间」）。
+  - `src-tauri/src/asr/cloud/quality.rs` / `quality/tests.rs`：只读捕获包装 `TimestampTap` + 测量用例 `server_endpoint_offset_stays_bounded` + 源码守卫 `session_never_reads_provider_timestamps`。
+- **怎么验的**：真 key 跑 `cargo test --lib server_endpoint_offset_stays_bounded -- --nocapture --test-threads=1`，
+  `zh.wav` + 1.5 s 静音，**火山差 +1.28 s、阿里差 +1.71 s**，与 `CLOUD.md` 表逐位一致；上界 3 s。
+  mutation 自证两条：上界 3 → 1 s → 两家都红；会话层绑定 `end_ms` → 源码守卫红（均已恢复）。
+- **哪些没验**：本轮本机没有 TTS 语料，`cloud_quality_does_not_regress` 与
+  `last_sentence_end_tracks_the_local_audio_clock` 按设计跳过（打印了原因），CER 侧未重跑；
+  `CLOUD.md` 表的「原音频」两行未重测；多句 fixture 的时间轴配对不在本条目范围。门禁不进 CI
+  （真 key / 联网 / 计费）。
 
 ---
 
