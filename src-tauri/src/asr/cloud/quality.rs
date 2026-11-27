@@ -9,6 +9,10 @@
 //! （只能碰 `pub` 项）；云端 provider 在 `pub(crate) mod cloud` 里，集成测试够不着，
 //! 所以门禁放在 `--lib` 内（见 OpenSpec change `2026-11-28-cloud-quality-baseline`）。
 //!
+//! 另一维是**服务端终点偏差**（change `2026-11-28-provider-timestamps`）：
+//! provider 时间戳只作测量（`TimestampTap` 只读捕获），与本地轴终点比偏差，
+//! 上界见 `SERVER_ENDPOINT_SLACK_SECONDS`。
+//!
 //! **整个模块只在测试构建里编译**（`cloud.rs` 里是 `#[cfg(test)] mod quality;`），
 //! 不进 release 二进制。
 //!
@@ -25,7 +29,7 @@
 //! 凭据只从环境变量读，没设就跳过；key 不进日志、不进断言消息。
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::asr::cloud::aliyun::{AliyunConfig, AliyunProvider};
@@ -34,7 +38,7 @@ use crate::asr::{AsrSession, StreamingSession, Transcript};
 use crate::engine::StreamingEngine;
 use crate::models::{StreamingPaths, STREAM_DECODER, STREAM_ENCODER, STREAM_JOINER, STREAM_TOKENS};
 
-use super::CloudStreamingSession;
+use super::{Capabilities, CloudEvent, CloudProvider, CloudStreamingSession, SendOutcome};
 
 /// 语料目录（相对 crate 根，与 `tests/common/mod.rs` 的 `QUALITY_DIR` 同一口径）。
 pub const QUALITY_DIR: &str = "tests/fixtures/quality";
@@ -98,6 +102,18 @@ pub const LOCAL_BASELINE_MARGIN: f64 = 20.0;
 /// 那两个数字是「服务端给的 end vs 本地轴 end」，生产路径不读服务端时间戳，
 /// 所以门禁复现不了它们 —— 只能钉住本地轴这一侧（见 change 的 design D4）。
 pub const ENDPOINT_SLACK_SECONDS: f32 = 3.0;
+
+/// 服务端 `end` 与本地轴终点的允许偏差（秒）。
+///
+/// `docs/CLOUD.md` 的历史实测（补 1.5 s 静音）：火山 **1.28 s**、阿里 **1.71 s**
+/// —— 方向都是「本地轴偏长」（服务端 `end` 落在语音末点与音频末点之间）。
+/// 这里钉的是**上界**，与 `ENDPOINT_SLACK_SECONDS` 同口径（3 s）：偏差不许从
+/// 1.3~1.7 s 量级继续涨过 3 s。**双向**都判（`abs()`）—— 服务端时间戳若被误当
+/// 秒、或时间轴换算被改坏，偏差会以另一个方向越界。
+///
+/// provider 时间戳只作测量与诊断：`CloudEvent::Final` 的 `start_ms` / `end_ms`
+/// 不参与句子时间（见 change `2026-11-28-provider-timestamps` 的 design D1/D2）。
+pub const SERVER_ENDPOINT_SLACK_SECONDS: f32 = 3.0;
 
 /// 末尾补的静音（秒）：复现 `docs/CLOUD.md` 那张表的测试条件。
 pub const ENDPOINT_TAIL_SILENCE_SECONDS: f32 = 1.5;
@@ -230,6 +246,81 @@ fn wait_for_late_finals(session: &mut CloudStreamingSession) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// 只读捕获包装：把 provider 上抛的定稿时间戳记下来，其余原样转发。
+///
+/// **不改生产路径**：`CloudStreamingSession` 收到的还是同一串事件（包装只是
+/// 在旁边抄一份）；它只在测试构建里编译（整个 `quality` 模块都是 `#[cfg(test)]`）。
+///
+/// 用途：`docs/CLOUD.md` 那张「服务端 `end` vs 本地轴终点」的表要靠 provider
+/// 时间戳才能复现，而生产路径刻意不读它们（见 `CloudEvent::Final` 的说明）。
+type CapturedFinals = Arc<Mutex<Vec<(Option<u64>, Option<u64>)>>>;
+
+pub struct TimestampTap {
+    inner: Box<dyn CloudProvider>,
+    finals: CapturedFinals,
+}
+
+impl TimestampTap {
+    /// 包一层，并返回记录句级时间戳的句柄。
+    pub fn new(inner: Box<dyn CloudProvider>) -> (Self, CapturedFinals) {
+        let finals = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                inner,
+                finals: finals.clone(),
+            },
+            finals,
+        )
+    }
+}
+
+impl CloudProvider for TimestampTap {
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn connect(&mut self, on_event: Box<dyn Fn(CloudEvent) + Send + Sync>) -> Result<(), String> {
+        let finals = self.finals.clone();
+        self.inner.connect(Box::new(move |event| {
+            if let CloudEvent::Final {
+                start_ms, end_ms, ..
+            } = &event
+            {
+                finals
+                    .lock()
+                    .expect("捕获锁不该中毒")
+                    .push((*start_ms, *end_ms));
+            }
+            on_event(event);
+        }))
+    }
+
+    fn send_audio(&mut self, pcm: &[i16]) -> Result<SendOutcome, String> {
+        self.inner.send_audio(pcm)
+    }
+
+    fn commit(&mut self) -> Result<(), String> {
+        self.inner.commit()
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        self.inner.finish()
+    }
+
+    /// **必须转发**：默认实现恒为 `None`，会把后台断连 / 协议错误吞掉。
+    fn take_error(&mut self) -> Option<String> {
+        self.inner.take_error()
+    }
+}
+
+/// 捕获到的最后一个服务端终点（毫秒）：取所有定稿里最大的 `end_ms`。
+///
+/// 「最后一句」= 终点最大的那句。返回 `None` 说明 provider 没给时间戳 ——
+/// 那是**失败**（路线 A 的契约：两家都要填），不是跳过。
+pub fn last_server_end_ms(finals: &[(Option<u64>, Option<u64>)]) -> Option<u64> {
+    finals.iter().filter_map(|(_, end_ms)| *end_ms).max()
 }
 
 /// 量一条语料。

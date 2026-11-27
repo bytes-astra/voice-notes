@@ -121,6 +121,12 @@ pub struct Sentence {
     pub draft: String,
     /// 草稿所属的句标识（`stash.sentence_id`）。
     pub draft_id: Option<i64>,
+    /// 服务端给的句级起点（毫秒，`begin_time`）。
+    ///
+    /// **只作测量与诊断**（见 `CloudEvent::Final` 的说明）：不参与句子时间。
+    pub begin_ms: Option<u64>,
+    /// 服务端给的句级终点（毫秒，`end_time`）。同上。
+    pub end_ms: Option<u64>,
     pub heartbeat: bool,
 }
 
@@ -492,11 +498,24 @@ fn parse_sentence(value: &Value) -> Sentence {
         draft_id: stash
             .and_then(|stash| stash.get("sentence_id"))
             .and_then(Value::as_i64),
+        // 句级时间戳（毫秒）—— 只供测量/诊断，不参与句子时间。
+        begin_ms: ms_field(value, "begin_time"),
+        end_ms: ms_field(value, "end_time"),
         heartbeat: value
             .get("heartbeat")
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }
+}
+
+/// 读一个毫秒时间字段：整数直接取，浮点（服务端可能给 `920.0`）四舍五入。
+///
+/// 缺失 / 非数字 → `None` —— **不拿 0 顶替**：0 也可能是真实的起点。
+fn ms_field(value: &Value, key: &str) -> Option<u64> {
+    let number = value.get(key)?;
+    number
+        .as_u64()
+        .or_else(|| number.as_f64().map(|millis| millis.max(0.0).round() as u64))
 }
 
 /// 把 `sentence` 归一成 `CloudEvent` —— **有状态**，因为要跨事件跟踪
@@ -612,7 +631,8 @@ impl AliyunMapper {
                     if let Some(id) = open_id {
                         self.finalized.insert(id, snapshot.clone());
                     }
-                    events.push(final_event(snapshot));
+                    // 上一句的时间戳没有留存：不拿当前句的时间冒充它。
+                    events.push(final_event(snapshot, None, None));
                 }
             }
         }
@@ -660,7 +680,8 @@ impl AliyunMapper {
                     if let Some(id) = open_id {
                         self.finalized.insert(id, snapshot.clone());
                     }
-                    events.push(final_event(snapshot));
+                    // 上一句的时间戳没有留存：不拿当前句的时间冒充它。
+                    events.push(final_event(snapshot, None, None));
                 }
             }
             // **空文本不进去重表**：那张表是「这句已定稿**且有内容**」的凭据 ——
@@ -672,7 +693,7 @@ impl AliyunMapper {
                 }
             }
             if !final_text.trim().is_empty() {
-                events.push(final_event(final_text));
+                events.push(final_event(final_text, sentence.begin_ms, sentence.end_ms));
             }
             // 本句的草稿作废；**下一句的草稿要留下**（官方示例：句 1 结束时
             // `stash.sentence_id = 2`，那是句 2 的草稿）。
@@ -710,15 +731,14 @@ fn same_sentence(open_id: Option<i64>, id: Option<i64>) -> bool {
     }
 }
 
-fn final_event(text: String) -> CloudEvent {
-    // **不传 `start_ms` / `end_ms`**：会话层的 `Final` 分支不读这两个字段，
-    // 句子区间一律按本地 16 kHz 轴算。传了不产生效果，反而会让人以为
-    // provider 的时间戳被采用了。
+fn final_event(text: String, begin_ms: Option<u64>, end_ms: Option<u64>) -> CloudEvent {
+    // 时间戳**只作测量与诊断**：会话层的 `Final` 分支不读这两个字段，
+    // 句子区间一律按本地 16 kHz 轴算（见 `CloudEvent::Final` 的说明）。
     CloudEvent::Final {
         item_id: None,
         text,
-        start_ms: None,
-        end_ms: None,
+        start_ms: begin_ms,
+        end_ms,
     }
 }
 

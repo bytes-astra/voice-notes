@@ -151,6 +151,9 @@ fn decodes_all_four_server_events() {
             assert!(sentence.end);
             assert!(!sentence.heartbeat);
             assert_eq!(sentence.text, "好，我知道了");
+            // 句级时间戳（毫秒）也解析出来 —— 只供测量/诊断。
+            assert_eq!(sentence.begin_ms, Some(170));
+            assert_eq!(sentence.end_ms, Some(920));
         }
         other => panic!("应当是 Sentence：{other:?}"),
     }
@@ -191,6 +194,8 @@ fn sentence_with(
         text: text.into(),
         draft: draft.into(),
         draft_id,
+        begin_ms: None,
+        end_ms: None,
         heartbeat: false,
     }
 }
@@ -305,6 +310,26 @@ fn sentence_end_yields_final() {
     assert_eq!(finals(&events), vec!["好，我知道了".to_string()]);
 }
 
+/// 定稿事件带上服务端的句级时间戳（毫秒）—— 只供测量/诊断，不参与句子时间。
+#[test]
+fn final_carries_server_timestamps_for_measurement() {
+    let mut mapper = AliyunMapper::new();
+    let mut last = sentence(1, true, "好，我知道了");
+    last.begin_ms = Some(170);
+    last.end_ms = Some(920);
+    let events = mapper.map_sentence(last);
+    let (start_ms, end_ms) = events
+        .iter()
+        .find_map(|event| match event {
+            CloudEvent::Final {
+                start_ms, end_ms, ..
+            } => Some((*start_ms, *end_ms)),
+            _ => None,
+        })
+        .expect("句结束该产一条 Final");
+    assert_eq!((start_ms, end_ms), (Some(170), Some(920)));
+}
+
 #[test]
 fn heartbeat_is_ignored_and_does_not_finalize() {
     let mut mapper = AliyunMapper::new();
@@ -316,6 +341,8 @@ fn heartbeat_is_ignored_and_does_not_finalize() {
         text: String::new(),
         draft: String::new(),
         draft_id: None,
+        begin_ms: None,
+        end_ms: None,
         heartbeat: true,
     });
     assert!(beat.is_empty(), "心跳不产事件");

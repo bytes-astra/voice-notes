@@ -127,8 +127,9 @@ pub enum CloudEvent {
         /// 没有 id 时退回按提交顺序配对。
         item_id: Option<String>,
         text: String,
-        /// provider 给的起点（毫秒）。**可选增强**：只作参考，
-        /// 不覆盖本地轴算出来的 `Segment.start` / `Segment.end`。
+        /// provider 给的起点（毫秒）。**只用于测量与诊断**：不参与句子时间，
+        /// `Segment.start` / `Segment.end` 只由本地 16 kHz 时钟决定
+        /// （源码级守卫见 `quality/tests.rs::session_never_reads_provider_timestamps`）。
         start_ms: Option<u64>,
         /// provider 给的终点（毫秒）。同上。
         end_ms: Option<u64>,
@@ -441,7 +442,7 @@ fn to_i16(samples: &[f32]) -> Vec<i16> {
 /// 云端流式会话：把本地 16 kHz 音频送出去，收回中间结果和定稿句子。
 ///
 /// 句子时间**只**由本地时钟决定：provider 的时间戳不参与（`Final` 里的
-/// `start_ms` / `end_ms` 只是留着给以后做对齐用的）。
+/// `start_ms` / `end_ms` 只给质量门禁做测量与诊断用，不许进 `Segment`）。
 pub struct CloudStreamingSession {
     provider: Box<dyn CloudProvider>,
     events: Receiver<CloudEvent>,

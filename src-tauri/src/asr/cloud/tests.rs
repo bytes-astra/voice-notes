@@ -847,6 +847,8 @@ fn aliyun_new_sentence_partial_after_final_is_not_a_duplicate() {
         text: text.into(),
         draft: String::new(),
         draft_id: None,
+        begin_ms: None,
+        end_ms: None,
         heartbeat: false,
     };
     let mut mapper = aliyun::AliyunMapper::new();
@@ -906,6 +908,8 @@ fn aliyun_mapper_drops_late_partial_for_finalized_sentence() {
         text: text.into(),
         draft: String::new(),
         draft_id: None,
+        begin_ms: None,
+        end_ms: None,
         heartbeat: false,
     };
     let mut mapper = aliyun::AliyunMapper::new();

@@ -19,17 +19,29 @@ const SAMPLE: &str = r#"{
 fn definite_sentence_maps_to_final() {
     let mut emitted = 0;
     let events = map_response(SAMPLE.as_bytes(), &mut emitted);
-    let finals: Vec<String> = events
+    let finals: Vec<(String, Option<u64>, Option<u64>)> = events
         .iter()
         .filter_map(|event| match event {
-            VolcengineEvent::Final(text) => Some(text.clone()),
+            VolcengineEvent::Final {
+                text,
+                start_ms,
+                end_ms,
+            } => Some((text.clone(), *start_ms, *end_ms)),
             _ => None,
         })
         .collect();
     assert_eq!(
-        finals,
+        finals
+            .iter()
+            .map(|(text, _, _)| text.clone())
+            .collect::<Vec<_>>(),
         vec!["这是字节跳动，".to_string(), "今日头条母公司。".to_string()]
     );
+    // 句级时间戳（毫秒）随定稿上抛 —— 只供测量/诊断，会话层不读。
+    assert_eq!(finals[0].1, Some(0));
+    assert_eq!(finals[0].2, Some(1705));
+    assert_eq!(finals[1].1, Some(2110));
+    assert_eq!(finals[1].2, Some(3696));
     assert_eq!(emitted, 2);
 }
 
