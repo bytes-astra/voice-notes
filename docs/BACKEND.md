@@ -18,7 +18,7 @@
 - **推理是同步阻塞的**，一律放进 `tauri::async_runtime::spawn_blocking`，别阻塞 async 执行器。
 - **引擎按「身份」缓存**：整段的身份是 `(模型目录, language, itn)`，流式是 `hotwords`（`engine.rs` 的 `OfflineEngineKey` / `StreamingEngineKey`）。任何一项变了就重建 —— 原来只看 `(language, itn)`，换模型目录会被静默吞掉。想「切语言不重载」得走 C API 的 `setConfig`，Rust 绑定没暴露。录音中语言和 ITN 前后端都锁定；自定义模型目录变更由 `set_model_dir` 清缓存。
 - **装引擎要锁内读设置**（`engine.rs` 的 `install_engine`）：拿引擎槽的锁 → **在锁内**读设置 → 比身份 → 复用或重建。设置是在锁外被改的（`set_model_dir` / `set_hotwords`），读设置和装引擎之间只要有缝，旧快照就会把新设置顶掉。`load_engine` 直接返回 `Arc<Engine>`，不要再加一个「二次取锁」的助手（async 路径上阻塞等引擎锁会把整个执行器卡住）。
-- **文件解码在后端**：`decode::decode_to_16k()` 逐块解码，内存恒定。symphonia 锁 **0.6**（要求 Rust 1.85，与本项目声明的 MSRV 一致）。
+- **文件解码在后端**：`decode::decode_to_16k()` 逐块解码，内存恒定。symphonia 锁 **0.6**（要求 Rust 1.85；本项目 MSRV 以整棵依赖树为准，声明 **1.90**）。
 
 ## 事件契约
 

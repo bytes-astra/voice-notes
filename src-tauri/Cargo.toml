@@ -3,7 +3,7 @@ name = "voice-notes"
 version = "1.8.1"
 description = "Local speech-to-text desktop app (SenseVoiceSmall offline + Zipformer streaming)"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.90"
 
 [lib]
 name = "voice_notes_lib"

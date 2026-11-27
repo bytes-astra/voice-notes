@@ -141,7 +141,7 @@ CI 不出 Linux 包，需要自己构建（依赖 `libasound2-dev`、`libwebkit2
 
 ### 开发
 
-需要 Rust 1.85+、Node 18+；macOS 还要 Xcode Command Line Tools。
+需要 Rust 1.90+、Node 18+；macOS 还要 Xcode Command Line Tools。
 
 ```bash
 npm install          # 只装 devDependencies（@tauri-apps/cli + playwright）

@@ -43,7 +43,7 @@ fn probe_long_recording_loss() {
         for i in 0..repeat {
             long.extend_from_slice(&speech);
             if gap > 0 && i + 1 < repeat {
-                long.extend(std::iter::repeat(0.0f32).take(gap));
+                long.extend(std::iter::repeat_n(0.0f32, gap));
             }
         }
         let seconds = long.len() as f32 / 16000.0;
