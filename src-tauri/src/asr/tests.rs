@@ -79,6 +79,23 @@ fn warns_only_when_speech_went_missing() {
     assert!(no_segment_warning(30.0, 0.3, true).is_none());
 }
 
+/// 「VAD 一直攒着同一句」要告警 —— 这正是 `no_segment_warning` 闭嘴的那种情形。
+///
+/// 连续说话（短视频外放、直播、连续讲述）没有停顿，VAD 攒不满 `min_silence`，
+/// 于是一整段录音里一句都不落；用户看到「一直没有输出」，而原来那条告警
+/// 因为「VAD 正在攒」主动闭嘴。
+#[test]
+fn warns_when_vad_keeps_holding_one_sentence() {
+    // 攒了 90 秒还没切出来 → 要报
+    assert!(long_holding_warning(90.0).is_some());
+    // 刚过阈值 → 要报（边界包含）
+    assert!(long_holding_warning(60.0).is_some());
+    // 正常长句：40 秒还在正常范围
+    assert!(long_holding_warning(40.0).is_none());
+    // 刚开口
+    assert!(long_holding_warning(0.0).is_none());
+}
+
 /// 前端读 transcript.durationSeconds / elapsedMs：序列化必须是 camelCase，
 /// 否则结果区的时长/耗时/RTF 和历史记录里的时长全是 0。
 #[test]

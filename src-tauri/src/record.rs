@@ -483,6 +483,26 @@ fn vad_is_speech(detector: &sherpa_onnx::VoiceActivityDetector, samples: &[f32])
     detected
 }
 
+/// 「VAD 把音频判成非语音、没送进识别器」的告警文案。返回 `None` = 不用报。
+///
+/// 流式路径的门控是**直接丢**：判成非语音的音频只有最近 0.4 秒留在 `preroll`
+/// 里，其余不进识别器 —— 没有 partial、没有句子。这条路原本一条日志都没有，
+/// 用户看到「一直没有输出」，日志里也查不到任何线索。
+///
+/// 与整段的 `asr::long_holding_warning` 互补：那条覆盖「VAD 一直攒着」，
+/// 这条覆盖「VAD 一直在拒绝」。阈值沿用 `asr` 的两个常量，免得读日志要记两套。
+///
+/// 拆成自由函数是为了能单测：真会话要麦克风，单测里没有。
+fn gated_audio_warning(gated_seconds: f32, peak: f32) -> Option<String> {
+    if gated_seconds < asr::NO_SEGMENT_WARN_SECONDS || peak < asr::NO_SEGMENT_PEAK_FLOOR {
+        return None;
+    }
+    Some(format!(
+        "流式：门控窗口里有 {gated_seconds:.1}s 音频被 VAD 判为非语音（期间峰值 {peak:.4}），\
+         没有送进识别器 —— 若当时确实有人说话，说明 VAD 判错了（手机外放、带背景音乐的录音容易这样）"
+    ))
+}
+
 /// **本地**流式模式：边录音边喂流式识别器；每 60ms 取一次新采样，端点处提交一句。
 ///
 /// 与 `run_local_offline` 一样是**本地**推理（音频不出本机）——
@@ -519,6 +539,9 @@ where
     // 识别跟不上时丢掉的音频，在结果里留个可见的缺口
     let mut gaps: Vec<asr::Segment> = Vec::new();
     let mut last_voice = std::time::Instant::now();
+    // 门控窗口内被 VAD 判为非语音的累计时长与峰值（见 `gated_audio_warning`）。
+    let mut gated_seconds = 0.0f32;
+    let mut gated_peak = 0.0f32;
     while !stop.load(Ordering::Relaxed) && !discard.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(60));
         let new_audio = queue.take_new();
@@ -575,6 +598,9 @@ where
                     emit(events);
                 }
             }
+            // 重新开始说话：门控窗口结束，统计清零（下一次从干净状态起算）。
+            gated_seconds = 0.0;
+            gated_peak = 0.0;
             if !discard.load(Ordering::Relaxed) {
                 let events = session.push(&samples);
                 log_stream_events("流式识别出一句", &events);
@@ -589,6 +615,18 @@ where
                     log_stream_events("流式识别出一句", &events);
                     emit(events);
                 }
+            }
+            // VAD 判成非语音：这段音频**没有进识别器**（只有最近 0.4s 留在
+            // preroll 里等下一次起音）。整段模式的同类情形有告警，这条路上
+            // 原本一条日志都没有 —— 用户看到「一直没有输出」，日志里也查不到。
+            gated_seconds += samples.len() as f32 / asr::SAMPLE_RATE as f32;
+            gated_peak = gated_peak.max(samples.iter().fold(0.0f32, |a, b| a.max(b.abs())));
+            if gated_seconds >= asr::NO_SEGMENT_WARN_SECONDS {
+                if let Some(message) = gated_audio_warning(gated_seconds, gated_peak) {
+                    log::warn(message);
+                }
+                gated_seconds = 0.0;
+                gated_peak = 0.0;
             }
             preroll.extend_from_slice(&samples);
             preroll_end = sample_end;

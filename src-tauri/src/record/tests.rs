@@ -1093,3 +1093,19 @@ fn server_endpoint_uploads_silence() {
         "整段音频（含静音）都该送出去，实际 {sent} 个采样"
     );
 }
+
+/// 「VAD 把音频判成非语音、没送进识别器」要告警。
+///
+/// 流式路径的门控是直接丢：判成非语音的音频只有最近 0.4 秒留在 `preroll` 里，
+/// 其余不进识别器 —— 没有 partial、没有句子。这条路原本一条日志都没有。
+#[test]
+fn warns_when_the_gate_keeps_rejecting_audio() {
+    // 攒满一个窗口、峰值够 → 要报
+    assert!(gated_audio_warning(12.0, 0.3).is_some());
+    // 刚够阈值 → 要报（边界包含）
+    assert!(gated_audio_warning(10.0, 0.3).is_some());
+    // 还没攒满一个窗口
+    assert!(gated_audio_warning(4.0, 0.3).is_none());
+    // 纯静音：不是 VAD 判错，是本来就没声音
+    assert!(gated_audio_warning(30.0, 0.001).is_none());
+}

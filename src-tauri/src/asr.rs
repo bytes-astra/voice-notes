@@ -118,10 +118,17 @@ const MAX_SINGLE_SHOT_SECONDS: usize = 90;
 /// sherpa 的 VAD 把判为非语音的音频直接丢掉，没有日志、没有缺口标记 —— 这段
 /// 音频会凭空消失。这个阈值是「多久算异常」的门槛：正常说话停顿几秒是常事，
 /// 超过 10 秒还没有一句，且这段时间音频有能量，就值得报。
-const NO_SEGMENT_WARN_SECONDS: f32 = 10.0;
+pub(crate) const NO_SEGMENT_WARN_SECONDS: f32 = 10.0;
 
 /// 判定「这段时间有声音」的峰值下限（0..1）。低于它就是静音，不报。
-const NO_SEGMENT_PEAK_FLOOR: f32 = 0.01;
+pub(crate) const NO_SEGMENT_PEAK_FLOOR: f32 = 0.01;
+
+/// VAD 连续「攒着同一句」多久就要报一次（秒）。
+///
+/// `no_segment_warning` 在 VAD 正在攒时**故意闭嘴**（对正常对话是对的：说完会停顿，
+/// 句子迟早落下来）。但连续说话时它可以一直攒下去 —— 短视频、直播、连续讲述都是这种。
+/// 60 秒与 sherpa 的 `rule3` 兜底、VAD 缓冲同量级：短于它会误报正常的长句。
+const HOLDING_WARN_SECONDS: f32 = 60.0;
 
 /// 「长时间没切出句子」的告警文案。返回 `None` = 不用报。
 ///
@@ -140,6 +147,24 @@ fn no_segment_warning(silence_seconds: f32, peak: f32, vad_holding_speech: bool)
     }
     Some(format!(
         "连续 {silence_seconds:.1}s 没切出句子（期间音频峰值 {peak:.4}）——这段音频可能已被 VAD 判为非语音丢弃"
+    ))
+}
+
+/// 「VAD 一直攒着同一句没切出来」的告警文案。返回 `None` = 不用报。
+///
+/// 与 [`no_segment_warning`] 互补，覆盖的正是它闭嘴的那种情形：
+/// 连续说话（短视频外放、直播、连续讲述）没有停顿，VAD 攒不满 `min_silence`，
+/// 于是一整段录音里一句都不落 —— 用户在界面上看到的是「一直没有输出」。
+///
+/// 拆成自由函数同样是为了能单测。
+fn long_holding_warning(holding_seconds: f32) -> Option<String> {
+    if holding_seconds < HOLDING_WARN_SECONDS {
+        return None;
+    }
+    Some(format!(
+        "VAD 已连续 {holding_seconds:.1}s 攒着同一句没切出来（期间一直在检测到语音）——\
+         连续说话时句子会一直不落，直到停止录音才由 flush 冲出；\
+         若这段音频本不该这么长，说明 VAD 没有找到停顿"
     ))
 }
 
@@ -509,6 +534,11 @@ pub struct OfflineSession {
     last_check_at: f32,
     /// 自上次检查以来收到的音频峰值
     window_peak: f32,
+    /// VAD 从什么时候开始「正在攒一句话」（会话时间轴，秒）。
+    ///
+    /// `None` = 此刻没在攒。连续说话时它会一直保持 `Some(很早就开始的时刻)` ——
+    /// 这正是 `no_segment_warning` 闭嘴的那种情形，由 [`long_holding_warning`] 兜住。
+    holding_since: Option<f32>,
 }
 
 /// 建 VAD 检测器。
@@ -550,6 +580,7 @@ impl OfflineSession {
             last_segment_at: 0.0,
             last_check_at: 0.0,
             window_peak: 0.0,
+            holding_since: None,
         })
     }
 
@@ -604,8 +635,22 @@ impl OfflineSession {
         let peak = samples.iter().fold(0.0f32, |a, b| a.max(b.abs()));
         self.window_peak = self.window_peak.max(peak);
         let now = self.fed_samples as f32 / SAMPLE_RATE as f32;
+        // VAD 攒声计时：连续说话时它会一直是 Some(...)，`no_segment_warning`
+        // 因此闭嘴 —— 由下面那条「攒太久」兜住。
+        if self.detector.detected() {
+            self.holding_since.get_or_insert(now);
+        } else {
+            self.holding_since = None;
+        }
         if now - self.last_check_at < NO_SEGMENT_WARN_SECONDS {
             return;
+        }
+        if let Some(since) = self.holding_since {
+            if let Some(message) = long_holding_warning(now - since) {
+                log::warn(message);
+                // 起点重置：否则下一个窗口会把同一件事再报一遍。
+                self.holding_since = Some(now);
+            }
         }
         if let Some(message) = no_segment_warning(
             now - self.last_segment_at,
