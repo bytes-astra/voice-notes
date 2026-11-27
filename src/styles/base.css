@@ -1,0 +1,57 @@
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+html { background-color: var(--bg); }
+
+/* macOS 的原生材质在 WebView 后面：根元素不能刷不透明底色盖住侧栏。 */
+html:has(body.macos) { background-color: transparent; }
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  background-color: var(--bg);
+  background-image: var(--bg-glow);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  overflow-y: scroll;
+}
+
+textarea, input, .mono { user-select: text; }
+
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+  word-break: break-all;
+  color: var(--muted);
+}
+
+/* macOS：窗口开了透明 + 原生材质（见 lib.rs 的 set_effects）。
+   body 与侧栏不画底色 → 系统材质透出来；主区自己刷不透明底色，保证正文可读。
+   其它平台保持原样（body 上有底色），不受影响。 */
+body.macos {
+  background: transparent;
+  background-image: none;
+}
+body.macos .sidebar {
+  background: transparent;
+}
+body.macos .main {
+  background-color: var(--bg);
+  background-image: var(--bg-glow);
+  background-attachment: fixed;
+}
+
+.app {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 26px 56px;
+}
+

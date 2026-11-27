@@ -39,6 +39,26 @@
 **测试文件不放 `src/` 下**：`src/` 是 Tauri 的 `frontendDist`（会被打进 app bundle），
 且 `check:deps` 规则四要求 `src/` 下每个 `.js` 都登记在层表里。
 
+## 样式组织
+
+样式入口是 `src/style.css`，**只含浏览器原生 `@import`**；规则本身按原文顺序切成 `src/styles/` 下的分片。没有打包器 / PostCSS / Sass，也不许引入 —— 浏览器直接加载这些文件。
+
+| 分片 | 职责 |
+| --- | --- |
+| `styles/tokens.css` | 设计令牌：`:root` 变量、`prefers-color-scheme` 深色、`:root[data-theme="dark"]` |
+| `styles/base.css` | 全局重置、`html` / `body`、`.hidden` / `.muted` 等工具类、macOS 透明底、`.app` 基础容器 |
+| `styles/components.css` | 主界面与卡片：顶栏、卡片、首次下载、录音、结果 |
+| `styles/lists.css` | 历史列表与云端连接列表 |
+| `styles/controls.css` | 通用按钮、拖放遮罩、设置表单与对话框、Toast |
+| `styles/motion.css` | `@keyframes`（pulse / spin / ring）与 `prefers-reduced-motion` |
+| `styles/shell.css` | 窄屏 `@media`、滚动条、应用外壳、侧栏、导航、主区、宽屏适配 |
+| `styles/select.css` | 自绘下拉框（`select.js`） |
+
+- **`@import` 的顺序就是层叠顺序**：同特异性规则后写者赢，`:root` 变量后定义覆盖先定义。原文件里存在前后两段重复定义（`.app`、`html, body`、`.brand`、`.history-list`、`.settings-foot`），后一段靠书写顺序覆盖前一段。**调整分片顺序或插入新分片都会改变渲染结果。**
+- **判据是顺序等价**：按 `@import` 顺序拼接所有分片，必须与拆分前的 `src/style.css` 逐字节一致。新增 / 调整分片后按这条自检。
+- **不清理重复或看似无用的规则**：原文有 HTML 中已无对应元素的选择器（如 `.topbar`），也可能被 JS 动态加类命中；删除 / 合并属于行为改动，另立 change。
+- **`@import` 是本地文件读取**：Tauri 把 `src/` 打进应用资源，分片走本地 asset 协议而不是网络，串行发现的代价是几次磁盘读取；入口与分片仍都在首次绘制前加载完，不会闪烁。若将来界面改为远程加载，这条判断失效。
+
 ## i18n 与文案
 
 文案统一放字典，机制单独成文件：`src/locales/*.js` 放文案，`src/i18n.js` 只放机制（`t()` / `apply()` / `setLocale()` / `resolveLocale()`）。**`i18n.js` 里不放任何文案。**
