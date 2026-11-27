@@ -132,7 +132,7 @@ pub fn register_session<S>(session_slot: &Mutex<Option<S>>, session: S) -> Resul
     Ok(())
 }
 
-/// 两个槽登记失败的原因。
+/// 登记会话失败的原因。
 #[derive(Debug)]
 pub enum SlotError {
     /// 会话槽的锁被 poison

@@ -72,7 +72,6 @@ window.I18N_LOCALES['en'] = {
   'record.configLocked': 'Recognition settings cannot be changed while recording',
   'record.notRecording': 'No recording is in progress',
   'record.stopFailed': 'Could not stop the recording',
-  'record.threadExited': 'Recognition has stopped',
   'record.offlineTimeout': 'One-shot recognition timed out — please try again',
   'record.streamTimeout': 'Streaming recognition timed out — please try again',
   'record.micTimeout': 'Timed out opening the microphone — check the system microphone permission',

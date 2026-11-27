@@ -9,7 +9,18 @@
 - **lib.rs 只放命令层**：新逻辑先找对应模块放 —— `record.rs`（录音编排）、`engine.rs`（引擎与状态）、`asr.rs`（识别会话）、`audio.rs`（采集与重采样）、`decode.rs`（解码）、`models.rs`（模型下载）、`output.rs`（落盘）、`settings.rs`（设置）、`log.rs`（日志）、`menu.rs`（macOS 菜单）。命令本身保持薄：一个命令别同时干两件事（录音按模式拆成 `start_streaming_recording` / `start_offline_recording` 两个独立命令）。
 - **`record.rs` 不认识 Tauri**：结果通过 `emit` 回调交出去，所以它能被单测直接调用。`AppHandle` 不进 `record.rs` —— 实在要发事件就在 lib.rs 那层包一下。
 - **名字别撞**：`record.rs` 是「录音怎么跑」，`asr.rs` 里的 `OfflineSession` / `StreamingSession` 是「识别会话」，两回事 —— 所以前者不叫 session.rs。两种录音共用 `RecordingRun { stop, discard, rx }`，停止统一走 `finish_recording`：麦克风故障也要先等 ASR 收尾，不能当取消丢文本。
-- **两个槽一起登记**（`record.rs` 的 `register_slots`）：采集器槽（`recorder`）与会话槽（`stream` / `offline_session`）必须**一起**写 —— 只写采集器不写会话，识别线程就永远收不到 stop（线程泄漏、麦克风不关、语言/ITN 永久锁死）。函数先拿齐两把锁再写，任一把锁被 poison 时两个槽都不变；锁序固定 采集器 → 会话。登记失败时，已经起起来的识别线程要靠 `stop` / `discard` 标志让它退出。
+- **录音只有一个槽**（`record.rs` 的 `Session { recorder, run, mode }`，存在 `AppState.session`）：
+  2026-11-24 起采集器与识别会话是**同一个对象**，`register_session` 一次写、不留中间态。
+  - **`stop_recording` 一次 `take`**：要么全拿到、要么全拿不到 —— 早先「先取采集器槽、再取会话槽」中间有窗口，
+    取消插一脚就会两边都空、转写被丢掉。
+  - **`finish` 的顺序只写在 `finish_recording` 一处**：先停采集、再让识别线程收尾（`Recorder::stop` 不取走队列里的采样，
+    尾巴由识别线程自己 `take_new()` 取）。`Session::finish` 调它，不自己重写。
+  - **`Session` 的 `Drop` 兜底置 `stop` / `discard`**：`Recorder` 自己的 `Drop` 只发 `Cmd::Cancel` 关麦、**不置 `stop`**，
+    而 ASR 线程只看 `stop` / `discard`（不看 `rx` 是否关闭）→ 不兜底就会「麦克风关了、线程空转到天荒地老」。
+  - **失败时两条路都置位**：`register_session` 报占用（上一轮没清干净）/ 锁被 poison 时，调用方置 `stop` + `discard`，
+    `Session::Drop` 再兜一次 —— 已起的识别线程一定退得出去。
+  - **各模式的差异按 `Session.mode` 分派**（不是「哪个槽有东西」）：超时 流式 20 s / 云端 20 s / 整段 30 s（整段收尾要把剩余音频跑完）、
+    各自的超时错误码、云端的「断连保句」、整段的 `ensure_transcript_usable`。
 - **单元测试不进源文件**：测试放同目录子文件夹，`src/asr.rs` 里写 `#[cfg(test)] mod tests;`，实现放 `src/asr/tests.rs`（一个模块有多个测试组就是 `src/asr/gap_tests.rs` 这样另起文件）。crate root 例外 —— `lib.rs` 的子模块落在 `src/` 根下（`src/command_tests.rs`）。**拆出去仍是单元测试**：`use super::*` 照样能摸到父模块的私有项，`cargo test --lib` 照样跑得到，门禁不用改。别为了「看起来整齐」搬到 `src-tauri/tests/` —— 那是集成测试，只碰得到 `pub` 项，而且 `cargo test --lib` 不再覆盖它。
 
 ## 命令与运行时

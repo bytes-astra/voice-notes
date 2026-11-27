@@ -78,19 +78,54 @@ fn defined_keys() -> Vec<String> {
     let body = source
         .split("pub fn key(self) -> &'static str {")
         .nth(1)
-        .and_then(|rest| rest.split("}").next())
+        .and_then(|rest| rest.split('}').next())
         .unwrap_or("");
-    body.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            let rest = trimmed.strip_prefix("ErrorCode::")?;
-            let (_, key) = rest.split_once("=>")?;
-            Some(
-                key.trim()
-                    .trim_end_matches(',')
-                    .trim_matches('"')
-                    .to_string(),
-            )
-        })
-        .collect()
+    keys_in(body)
+}
+
+/// 从 `key()` 的函数体里抽出每个 arm 的 key。
+///
+/// **不按行解析**：rustfmt 在 arm 太长时会把 `=> "key"` 折到下一行，
+/// 逐行匹配（`strip_prefix("ErrorCode::")` 后再 `split_once("=>")`）会让
+/// 那条 arm **静默跳过** —— 少检查一个 key 就是假绿：新加的变体漏登记进
+/// `ALL_ERROR_CODES` 也照样通过。这里按「`ErrorCode::` 之后第一个 `=>`、
+/// 再后面第一对引号」抽，跨行照样认得出。
+fn keys_in(body: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    for chunk in body.split("ErrorCode::").skip(1) {
+        let Some(arrow) = chunk.find("=>") else {
+            continue;
+        };
+        let after = &chunk[arrow + 2..];
+        let Some(open) = after.find('"') else {
+            continue;
+        };
+        let rest = &after[open + 1..];
+        let Some(close) = rest.find('"') else {
+            continue;
+        };
+        keys.push(rest[..close].to_string());
+    }
+    keys
+}
+
+/// 守卫自证：`=>` 被折到下一行时，key 仍要被抽出来。
+///
+/// 这条防的是「守卫自己退化成空测」—— 实测过：按行解析的版本对下面这段
+/// 源码返回空数组（`BetaLongName` 那条整个消失）。
+#[test]
+fn key_extraction_survives_rustfmt_line_breaks() {
+    let body = r#"
+            ErrorCode::Alpha => "a.b",
+            ErrorCode::BetaLongName
+                => "c.d",
+            ErrorCode::Gamma => {
+                "e.f"
+            }
+"#;
+    assert_eq!(
+        keys_in(body),
+        vec!["a.b", "c.d", "e.f"],
+        "折行 / 花括号形态的 arm 必须照样抽得出 key，否则守卫会静默放过漏登记的变体"
+    );
 }

@@ -258,15 +258,20 @@ export function collectProblems(root) {
   //
   // **扫的是错误码枚举的 key 表**（`error_code.rs`）—— 错误码是类型了
   // （`ErrorCode::RecordEmpty`），调用点里没有字面量可扫。
-  // 顺带扫调用点：**有人绕过枚举直接传字符串**（`code("record.empty")`），
-  // 那条路编译不过（`code()` 只收 `ErrorCode`），但门禁顺手查一遍更保险。
+  //
+  // **只扫 `error_code.rs` 这一个文件**：`变体 => "key"` 这种形态只有那一处是
+  // 真值源。它的单测里有合成的样例（`ErrorCode::Alpha => "a.b"`），
+  // 全目录扫会把样例当真实错误码报出来。
   const rsDir = join(root, 'src-tauri/src')
+  const enumSource = join(rsDir, 'error_code.rs')
   for (const file of rustSourceFiles(rsDir)) {
     const code = readFileSync(file, 'utf8')
-    for (const key of rustErrorCodeEnumKeys(code)) {
-      if (INTERNAL_ERROR_CODES.has(key)) continue
-      if (!baseKeys.includes(key)) {
-        problems.push(`${relative(root, file)} 的错误码枚举里有字典里没有的 key：${key}`)
+    if (file === enumSource) {
+      for (const key of rustErrorCodeEnumKeys(code)) {
+        if (INTERNAL_ERROR_CODES.has(key)) continue
+        if (!baseKeys.includes(key)) {
+          problems.push(`${relative(root, file)} 的错误码枚举里有字典里没有的 key：${key}`)
+        }
       }
     }
     for (const key of rustErrorCodes(code)) {

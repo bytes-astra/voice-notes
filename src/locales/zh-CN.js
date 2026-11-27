@@ -70,7 +70,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'record.configLocked': '录音期间不能更改识别设置',
   'record.notRecording': '当前未在录音',
   'record.stopFailed': '停止录音失败',
-  'record.threadExited': '识别已停止',
   'record.offlineTimeout': '整段识别超时，请重试',
   'record.streamTimeout': '流式识别超时，请重试',
   'record.micTimeout': '打开麦克风超时，请检查系统麦克风权限',

@@ -53,7 +53,7 @@
 - **流式**：分片恒 **200 ms / 3200 样本**且只在 `is_ready()` 为真时 `decode()`；收尾补 **300 ms** 静音；文本从 token 列表重建，不用 sherpa 的 `text` → [`docs/ASR.md`](docs/ASR.md)
 - **热词只能用于流式**（SenseVoice 上给热词或 beam 会 `_Exit(-1)`）；按流式模型 **1426 字**单字词表过滤 → [`docs/ASR.md`](docs/ASR.md)
 - **VAD 共用参数只允许 `max_speech_duration` 不同**：整段 **30 秒**、流式 **20 秒**，**不要统一** → [`docs/ASR.md`](docs/ASR.md)
-- **两个槽一起登记**（采集器 + 会话，锁序 采集器 → 会话）→ [`docs/BACKEND.md`](docs/BACKEND.md)
+- **录音只有一个槽**（`record::Session { recorder, run, mode }`）：`stop_recording` 一次 `take` —— **要么全拿到、要么全拿不到**（先取采集器再取会话的窗口已经没有了）；`finish` 的「先停采集、再停线程」顺序只写在 `finish_recording` 一处；`Session` 的 `Drop` 兜底置 `stop`/`discard`（`Recorder` 的 `Drop` 只关麦、**不置 stop**）→ [`docs/BACKEND.md`](docs/BACKEND.md)
 - **引擎按身份缓存**：整段 `(模型目录, language, itn)`、流式 `hotwords`；装引擎要**锁内读设置** → [`docs/BACKEND.md`](docs/BACKEND.md)
 - **拼句规则前后端必须一致**（中日韩之间直接连，其余加空格）→ [`docs/BACKEND.md`](docs/BACKEND.md)
 - **事件载荷是增量的**；会话 ID 贯穿分段 / partial / 采集错误 → [`docs/BACKEND.md`](docs/BACKEND.md)
