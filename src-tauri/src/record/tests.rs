@@ -603,7 +603,7 @@ fn offline_stop_keeps_the_tail() {
     // 尾部补 1 秒静音：VAD 要靠静音断句，不然句子要等到 flush 才出来，
     // 循环里就不会有事件了。
     let mut speech = wave.samples().to_vec();
-    speech.extend(std::iter::repeat(0.0f32).take(16_000));
+    speech.extend(std::iter::repeat_n(0.0f32, 16_000));
 
     let queue = audio::SampleQueue::with_limit(None);
     queue.push(&speech);

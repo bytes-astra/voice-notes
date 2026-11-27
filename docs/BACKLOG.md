@@ -5,10 +5,10 @@
 > （审的是「有没有缺陷漏网」），这份是**「现状不够好」**的改进清单（审的是「能不能更好」）。
 > 两份不要合并 —— 前者的条目是「必须守住」，后者的条目是「可以变好」，混在一起会稀释优先级。
 >
-> **当前状态**：**2 条待办可做**（BL-6 云端质量基线 / BL-7 MSRV）；
+> **当前状态**：**仅剩 BL-6**（云端质量基线）可做 —— BL-7 于 2026-11-28 完成。
 > BL-1 与 BL-11 按 Hugh 决定不做（见各自条目）。
-> 已归档 8 条：BL-2 格式门禁、BL-3 录音槽合并、BL-4 错误码类型化、BL-5 云端归一器、BL-12 经典脚本技术债（均 2026-11-24）、
-> BL-8 前端纯函数单测、BL-10 日志轮转份数（均 2026-11-26）、BL-9 样式拆分（2026-11-28）。
+> 已归档 9 条：BL-2 格式门禁、BL-3 录音槽合并、BL-4 错误码类型化、BL-5 云端归一器、BL-12 经典脚本技术债（均 2026-11-24）、
+> BL-8 前端纯函数单测、BL-10 日志轮转份数（均 2026-11-26）、BL-9 样式拆分、BL-7 MSRV 1.90（均 2026-11-28）。
 > **第二档已清空**（BL-3 / BL-4 / BL-5 全部完成）。
 > 登记于 2026-11-23，来自一次全库分析（未改任何生产代码）。
 
@@ -215,7 +215,7 @@ RC-K25 已经做过一轮对齐（空 key = 不改 / 删活动项落点 / 未知
 **注意**：服务端识别结果**有随机性**（同一段音频两次运行文本可能不同），
 CER 断言要给足余量，或者比「相对本地基线的差值」而不是绝对值。
 
-### BL-7 · 评估提升 Rust MSRV ⬜
+### BL-7 · 评估提升 Rust MSRV ✅ 2026-11-28
 
 **现状**：`Cargo.toml` 声明 `rust-version = "1.78"`，**两个依赖被它卡住**：
 
@@ -235,6 +235,33 @@ CER 断言要给足余量，或者比「相对本地基线的差值」而不是�
 
 **建议**：单独排一次评估（升级 + 全量 `cargo test --lib` + `check:ui` + 三家 provider 的真机冒烟），
 不要和别的改动混在一个提交里。
+
+**做完了**（2026-11-28，分支 `bytes-astra/bl7-msrv`，基线 `7a9ed96`；OpenSpec `2026-11-28-msrv-1-85`）：
+- `src-tauri/Cargo.toml`：`rust-version` 1.78 → **1.90**；`symphonia` 0.5 → **0.6**（锁定 0.6.1）；
+  `tokio-tungstenite` 0.28 → **0.30**（锁定 0.30.0）。
+  **1.90 的依据**：`cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1`
+  实测依赖树里 `rust_version` 最高的一批全是 1.90（`tauri 2.12.5`、`tauri-utils 2.10.2`、
+  `tauri-runtime-wry 2.12.3`、`tauri-runtime 2.12.2`、`tauri-plugin-fs 2.7.1`、
+  `tauri-plugin-dialog 2.8.3`、`tauri-plugin-clipboard-manager 2.5.0`、`tauri-plugin 2.7.2`、
+  `tauri-macros 2.7.4`、`tauri-codegen 2.7.4`、`tray-icon 0.25.1`）。
+  两个被升级依赖本身只要求 1.85，但声明值必须覆盖整棵依赖树，否则仍是谎报。
+- `src-tauri/src/decode.rs`：迁移到 symphonia 0.6 API —— `Probe::probe()`、
+  `default_track(TrackType::Audio)`、`make_audio_decoder()`、`next_packet() -> Ok(None)`、
+  `GenericAudioBufferRef::samples_interleaved()`；`SampleBuffer` 在 0.6 已移除。
+  对外契约（`decode.*` 错误码、截断警告、16 kHz 单声道输出）不变。
+- 云端 WebSocket：`tokio-tungstenite` 0.30 无源码级变化，三个 provider **零改动**。
+- **`manual_repeat_n`**：MSRV 越过 1.82 后，clippy 的 MSRV 感知 lint 在 3 处触发
+  （`record/tests.rs`、`tests/offline_long_probe.rs`、`tests/vad_long_probe.rs`）。
+  已把 `std::iter::repeat(x).take(n)` 换成 `std::iter::repeat_n(x, n)`（语义等价，Rust 1.82 稳定）。
+  这不是豁免 lint，而是按新 MSRV 使用新版 API。
+- 文档：`README.md`（Rust 1.90+）、`docs/BACKEND.md`（symphonia 0.6）。
+
+**怎么验的**：`cargo clippy --all-targets -- -D warnings` **exit 0**（无任何 `-A`）；
+`cargo test --lib` **319 passed / 0 failed**（与基线一致）；设真模型目录后同样 **319/319**；
+`cargo test --test decode_smoke` **5/5**（wav + m4a/AAC + 损坏文件）；`cargo fmt --check` 通过；
+`npm run check` **exit 0**；`npm run check:ui` **239/239**。
+**未验**：云端三家真机冒烟（未设 key，且本任务不读取 `settings.json`）；
+1.90 的实机编译未验（本机只有 rustc 1.99.0，无法降到 1.90 验证）。
 
 ### BL-8 · 前端补纯函数单元测试层 ✅ 2026-11-26
 
