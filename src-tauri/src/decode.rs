@@ -11,13 +11,11 @@ use std::fs::File;
 use std::path::Path;
 
 use sherpa_onnx::LinearResampler;
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 use crate::asr::SAMPLE_RATE;
 use crate::audio::Agc;
@@ -35,14 +33,6 @@ pub struct DecodeInfo {
     /// `None` = 整个文件干净地解完了。调用方要把警告报给用户（前端 `decode.partial`），
     /// 不能静默截断。
     pub warning: Option<String>,
-}
-
-/// 正常读到文件末尾：symphonia 用 `UnexpectedEof` 表示「没有更多包了」。
-fn is_end_of_stream(err: &SymphoniaError) -> bool {
-    matches!(
-        err,
-        SymphoniaError::IoError(io) if io.kind() == std::io::ErrorKind::UnexpectedEof
-    )
 }
 
 /// 从磁盘流式解码音频，逐块回调 16 kHz 单声道 f32。
@@ -63,24 +53,29 @@ pub fn decode_to_16k(
         hint.with_extension(ext);
     }
     let probed = symphonia::default::get_probe()
-        .format(
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| code_detail(ErrorCode::DecodeUnknownFormat, e))?;
-    let mut format = probed.format;
+    let mut format = probed;
 
+    // 只要音轨：mp4 / mov 的视频轨 codec 也不是 NULL，按「第一个非 NULL」
+    // 找会在音轨不排第一时选中视频轨。
     let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .default_track(TrackType::Audio)
         .ok_or_else(|| code(ErrorCode::DecodeNoAudioTrack))?;
     let track_id = track.id;
-    let source_rate = track.codec_params.sample_rate.unwrap_or(0).max(1) as i32;
+    let audio_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .ok_or_else(|| code(ErrorCode::DecodeNoAudioTrack))?;
+    let source_rate = audio_params.sample_rate.unwrap_or(0).max(1) as i32;
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
         .map_err(|e| code_detail(ErrorCode::DecodeFailed, e))?;
 
     let mut resampler = LinearResampler::create(source_rate, SAMPLE_RATE);
@@ -93,20 +88,20 @@ pub fn decode_to_16k(
     let mut codec_errors: u32 = 0;
     let mut last_codec_error: Option<String> = None;
     // 容器声明的帧数：用来发现「文件被截断」——读包时不会报错，但内容少了。
-    let declared_frames = track.codec_params.n_frames;
+    let declared_frames = track.num_frames;
 
     loop {
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
+            // Ok(None) = 文件正常读完。
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
+            // 其他错误 = 中途出错，记下来。
             Err(e) => {
-                // UnexpectedEof = 文件正常读完；其他错误 = 中途出错，记下来。
-                if !is_end_of_stream(&e) {
-                    stream_error = Some(e.to_string());
-                }
+                stream_error = Some(e.to_string());
                 break;
             }
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         let decoded = match decoder.decode(&packet) {
@@ -118,11 +113,10 @@ pub fn decode_to_16k(
                 continue;
             }
         };
-        let spec = *decoded.spec();
-        let channels = spec.channels.count().max(1) as u64;
-        let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        sample_buf.copy_interleaved_ref(decoded);
-        let samples = sample_buf.samples();
+        let spec = decoded.spec();
+        let channels = spec.channels().count().max(1) as u64;
+        let mut samples = vec![0.0f32; decoded.samples_interleaved()];
+        decoded.copy_to_slice_interleaved(&mut samples);
         // 多声道混成单声道
         let mono: Vec<f32> = if channels == 1 {
             samples.to_vec()

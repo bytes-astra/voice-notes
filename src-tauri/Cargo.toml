@@ -3,7 +3,7 @@ name = "voice-notes"
 version = "1.8.1"
 description = "Local speech-to-text desktop app (SenseVoiceSmall offline + Zipformer streaming)"
 edition = "2021"
-rust-version = "1.78"
+rust-version = "1.85"
 
 [lib]
 name = "voice_notes_lib"
@@ -20,8 +20,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sherpa-onnx = "1.13.8"
 # 纯 Rust 音频解码器：后端直接从磁盘解码 mp3/wav/flac/ogg/m4a/mp4/mov，
-# 不用 ffmpeg，也不用系统库。0.5 的 MSRV 是 1.53，0.6 要求 1.85（会破本项目的 1.78）。
-symphonia = { version = "0.5", features = ["all"] }
+# 不用 ffmpeg，也不用系统库。0.6 要求 Rust 1.85 —— 与本项目的 MSRV 对齐。
+symphonia = { version = "0.6", features = ["all"] }
 cpal = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 futures-util = "0.3"
@@ -31,10 +31,10 @@ hex = "0.4"
 chrono = "0.4"
 tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
 # 云端实时识别的 WebSocket 客户端。
-# 0.28 的 MSRV 是 1.63（0.30 要 1.85，会破本项目的 1.78）；
+# 0.30 要求 Rust 1.85 —— 与本项目的 MSRV 对齐；
 # 它带的 tungstenite 用 rustls 0.23 + webpki-roots 0.26 —— 与仓库里
 # reqwest 那套 rustls 是同一条线，不会出现两套 TLS 栈。
-tokio-tungstenite = { version = "0.28.0", default-features = false, features = [
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = [
   "connect",
   "handshake",
   "rustls-tls-webpki-roots",
