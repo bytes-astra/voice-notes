@@ -305,14 +305,15 @@ export VOICE_NOTES_STREAMING_MODEL_DIR="$HOME/Library/Application Support/com.gi
 bash scripts/gen-tts-corpus.sh          # 没语料时先生成（不入库）
 cd src-tauri
 cargo test --lib cloud_quality -- --nocapture --test-threads=1
-cargo test --lib cloud_sentence_end -- --nocapture --test-threads=1
+cargo test --lib last_sentence_end -- --nocapture --test-threads=1
 ```
 
 - **没设某家的 key → 跳过那一家**（打印「跳过：未设置 …」）；两家都没设 → 整个用例跳过。**跳过 ≠ 通过**。
 - 语料缺失同样跳过；`tts-` 语料必须带同名 `.txt`（算 CER 用）。
 - 阈值：火山 TTS 聚合 ≤ **65%**、阿里 ≤ **20%**（各按 2026-11-28 实测 +10pp 取整；`VOICE_NOTES_MAX_CLOUD_CER` 可统一覆盖）；真人 fixture `tests/fixtures/zh.wav` ≤ **25%**。
 - 相对断言：设了 `VOICE_NOTES_STREAMING_MODEL_DIR` 时，云端 TTS 聚合不得比**本地流式基线 + 20pp** 更差。
-- 终点断言：第一条 TTS 语料 + 1.5 s 静音，最后一句的本地轴终点与音频末点之差 ≤ **3 s**。
+- 终点断言（`last_sentence_end_tracks_the_local_audio_clock`）：第一条 TTS 语料 + 1.5 s 静音，最后一句的**本地轴**终点与音频末点之差 ≤ **3 s**。**它守的是本地 16 kHz 时钟**（终点没被截断/漂走），**不能发现 provider 侧的服务端终点偏长**（1.28 / 1.71 s，见下方 NOTE）。mutation 自证：把 `force_end()` 的 `commit_at(self.fed_end, …)` 改成 `fed_end - 4 * 16_000` → 用例红（差 -4.00 s）；< 3 s 的截断它抓不住。
+- **喂入粒度**：门禁默认 20 ms/批（`VOICE_NOTES_CLOUD_CHUNK` 可改），生产 `record.rs` 的云端循环是 **60 ms/批**；**线上帧长与两者都无关** —— provider 自己重新攒包：火山 200 ms（`AUDIO_PACKET_BYTES = 6400`）、阿里 100 ms（`= 3200`）。实测把 20 ms 改成 200 ms，两家聚合 CER 几乎不变（见下）。
 
 **实测（2026-11-28，本机 Apple Silicon，TTS 20 条 + 真人 1 条，真 key，跑两轮看方差）**：
 
@@ -322,12 +323,20 @@ cargo test --lib cloud_sentence_end -- --nocapture --test-threads=1
 | 阿里（Qwen-Audio 3.1 流式） | **6.30% / 7.14%** | 0% | 0.00 s |
 | 本地流式基线（同一批 TTS） | 43.28% | — | — |
 
-**火山在 `say` 合成音上很差，这是语料域外，不是驱动 bug**：同一条 `tts-05.wav`（「登录页面的错误提示需要改一下」）本地整段模型能 0% 认出全句，火山只出「需要改一下。」，有几条一个定稿都不回；阿里（大模型）几乎全对。所以**两家各用一个阈值**，TTS 绝对值不当质量结论 —— 门禁的「牙齿」是真人 fixture 那一条（两家实测 0%，上限 25%）。
+**火山在 `say` 合成音上很差，这是语料域外，不是驱动 bug —— 单变量实验证据（2026-11-28）**：
+
+| 实验 | 只改的变量 | 火山聚合 CER | 阿里聚合 CER |
+| --- | --- | --- | --- |
+| 基线 | 1 s 尾静音 / 20 ms 批 | 54.20% | 6.30%（另两轮 7.14%） |
+| A · 收尾 | 尾静音 1 s → **3 s** | **54.62%** | **6.72%** |
+| B · 分包 | 每批 320 → **3200 采样（200 ms）** | **54.20%** | **7.14%** |
+
+两个变量都改不动结果：收尾不是没等够，分包也不是驱动问题（provider 本来就会重新攒成 200 / 100 ms 的线上帧）。同样四条「100%」的文件（tts-06 / 12 / 19 / 20）在 A、B 里仍然一个事件都不回 —— 事件流 dump 确认**连 Partial 都没有**，不是「只缺定稿」。同一条音频本地整段模型 0%、阿里 0~35%，而**本地流式 Zipformer 也认得很差**（tts-06 本地流式出「手段现在太多了」、tts-12 出「新闻回本方案软」）—— 说明是这批 Flo 合成音对**流式模型**域外，阿里的大模型才扛得住。所以**两家各用一个阈值**，TTS 绝对值不当质量结论 —— 门禁的「牙齿」是真人 fixture 那一条（两家实测 0%，上限 25%）。
 
 **这个门禁不进 CI**（要真 key、要联网、跑一次约 90 s 且服务端计费）—— 与 `quality_gate.rs` 同一取舍。改云端协议 / 重采样 / 收尾顺序时手动跑一次。
 
 > [!NOTE]
-> 云端质量门禁**复现不了** [`CLOUD.md`](CLOUD.md) 表里的 1.28 s / 1.71 s：那两个数字是「服务端给的 `end` vs 本地轴终点」，而生产路径刻意不读 provider 时间戳（`CloudEvent::Final` 的 `start_ms` / `end_ms` 两家都填 `None`）。门禁能钉住的是本地轴这一侧：终点贴着音频末点（上界 3 s），见 change `2026-11-28-cloud-quality-baseline` 的 design D4。
+> 云端质量门禁**复现不了** [`CLOUD.md`](CLOUD.md) 表里的 1.28 s / 1.71 s：那两个数字是「服务端给的 `end` vs 本地轴终点」，而生产路径刻意不读 provider 时间戳（`CloudEvent::Final` 的 `start_ms` / `end_ms` 两家都填 `None`）。`last_sentence_end_tracks_the_local_audio_clock` 钉的**只是本地轴这一侧**（终点贴着音频末点，实测 0.00 s；mutation 可红），别把它当「服务端终点偏长」的守卫。要断言服务端那一侧，得先把 provider 时间戳接出来，见 change `2026-11-28-cloud-quality-baseline` 的 design D4。
 
 ## 🖥️ 界面检查
 
