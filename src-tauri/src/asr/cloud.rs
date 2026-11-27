@@ -27,6 +27,9 @@ pub mod partial;
 pub mod volcengine;
 // 云端日志的**唯一出口**：写入前脱敏（见 `logging.rs`）。
 pub(crate) mod logging;
+// 云端质量门禁（只在 `--lib` 测试构建里编译；要真 key，没设就跳过）。
+#[cfg(test)]
+mod quality;
 
 /// 句标识：协议给的句子 id。没有 id 的协议（服务端断句族）用 `None`。
 pub type SentenceId = Option<String>;
