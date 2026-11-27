@@ -5,8 +5,8 @@
 > （审的是「有没有缺陷漏网」），这份是**「现状不够好」**的改进清单（审的是「能不能更好」）。
 > 两份不要合并 —— 前者的条目是「必须守住」，后者的条目是「可以变好」，混在一起会稀释优先级。
 >
-> **当前状态**：7 条待办（第一档 1 条 / 第三档 6 条），全部**未开始**；
-> 另有 5 条已完成（BL-2 格式门禁、BL-3 录音槽合并、BL-4 错误码类型化、BL-5 云端归一器、BL-12 经典脚本技术债的处置口径，均 2026-11-24）。
+> **当前状态**：6 条待办（第一档 1 条 / 第三档 5 条），全部**未开始**；
+> 另有 6 条已完成（BL-2 格式门禁、BL-3 录音槽合并、BL-4 错误码类型化、BL-5 云端归一器、BL-12 经典脚本技术债的处置口径，均 2026-11-24；BL-7 MSRV 1.85，2026-11-28）。
 > **第二档已清空**（BL-3 / BL-4 / BL-5 全部完成）。
 > 登记于 2026-11-23，来自一次全库分析（未改任何生产代码）。
 
@@ -213,7 +213,7 @@ RC-K25 已经做过一轮对齐（空 key = 不改 / 删活动项落点 / 未知
 **注意**：服务端识别结果**有随机性**（同一段音频两次运行文本可能不同），
 CER 断言要给足余量，或者比「相对本地基线的差值」而不是绝对值。
 
-### BL-7 · 评估提升 Rust MSRV ⬜
+### BL-7 · 评估提升 Rust MSRV ✅ 2026-11-28
 
 **现状**：`Cargo.toml` 声明 `rust-version = "1.78"`，**两个依赖被它卡住**：
 
@@ -233,6 +233,27 @@ CER 断言要给足余量，或者比「相对本地基线的差值」而不是�
 
 **建议**：单独排一次评估（升级 + 全量 `cargo test --lib` + `check:ui` + 三家 provider 的真机冒烟），
 不要和别的改动混在一个提交里。
+
+**做完了**（2026-11-28，分支 `bytes-astra/bl7-msrv`，基线 `7a9ed96`；OpenSpec `2026-11-28-msrv-1-85`）：
+- `src-tauri/Cargo.toml`：`rust-version` 1.78 → **1.85**；`symphonia` 0.5 → **0.6**（锁定 0.6.1）；
+  `tokio-tungstenite` 0.28 → **0.30**（锁定 0.30.0）。
+- `src-tauri/src/decode.rs`：迁移到 symphonia 0.6 API —— `Probe::probe()`、
+  `default_track(TrackType::Audio)`、`make_audio_decoder()`、`next_packet() -> Ok(None)`、
+  `GenericAudioBufferRef::samples_interleaved()`；`SampleBuffer` 在 0.6 已移除。
+  对外契约（`decode.*` 错误码、截断警告、16 kHz 单声道输出）不变。
+- 云端 WebSocket：`tokio-tungstenite` 0.30 无源码级变化，三个 provider **零改动**。
+- 文档：`README.md`（Rust 1.85+）、`docs/BACKEND.md`（symphonia 0.6）。
+
+**怎么验的**：`cargo test --lib` **319 passed / 0 failed**（与基线一致）；设真模型目录后同样 **319/319**；
+`cargo test --test decode_smoke` **5/5**（wav + m4a/AAC + 损坏文件）；`cargo fmt --check` 通过；
+`npm run check:ui` **239/239**。`cargo clippy --all-targets -D warnings` 在 **3 处既有
+`manual_repeat_n`**（`record/tests.rs`、`tests/offline_long_probe.rs`、`tests/vad_long_probe.rs`，
+均为 rustc 1.99 新增 lint、本次未触及）上报红；加 `-A clippy::manual_repeat_n` 后 clippy 全绿 ——
+与本升级无关，未在本次改动中修复。
+**未验**：云端三家真机冒烟（未设 key，且本任务不读取 `settings.json`）。
+**残留**：当前 `Cargo.lock` 里 `tauri 2.12.5`（`1.90`）、`image 0.25.10`（`1.88`）、`plist 1.10.3`（`1.88`）
+等依赖的 `rust-version` 已高于本次声明的 1.85 —— 这是基线 `7a9ed96` 就存在的漂移（锁文件里这些版本未变），
+本次只把声明提到两个目标依赖所需的 1.85。依赖树决定的实际可构建下限是 **1.90**，建议另立条目收口。
 
 ### BL-8 · 前端补纯函数单元测试层 ⬜
 
