@@ -660,7 +660,7 @@ check('原生菜单同步英文', await page.evaluate(() => {
   const call = window.__mockCalls.filter(([cmd]) => cmd === 'set_menu_texts').pop()
   return call?.[1]?.edit === 'Edit' && call?.[1]?.view === 'View'
 }))
-check('切英文 meta 跟随', (await text('#meta')).includes('Audio 2.0s'))
+check('切英文 meta 跟随', (await text('#meta')).includes('Duration 2.0s'))
 await page.locator('.nav-item[data-view="transcribe"]').click()
 await page.locator('#text').fill('用户手改的内容')
 await page.locator('.nav-item[data-view="settings"]').click()
