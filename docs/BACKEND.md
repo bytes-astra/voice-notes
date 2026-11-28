@@ -33,9 +33,10 @@
 
 ## 事件契约
 
-- **事件名只出现在 `src/events.js`**：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`。改名字要同步前端。
+- **事件名只出现在 `src/events.js`**：`audio:level`、`audio:error`、`model:progress`、`engine:state`、`stream:partial`、`stream:segment`、`streaming:state`、`record:silentHint`。改名字要同步前端。
 - **会话 ID**：录音/文件都先 `reserve_session`，启动/文件命令携带 `sessionId`，分段、partial、采集错误带同一个 ID；前端只接收当前会话，超时同时置 discard 阻止旧线程继续发射。
 - **`audio:error` 的载荷是对象**：`{ code, detail?, seconds?, fatal, sessionId? }`。`code` 是字典 key，`fatal: false` 表示「提示但不中断」（比如丢掉音频的缺口提示 —— 录音要继续）。致命 `record.micError` 由前端停止录音并保存非空部分结果；用户主动 Esc 才走取消并清空，其他致命错误仍取消。
+- **`record:silentHint` 的载荷只有 `{ sessionId }`**：VAD 持续没识别到内容（门控拒绝满 10 s / 整段攒声超 60 s）时发一条中性提示。技术细节（时长、峰值）只进日志，不随事件回传；前端按 `sessionId` 过滤并按会话去重，同段录音只弹一次。
 - **停止时的采集故障走 `Transcript.warning`**：`finish_recording` 先让识别线程收尾、保住非空转写，再由 `stop_recording` 把 `record.micError` 写进 `Transcript.warning`；正常转写不带这个字段（`skip_serializing_if` 保证载荷不变）。前端据此提示「麦克风发生异常」而不是「完成」，也不丢结果。
 - **事件载荷是增量的**：`stream:segment` 只带新句子，`stream:partial` 只带中间结果。累计全文在长时间会话里是 O(n²) 的传输与重绘。前端 `core.js` 的 `joinText()` 与后端 `asr::join_segments()` 规则必须一致（中日韩之间直接连，其余加空格）—— `npm run check:join` 守着这条。
 - **计时器只有一个写者**（`els.timer`）：前端 `recorder.js` 的 `startTimer` 用 `state.startedAt` 起算，**后端不再报 elapsed**（`audio:level` 载荷里没有这个字段）。两个时钟的原点差几毫秒（后端从采集线程起算，前端从命令返回起算）—— 显示值会在两个数之间来回跳，看着像秒数在退。
