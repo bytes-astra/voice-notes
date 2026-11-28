@@ -136,8 +136,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'result.placeholder': '转写结果将显示在此处，可直接编辑',
   'result.pickFile': '转写音频 / 视频文件…',
   'result.audio': '音频 {duration}',
-  'result.elapsed': '耗时 {duration}',
-  'result.rtf': '实时率 {rtf}×',
   'result.chars': '{count} 字',
   'result.done': '转写完成',
   'result.none': '没有识别到内容',

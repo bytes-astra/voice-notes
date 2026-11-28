@@ -261,8 +261,6 @@ export function renderResultMeta() {
   const parts = view.meta.kind === 'transcript'
     ? [
         t('result.audio', { duration: fmtDuration(view.meta.audio) }),
-        t('result.elapsed', { duration: fmtDuration(view.meta.elapsed) }),
-        t('result.rtf', { rtf: view.meta.rtf }),
         t('result.chars', { count: [...els.text.value].length }),
       ]
     : [t(view.meta.key, {

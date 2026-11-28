@@ -101,6 +101,8 @@
 
 下拉框用自绘组件 `src/select.js`（`UISelect.create(el, {onChange})`）：原生 `<select>` 在 macOS/Windows 样式不可控。弹层挂 body 上用 fixed 定位，避免被滚动容器裁掉。`setItems` 在 `create()` 之后调用，反了拿到 null。
 
+- **实时行 `#live-line` 的 `aria-live="off"` 是有意的**：流式中间结果随每个 200ms 分片持续变化（`docs/ASR.md` 的「流式」分片节奏），若交给屏幕阅读器朗读，每次更新都会打断前一次，读出来是一串叠在一起的碎字。所以关掉朗读，转写结果由结果区的 `textarea` 承载（它不在 `aria-live` 区域里，用户停止后整体可得）。
+
 ## macOS 原生层
 
 **侧栏材质**：`lib.rs` 的 setup 里 `set_effects(Effect::Sidebar)`（NSVisualEffectView），配合 `style.css` 里 `body.macos` 的透明规则 —— 侧栏不画底色，系统材质从后面透出来，主区自己刷不透明底色。

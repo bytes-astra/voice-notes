@@ -139,8 +139,6 @@ window.I18N_LOCALES['en'] = {
   'result.placeholder': 'The transcript appears here and can be edited directly',
   'result.pickFile': 'Transcribe an audio / video file…',
   'result.audio': 'Audio {duration}',
-  'result.elapsed': 'Took {duration}',
-  'result.rtf': 'Realtime factor {rtf}×',
   'result.chars': '{count} chars',
   'result.done': 'Transcription complete',
   'result.none': 'No speech detected',
