@@ -53,13 +53,15 @@ fn probe_long_recording_loss() {
         // 和应用一样按 512 一块喂
         for chunk in long.chunks(512) {
             for event in session.push(chunk) {
-                let OfflineEvent::Segment(segment) = event;
-                segments.push((segment.start, segment.end, segment.text.clone()));
+                if let OfflineEvent::Segment(segment) = event {
+                    segments.push((segment.start, segment.end, segment.text.clone()));
+                }
             }
         }
         for event in session.finish() {
-            let OfflineEvent::Segment(segment) = event;
-            segments.push((segment.start, segment.end, segment.text.clone()));
+            if let OfflineEvent::Segment(segment) = event {
+                segments.push((segment.start, segment.end, segment.text.clone()));
+            }
         }
 
         let fed = session.recorded_samples() as f32 / 16000.0;

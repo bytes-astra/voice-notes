@@ -114,6 +114,7 @@ fn offline_session_matches_batch_transcribe() {
         .iter()
         .map(|e| match e {
             OfflineEvent::Segment(s) => s.text.as_str(),
+            OfflineEvent::SilentHint => "",
         })
         .collect();
 
@@ -154,6 +155,7 @@ fn offline_session_finishes_partial_sentence() {
         .iter()
         .map(|e| match e {
             OfflineEvent::Segment(s) => s.text.as_str(),
+            OfflineEvent::SilentHint => "",
         })
         .collect();
     println!("收尾识别：{text}");
@@ -248,17 +250,19 @@ fn handles_fifteen_minute_recording() {
             let new_audio = queue.take_new();
             max_pending = max_pending.max(queue.pending());
             for event in session.push(&new_audio.samples) {
-                let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event;
-                segments += 1;
-                if segments % 40 == 1 {
-                    println!("  第 {segments} 句：{}", segment.text);
+                if let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event {
+                    segments += 1;
+                    if segments % 40 == 1 {
+                        println!("  第 {segments} 句：{}", segment.text);
+                    }
                 }
             }
         }
     }
     for event in session.finish() {
-        let voice_notes_lib::asr::OfflineEvent::Segment(_) = event;
-        segments += 1;
+        if let voice_notes_lib::asr::OfflineEvent::Segment(_) = event {
+            segments += 1;
+        }
     }
 
     println!(

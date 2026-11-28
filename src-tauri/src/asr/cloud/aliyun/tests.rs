@@ -616,6 +616,7 @@ fn live_smoke() {
                 match event {
                     StreamEvent::Partial(text) => partials.push(text),
                     StreamEvent::Segment(segment) => finals.push(segment.text),
+                    StreamEvent::SilentHint => {}
                 }
             }
         };

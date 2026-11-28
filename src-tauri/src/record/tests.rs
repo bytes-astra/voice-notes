@@ -435,6 +435,7 @@ fn offline_gap_marker_reaches_transcript() {
     assert!(
         events.iter().any(|e| match e {
             OfflineEvent::Segment(s) => s.text.contains("[[gap:"),
+            OfflineEvent::SilentHint => false,
         }),
         "也应该实时发一个缺口事件"
     );
@@ -629,8 +630,12 @@ fn offline_stop_keeps_the_tail() {
         stop,
         Arc::new(AtomicBool::new(false)),
         |event| {
-            let OfflineEvent::Segment(_) = event;
-            emitted += 1;
+            match event {
+                OfflineEvent::Segment(_) => {
+                    emitted += 1;
+                }
+                OfflineEvent::SilentHint => {}
+            }
             if emitted == 1 {
                 // 模拟「识别这句的工夫里麦克风又采到一段，然后用户点了停止」
                 q.push(&tail);

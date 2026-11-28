@@ -60,6 +60,8 @@ export const state = {
   fileAttemptId: 0,
   /// 录音/启动请求的代号：取消时 +1，让还在 await 的启动流程自己放弃。
   requestId: 0,
+  /// 已经弹过「还没识别到内容」提示的录音会话（sessionId），同一段录音不重复弹。
+  silentHintShownFor: 0,
   toastTimer: 0,
   toastHideTimer: 0,
   resultView: null,
@@ -261,8 +263,6 @@ export function renderResultMeta() {
   const parts = view.meta.kind === 'transcript'
     ? [
         t('result.audio', { duration: fmtDuration(view.meta.audio) }),
-        t('result.elapsed', { duration: fmtDuration(view.meta.elapsed) }),
-        t('result.rtf', { rtf: view.meta.rtf }),
         t('result.chars', { count: [...els.text.value].length }),
       ]
     : [t(view.meta.key, {

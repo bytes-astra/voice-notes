@@ -83,6 +83,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // 缺口标记：后端给占位符 [[gap:秒数]]，渲染时才用界面语言
   'record.gap': '（约 {seconds} 秒未识别）',
   'record.gapWarning': '有约 {seconds} 秒音频未能识别',
+  'record.silentHint': '录音中，暂时还没有识别到内容',
 
   'mode.offline': '整段',
   'mode.group': '转写模式',
@@ -136,8 +137,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'result.placeholder': '转写结果将显示在此处，可直接编辑',
   'result.pickFile': '转写音频 / 视频文件…',
   'result.audio': '时长 {duration}',
-  'result.elapsed': '耗时 {duration}',
-  'result.rtf': '实时率 {rtf}×',
   'result.chars': '{count} 字',
   'result.done': '转写完成',
   'result.none': '没有识别到内容',

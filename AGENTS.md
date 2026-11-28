@@ -37,7 +37,7 @@
 
 - **后端只返回字典 key**，不返回中文展示文案：`crate::error_code::code(ErrorCode::RecordEmpty)` / `crate::error_code::code_detail(ErrorCode::RecordMicError, e)`；错误码是**枚举**（`error_code.rs`）不是字符串 —— 拼错 key 编译不过；新增错误码必须同时进 `src/locales/zh-CN.js` 与 `src/locales/en.js`。
 - **界面文案 = 一句中性的话 + 用户看得懂的参数**；技术细节只进日志（`code_detail()` / `logEvent('ERROR', …)`），字典里不放 `{error}` 占位符。
-- **事件名只出现在 `src/events.js`**（`audio:level` / `audio:error` / `model:progress` / `engine:state` / `stream:partial` / `stream:segment` / `streaming:state`），改名字要同步前端。
+- **事件名只出现在 `src/events.js`**（`audio:level` / `audio:error` / `model:progress` / `engine:state` / `stream:partial` / `stream:segment` / `streaming:state` / `record:silentHint`），改名字要同步前端。
 - **命令参数名用 camelCase**（`audioBase64` / `fileName`）。
 - **推理是同步阻塞的**，一律放进 `tauri::async_runtime::spawn_blocking`，别阻塞 async 执行器。
 - **`lib.rs` 只放命令层**；新逻辑先找对应模块（`record.rs` / `engine.rs` / `asr.rs` / `audio.rs` / `decode.rs` / `models.rs` / `output.rs` / `settings.rs` / `log.rs` / `menu.rs`）。

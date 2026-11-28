@@ -775,6 +775,7 @@ fn probe_offline_session_first_word() {
             .iter()
             .map(|e| match e {
                 voice_notes_lib::asr::OfflineEvent::Segment(s) => s.text.as_str(),
+                voice_notes_lib::asr::OfflineEvent::SilentHint => "",
             })
             .collect();
         println!("[录制路径] {name}: {}", text.replace('\n', " "));

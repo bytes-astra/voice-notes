@@ -85,6 +85,7 @@ window.I18N_LOCALES['en'] = {
   // Gap marker: the backend sends the [[gap:seconds]] placeholder
   'record.gap': '({seconds}s not recognised)',
   'record.gapWarning': 'About {seconds}s of audio could not be recognised',
+  'record.silentHint': 'Nothing recognised yet — still recording',
 
   'mode.offline': 'One-shot',
   'mode.group': 'Transcription mode',
@@ -139,8 +140,6 @@ window.I18N_LOCALES['en'] = {
   'result.placeholder': 'The transcript appears here and can be edited directly',
   'result.pickFile': 'Transcribe an audio / video file…',
   'result.audio': 'Duration {duration}',
-  'result.elapsed': 'Took {duration}',
-  'result.rtf': 'Realtime factor {rtf}×',
   'result.chars': '{count} chars',
   'result.done': 'Transcription complete',
   'result.none': 'No speech detected',

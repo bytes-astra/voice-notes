@@ -104,6 +104,17 @@ impl StreamEmitter {
                         },
                     );
                 }
+                StreamEvent::SilentHint => {
+                    // VAD 持续没产出内容：提示用户，但识别/切句/时间轴都不动。
+                    if !self.discard.load(Ordering::Relaxed) {
+                        let _ = self.app.emit(
+                            "record:silentHint",
+                            SilentHintPayload {
+                                session_id: self.session_id,
+                            },
+                        );
+                    }
+                }
             }
         }
     }
@@ -144,6 +155,13 @@ struct SegmentPayload {
 struct PartialPayload {
     session_id: u64,
     partial: String,
+}
+
+/// 「录音中 VAD 持续没产出内容」的提示（技术细节只进日志，不随事件回传）。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SilentHintPayload {
+    session_id: u64,
 }
 
 fn ensure_recognition_config_unlocked(state: &AppState) -> Result<(), String> {
@@ -769,17 +787,24 @@ async fn start_offline_recording(
                     if thread_discard.load(Ordering::Relaxed) {
                         return;
                     }
-                    let OfflineEvent::Segment(segment) = event;
-                    emit_gap_notice(&thread_app, &segment.text, Some(session_id));
-                    let _ = thread_app.emit(
-                        "stream:segment",
-                        SegmentPayload {
-                            session_id,
-                            segment: segment.text,
-                            start: segment.start,
-                            end: segment.end,
-                        },
-                    );
+                    match event {
+                        OfflineEvent::SilentHint => {
+                            let _ = thread_app
+                                .emit("record:silentHint", SilentHintPayload { session_id });
+                        }
+                        OfflineEvent::Segment(segment) => {
+                            emit_gap_notice(&thread_app, &segment.text, Some(session_id));
+                            let _ = thread_app.emit(
+                                "stream:segment",
+                                SegmentPayload {
+                                    session_id,
+                                    segment: segment.text,
+                                    start: segment.start,
+                                    end: segment.end,
+                                },
+                            );
+                        }
+                    }
                 },
             );
             let _ = tx.send(transcript);
@@ -1087,8 +1112,10 @@ async fn transcribe_file(
 
         let decode_info = decode::decode_to_16k(std::path::Path::new(&path), |chunk| {
             for event in session.push(chunk) {
-                let asr::OfflineEvent::Segment(segment) = event;
-                emit_segment(&segment);
+                // 文件转写不是「录音中」，VAD 静默提示在此忽略（不弹录音提示）。
+                if let asr::OfflineEvent::Segment(segment) = event {
+                    emit_segment(&segment);
+                }
             }
             Ok(())
         })?;
@@ -1102,8 +1129,9 @@ async fn transcribe_file(
         }
 
         for event in session.finish() {
-            let asr::OfflineEvent::Segment(segment) = event;
-            emit_segment(&segment);
+            if let asr::OfflineEvent::Segment(segment) = event {
+                emit_segment(&segment);
+            }
         }
 
         let transcript =
