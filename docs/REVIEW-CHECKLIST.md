@@ -260,7 +260,7 @@
 
 | ID | 不变量 | 守卫 | 状态 |
 | --- | --- | --- | --- |
-| RC-P1 | 本地两条识别路径（流式 / 整段）在音频**因 VAD 判定而没有进入识别器**时，SHALL 在日志里留下可检索的痕迹（路径 + 持续时长 + 峰值），SHALL NOT 静默丢弃；痕迹 SHALL 按时间窗口节流（流式每满 10 s 被拒音频一次，整段每 60 s 攒声一次）；判定逻辑 SHALL 是可脱离真模型单测的纯函数 | `src-tauri/src/record/tests.rs::warns_when_the_gate_keeps_rejecting_audio`（`gated_audio_warning`：累计 12 s 且峰值 0.3 → 报；4 s → 不报；峰值 0.001 → 不报）、`src-tauri/src/asr/tests.rs::warns_when_vad_keeps_holding_one_sentence`（`long_holding_warning`：90 s / 边界 60 s → 报；40 s / 0 s → 不报）。**mutation 自证**：两处阈值改成 1000 → 两条用例都红。原有 `warns_only_when_speech_went_missing`（`no_segment_warning`）保持不动 —— 它守的是「VAD 没在攒却一直没句子」，与 RC-P1 互补。**已知边界**：云端模式的门控是同一套结构，但那条路径没有这两条告警 | ✅ 2026-11-28 |
+| RC-P1 | 本地两条识别路径（流式 / 整段）在音频**因 VAD 判定而没有进入识别器**时，SHALL 在日志里留下可检索的痕迹（路径 + 持续时长 + 峰值），SHALL NOT 静默丢弃；痕迹 SHALL 按时间窗口节流（流式每满 10 s 被拒音频一次，整段每 60 s 攒声一次）；判定逻辑 SHALL 是可脱离真模型单测的纯函数 | `src-tauri/src/record/tests.rs::warns_when_the_gate_keeps_rejecting_audio`（`gated_audio_warning`：累计 12 s 且峰值 0.3 → 报；4 s → 不报；峰值 0.001 → 不报）、`src-tauri/src/asr/tests.rs::warns_when_vad_keeps_holding_one_sentence`（`long_holding_warning`：90 s / 边界 60 s → 报；40 s / 0 s → 不报）。**mutation 自证**：两处阈值改成 1000 → 两条用例都红。原有 `warns_only_when_speech_went_missing`（`no_segment_warning`）保持不动 —— 它守的是「VAD 没在攒却一直没句子」，与 RC-P1 互补。**边界收窄（同日第二次提交）**：云端客户端提交族也走同一条 `gated_audio_warning`（label 区分路径）；服务端断句族 `gated == false`，本就不产生门控告警 | ✅ 2026-11-28 |
 
 
 ## 下一轮该审什么

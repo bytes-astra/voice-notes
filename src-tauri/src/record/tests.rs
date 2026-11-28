@@ -1101,11 +1101,14 @@ fn server_endpoint_uploads_silence() {
 #[test]
 fn warns_when_the_gate_keeps_rejecting_audio() {
     // 攒满一个窗口、峰值够 → 要报
-    assert!(gated_audio_warning(12.0, 0.3).is_some());
+    assert!(gated_audio_warning("流式", 12.0, 0.3).is_some());
     // 刚够阈值 → 要报（边界包含）
-    assert!(gated_audio_warning(10.0, 0.3).is_some());
+    assert!(gated_audio_warning("流式", 10.0, 0.3).is_some());
     // 还没攒满一个窗口
-    assert!(gated_audio_warning(4.0, 0.3).is_none());
+    assert!(gated_audio_warning("流式", 4.0, 0.3).is_none());
     // 纯静音：不是 VAD 判错，是本来就没声音
-    assert!(gated_audio_warning(30.0, 0.001).is_none());
+    assert!(gated_audio_warning("流式", 30.0, 0.001).is_none());
+    // label 进文案：本地「流式」、云端「云端」，读日志分得清是哪条路径
+    let msg = gated_audio_warning("云端", 12.0, 0.3).expect("云端门控也该报");
+    assert!(msg.starts_with("云端："), "label 没进文案：{msg}");
 }
