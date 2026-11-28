@@ -44,6 +44,17 @@ export async function listenEvents() {
     }
   })
 
+  await listen('record:silentHint', (event) => {
+    const payload = event.payload || {}
+    // 只认当前正在录的那段会话；同一段录音只弹一次（后端门控告警会反复命中）。
+    if (payload.sessionId !== state.recordingSessionId) return
+    if (state.phase !== 'recording') return
+    if (state.silentHintShownFor === payload.sessionId) return
+    state.silentHintShownFor = payload.sessionId
+    // 中性提示：不是错误，不打断录音，info toast 会自动消失。
+    toast(t('record.silentHint'), 'info')
+  })
+
   await listen('model:progress', (event) => {
     const progress = event.payload || {}
     // 两个下载可以同时跑，事件同名 —— 按载荷里的 kind 分流，

@@ -61,6 +61,7 @@ fn streams_chinese_fixture() {
                     segments += 1;
                     println!("segment: {}", segment.text);
                 }
+                StreamEvent::SilentHint => {}
             }
         }
     }
@@ -282,6 +283,7 @@ fn keeps_out_of_vocab_chars_intact() {
                     );
                     all.push_str(&segment.text);
                 }
+                StreamEvent::SilentHint => {}
             }
         }
     }

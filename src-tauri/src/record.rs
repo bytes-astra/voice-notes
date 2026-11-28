@@ -394,13 +394,22 @@ where
             agc.process(&mut samples);
             fed_16k += samples.len();
             for event in session.push(&samples) {
-                let OfflineEvent::Segment(segment) = event;
-                // 实时事件也用真实录音时间轴 —— 否则同一个事件流里
-                // 句子是「喂进去的时间轴」、缺口标记是真实时间轴，两套刻度混用。
-                let segment = to_real_time(&segment, &drops);
-                log_segment("识别出一句", &segment);
-                if !discarded() {
-                    emit(OfflineEvent::Segment(segment));
+                match event {
+                    OfflineEvent::SilentHint => {
+                        // VAD 攒声超 60 s：提示用户「还没识别到内容」。技术细节只进日志。
+                        if !discarded() {
+                            emit(OfflineEvent::SilentHint);
+                        }
+                    }
+                    OfflineEvent::Segment(segment) => {
+                        // 实时事件也用真实录音时间轴 —— 否则同一个事件流里
+                        // 句子是「喂进去的时间轴」、缺口标记是真实时间轴，两套刻度混用。
+                        let segment = to_real_time(&segment, &drops);
+                        log_segment("识别出一句", &segment);
+                        if !discarded() {
+                            emit(OfflineEvent::Segment(segment));
+                        }
+                    }
                 }
             }
         }
@@ -431,17 +440,25 @@ where
         if !samples.is_empty() {
             agc.process(&mut samples);
             for event in session.push(&samples) {
-                let OfflineEvent::Segment(segment) = event;
-                let segment = to_real_time(&segment, &drops);
-                log_segment("收尾识别出一句", &segment);
-                emit(OfflineEvent::Segment(segment));
+                match event {
+                    OfflineEvent::SilentHint => emit(OfflineEvent::SilentHint),
+                    OfflineEvent::Segment(segment) => {
+                        let segment = to_real_time(&segment, &drops);
+                        log_segment("收尾识别出一句", &segment);
+                        emit(OfflineEvent::Segment(segment));
+                    }
+                }
             }
         }
         for event in session.finish() {
-            let OfflineEvent::Segment(segment) = event;
-            let segment = to_real_time(&segment, &drops);
-            log_segment("收尾识别出一句", &segment);
-            emit(OfflineEvent::Segment(segment));
+            match event {
+                OfflineEvent::SilentHint => emit(OfflineEvent::SilentHint),
+                OfflineEvent::Segment(segment) => {
+                    let segment = to_real_time(&segment, &drops);
+                    log_segment("收尾识别出一句", &segment);
+                    emit(OfflineEvent::Segment(segment));
+                }
+            }
         }
     }
 
@@ -626,6 +643,10 @@ where
             if gated_seconds >= asr::NO_SEGMENT_WARN_SECONDS {
                 if let Some(message) = gated_audio_warning("流式", gated_seconds, gated_peak) {
                     log::warn(message);
+                    // 技术细节留在日志；界面只要一条中性提示（前端去重，不会 10 s 刷屏）。
+                    if !discard.load(Ordering::Relaxed) {
+                        emit(vec![StreamEvent::SilentHint]);
+                    }
                 }
                 gated_seconds = 0.0;
                 gated_peak = 0.0;
@@ -874,6 +895,9 @@ where
             if gated_seconds >= asr::NO_SEGMENT_WARN_SECONDS {
                 if let Some(message) = gated_audio_warning("云端", gated_seconds, gated_peak) {
                     log::warn(message);
+                    if !discard.load(Ordering::Relaxed) {
+                        emit(vec![StreamEvent::SilentHint]);
+                    }
                 }
                 gated_seconds = 0.0;
                 gated_peak = 0.0;

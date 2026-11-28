@@ -121,18 +121,20 @@ fn transcribes_file_end_to_end() {
     }
     let info = decode_to_16k(path, |chunk| {
         for event in session.push(chunk) {
-            let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event;
-            println!(
-                "  句子：{}（{:.2}s~{:.2}s）",
-                segment.text, segment.start, segment.end
-            );
+            if let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event {
+                println!(
+                    "  句子：{}（{:.2}s~{:.2}s）",
+                    segment.text, segment.start, segment.end
+                );
+            }
         }
         Ok(())
     })
     .expect("解码");
     for event in session.finish() {
-        let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event;
-        println!("  收尾句子：{}", segment.text);
+        if let voice_notes_lib::asr::OfflineEvent::Segment(segment) = event {
+            println!("  收尾句子：{}", segment.text);
+        }
     }
 
     let text =

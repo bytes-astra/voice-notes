@@ -191,6 +191,7 @@ fn live_smoke() {
             match event {
                 StreamEvent::Partial(text) => partials.push(text),
                 StreamEvent::Segment(segment) => finals.push(segment.text),
+                StreamEvent::SilentHint => {}
             }
         }
         // 收一收后台事件（final 可能晚于音频到达）。
@@ -198,6 +199,7 @@ fn live_smoke() {
             match event {
                 StreamEvent::Partial(text) => partials.push(text),
                 StreamEvent::Segment(segment) => finals.push(segment.text),
+                StreamEvent::SilentHint => {}
             }
         }
     }
@@ -206,12 +208,14 @@ fn live_smoke() {
         match event {
             StreamEvent::Partial(text) => partials.push(text),
             StreamEvent::Segment(segment) => finals.push(segment.text),
+            StreamEvent::SilentHint => {}
         }
     }
     for event in session.finish() {
         match event {
             StreamEvent::Partial(text) => partials.push(text),
             StreamEvent::Segment(segment) => finals.push(segment.text),
+            StreamEvent::SilentHint => {}
         }
     }
     // 再等一会儿：最终响应可能还在路上（finish 内部已经等过一轮）。
@@ -221,6 +225,7 @@ fn live_smoke() {
             match event {
                 StreamEvent::Partial(text) => partials.push(text),
                 StreamEvent::Segment(segment) => finals.push(segment.text),
+                StreamEvent::SilentHint => {}
             }
         }
         if !finals.is_empty() {

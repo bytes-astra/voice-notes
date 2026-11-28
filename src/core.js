@@ -60,6 +60,8 @@ export const state = {
   fileAttemptId: 0,
   /// 录音/启动请求的代号：取消时 +1，让还在 await 的启动流程自己放弃。
   requestId: 0,
+  /// 已经弹过「还没识别到内容」提示的录音会话（sessionId），同一段录音不重复弹。
+  silentHintShownFor: 0,
   toastTimer: 0,
   toastHideTimer: 0,
   resultView: null,

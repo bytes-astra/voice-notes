@@ -243,13 +243,15 @@ fn run_session(
     let mut segments: Vec<(f32, f32, String)> = Vec::new();
     for chunk in samples.chunks(512) {
         for event in session.push(chunk) {
-            let OfflineEvent::Segment(segment) = event;
-            segments.push((segment.start, segment.end, segment.text.clone()));
+            if let OfflineEvent::Segment(segment) = event {
+                segments.push((segment.start, segment.end, segment.text.clone()));
+            }
         }
     }
     for event in session.finish() {
-        let OfflineEvent::Segment(segment) = event;
-        segments.push((segment.start, segment.end, segment.text.clone()));
+        if let OfflineEvent::Segment(segment) = event {
+            segments.push((segment.start, segment.end, segment.text.clone()));
+        }
     }
     let covered: f32 = segments.iter().map(|(_, end, _)| *end).sum::<f32>()
         - segments.iter().map(|(start, _, _)| *start).sum::<f32>();

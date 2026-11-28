@@ -557,6 +557,8 @@ fn create_vad_detector(vad: &VadModelConfig) -> Result<VoiceActivityDetector, St
 pub enum OfflineEvent {
     /// 识别好的一句
     Segment(Segment),
+    /// VAD 持续没产出内容（攒声超 60 s）：给前端一条中性提示，不载技术细节。
+    SilentHint,
 }
 
 impl OfflineSession {
@@ -605,7 +607,9 @@ impl OfflineSession {
     /// 喂入 16 kHz 单声道采样，返回这一轮识别出来的句子。
     pub fn push(&mut self, samples: &[f32]) -> Vec<OfflineEvent> {
         let mut events = Vec::new();
-        self.note_audio_energy(samples);
+        if let Some(hint) = self.note_audio_energy(samples) {
+            events.push(hint);
+        }
         if !self.drained_first && self.head.len() < PRE_ROLL_MAX_START {
             let take = (PRE_ROLL_MAX_START - self.head.len()).min(samples.len());
             self.head.extend_from_slice(&samples[..take]);
@@ -631,7 +635,10 @@ impl OfflineSession {
     ///
     /// 峰值低于 `NO_SEGMENT_PEAK_FLOOR` 的就是静音，不值得报（否则纯静音的
     /// 录音会刷屏）。
-    fn note_audio_energy(&mut self, samples: &[f32]) {
+    ///
+    /// 返回 `Some(OfflineEvent::SilentHint)` = 「VAD 攒声超 60 s」，要提示用户；
+    /// 技术细节仍只进日志（`long_holding_warning`），事件本身不载。
+    fn note_audio_energy(&mut self, samples: &[f32]) -> Option<OfflineEvent> {
         let peak = samples.iter().fold(0.0f32, |a, b| a.max(b.abs()));
         self.window_peak = self.window_peak.max(peak);
         let now = self.fed_samples as f32 / SAMPLE_RATE as f32;
@@ -643,13 +650,15 @@ impl OfflineSession {
             self.holding_since = None;
         }
         if now - self.last_check_at < NO_SEGMENT_WARN_SECONDS {
-            return;
+            return None;
         }
+        let mut hint = None;
         if let Some(since) = self.holding_since {
             if let Some(message) = long_holding_warning(now - since) {
                 log::warn(message);
                 // 起点重置：否则下一个窗口会把同一件事再报一遍。
                 self.holding_since = Some(now);
+                hint = Some(OfflineEvent::SilentHint);
             }
         }
         if let Some(message) = no_segment_warning(
@@ -661,6 +670,7 @@ impl OfflineSession {
         }
         self.window_peak = 0.0;
         self.last_check_at = now;
+        hint
     }
 
     /// 短句已经等够了（后面一直没人说话）→ 定稿。
@@ -960,6 +970,8 @@ pub struct StreamingSession {
 pub enum StreamEvent {
     Partial(String),
     Segment(Segment),
+    /// VAD 持续没产出内容（门控拒绝满 10 s）：给前端一条中性提示，不载技术细节。
+    SilentHint,
 }
 
 /// 会话 trait：本地流式与云端流式共用同一套编排。

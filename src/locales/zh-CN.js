@@ -83,6 +83,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // 缺口标记：后端给占位符 [[gap:秒数]]，渲染时才用界面语言
   'record.gap': '（约 {seconds} 秒未识别）',
   'record.gapWarning': '有约 {seconds} 秒音频未能识别',
+  'record.silentHint': '录音中，暂时还没有识别到内容',
 
   'mode.offline': '整段',
   'mode.group': '转写模式',

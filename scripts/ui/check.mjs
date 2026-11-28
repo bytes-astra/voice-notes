@@ -1232,6 +1232,15 @@ check(
   await page.evaluate(() => document.getElementById('toast')?.className || '(没有 toast)'),
 )
 check('缺口提示照常显示', (await text('#toast')).includes('3'))
+// VAD 持续没识别到内容：中性提示，自动消失，同段录音只弹一次。
+await page.evaluate(() => window.__emit('record:silentHint', { sessionId: window.__mockSessionId }))
+await page.waitForTimeout(200)
+check('静默提示显示中性文案', (await text('#toast')) === '录音中，暂时还没有识别到内容')
+check(
+  '静默提示不是错误样式',
+  await page.evaluate(() => !document.getElementById('toast')?.classList.contains('error')),
+  await page.evaluate(() => document.getElementById('toast')?.className || '(没有 toast)'),
+)
 await page.evaluate(() => {
   window.__mockStopWarning = 'record.micError'
   window.__emit('audio:error', { code: 'record.micError', fatal: false })

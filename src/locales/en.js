@@ -85,6 +85,7 @@ window.I18N_LOCALES['en'] = {
   // Gap marker: the backend sends the [[gap:seconds]] placeholder
   'record.gap': '({seconds}s not recognised)',
   'record.gapWarning': 'About {seconds}s of audio could not be recognised',
+  'record.silentHint': 'Nothing recognised yet — still recording',
 
   'mode.offline': 'One-shot',
   'mode.group': 'Transcription mode',
